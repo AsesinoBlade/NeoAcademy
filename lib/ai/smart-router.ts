@@ -111,39 +111,12 @@ async function buildOpenAIModel(
 // ---------------------------------------------------------------------------
 
 async function resolveForTask(task: TaskType): Promise<RouterResult | null> {
-  const { getGeminiConfig, getGenerationConfig } = await import('@/lib/db/config');
-
   switch (task) {
-    case 'generation-draft': {
-      const [geminiCfg] = await Promise.all([getGeminiConfig()]);
-      const result = await buildGeminiModel(geminiCfg.generationModel);
-      if (result) return { ...result, modelId: geminiCfg.generationModel };
-
-      // Fallback: SiliconFlow GLM-5 (cheap, fast)
-      const sf = await buildSiliconFlowModel('THUDM/GLM-5-9B-0414');
-      if (sf) return { ...sf, modelId: 'THUDM/GLM-5-9B-0414' };
-
-      // Last resort: OpenAI
-      const oai = await buildOpenAIModel('gpt-5-nano');
-      if (oai) return { ...oai, modelId: 'gpt-5-nano' };
-
-      return null;
-    }
-
+    case 'generation-draft':
     case 'generation-quality': {
-      const geminiCfg = await getGeminiConfig();
-      const result = await buildGeminiModel(geminiCfg.qualityModel);
-      if (result) return { ...result, modelId: geminiCfg.qualityModel };
-
-      // Fallback: SiliconFlow MiniMax
-      const sf = await buildSiliconFlowModel('MiniMaxAI/MiniMax-M1-40k');
-      if (sf) return { ...sf, modelId: 'MiniMaxAI/MiniMax-M1-40k' };
-
-      // Last resort: paid Gemini Flash
-      const paid = await buildGeminiModel(geminiCfg.qualityModel);
-      if (paid) return { ...paid, modelId: geminiCfg.qualityModel };
-
-      return null;
+      const cfg = await import('@/lib/db/config').then((m) => m.getOllamaConfig());
+      const result = await buildOllamaModel(cfg.model);
+      return { ...result, modelId: cfg.model };
     }
 
     case 'runtime-chat':
