@@ -24,6 +24,7 @@
  */
 
 import { createOpenAI } from '@ai-sdk/openai';
+import { createOllama } from 'ai-sdk-ollama';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { LanguageModel } from 'ai';
@@ -973,35 +974,88 @@ export function getModel(config: ModelConfig): ModelWithInfo {
 
   switch (providerType) {
     case 'openai': {
+      // Detect a local Ollama server that is being presented through the
+      // OpenAI-compatible provider configuration.
+      const isLocalOllama =
+        config.providerId === 'openai' &&
+        !!effectiveBaseUrl &&
+        (() => {
+          try {
+            const parsed = new URL(effectiveBaseUrl);
+            return (
+              (parsed.hostname === '127.0.0.1' ||
+                parsed.hostname === 'localhost' ||
+                parsed.hostname === '::1') &&
+              parsed.port === '11434'
+            );
+          } catch {
+            return false;
+          }
+        })();
+
+      if (isLocalOllama) {
+        // The OpenAI-compatible configuration normally ends in /v1.
+        // Native Ollama expects the server root instead.
+        const ollamaBaseUrl = effectiveBaseUrl!.replace(/\/v1\/?$/, '');
+        const ollama = createOllama({
+          baseURL: ollamaBaseUrl,
+
+          // Use Ollama's native /api/chat endpoint and inject its native
+          // `think` option from NeoAcademy's thinking context.
+          fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+            const thinkingCtx = (globalThis as Record<string, unknown>).__thinkingContext as
+              | { getStore?: () => unknown }
+              | undefined;
+
+            const thinking = thinkingCtx?.getStore?.() as ThinkingConfig | undefined;
+
+            if (thinking && init?.body && typeof init.body === 'string') {
+              try {
+                const body = JSON.parse(init.body);
+                body.think = thinking.enabled !== false;
+                init = { ...init, body: JSON.stringify(body) };
+              } catch {
+                // Leave the request unchanged if the body is not JSON.
+              }
+            }
+
+            return globalThis.fetch(url, init);
+          },
+        });
+
+        model = ollama.chat(config.modelId);
+        break;
+      }
+
       const openaiOptions: Parameters<typeof createOpenAI>[0] = {
         apiKey: effectiveApiKey,
         baseURL: effectiveBaseUrl,
       };
 
-      // For OpenAI-compatible providers (not native OpenAI), add a fetch
-      // wrapper that injects vendor-specific thinking params into the HTTP
-      // body. The thinking config is read from AsyncLocalStorage, set by
-      // callLLM / streamLLM at call time.
+      // Other OpenAI-compatible providers still use their vendor-specific
+      // thinking parameters through the existing custom fetch wrapper.
       if (config.providerId !== 'openai') {
-        const providerId = config.providerId;
         openaiOptions.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
-          // Read thinking config from globalThis (set by thinking-context.ts)
           const thinkingCtx = (globalThis as Record<string, unknown>).__thinkingContext as
             | { getStore?: () => unknown }
             | undefined;
+
           const thinking = thinkingCtx?.getStore?.() as ThinkingConfig | undefined;
+
           if (thinking && init?.body && typeof init.body === 'string') {
-            const extra = getCompatThinkingBodyParams(providerId, thinking);
+            const extra = getCompatThinkingBodyParams(config.providerId, thinking);
+
             if (extra) {
               try {
                 const body = JSON.parse(init.body);
                 Object.assign(body, extra);
                 init = { ...init, body: JSON.stringify(body) };
               } catch {
-                /* leave body as-is */
+                // Leave the request unchanged if the body is not JSON.
               }
             }
           }
+
           return globalThis.fetch(url, init);
         };
       }
