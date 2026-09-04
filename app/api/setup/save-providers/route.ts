@@ -11,7 +11,7 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
-    // Only allow during first run
+    // Only allow after the admin account has been created.
     const existing = await db.select({ id: user.id }).from(user).limit(1);
     if (existing.length === 0) {
       return NextResponse.json({ error: 'Create admin account first' }, { status: 403 });
@@ -19,23 +19,22 @@ export async function POST(req: NextRequest) {
 
     const { geminiKeys, ollamaUrl, ttsUrl, asrUrl } = await req.json();
 
-    if (!geminiKeys?.length) {
-      return NextResponse.json(
-        { error: 'At least one Gemini API key is required' },
-        { status: 400 },
-      );
-    }
-
+    // Gemini is optional in fully-local mode.
+    // Explicitly disable it when no keys were supplied.
     const geminiDefault = DEFAULTS.gemini();
     await setGeminiConfig({
       ...geminiDefault,
-      freeKeys: geminiKeys,
+      freeKeys: geminiKeys ?? [],
+      paidKey: '',
+      enabled: Array.isArray(geminiKeys) && geminiKeys.length > 0,
     });
 
+    // Use the Ollama model configured through .env.local rather than
+    // hard-coding qwen3.5:latest.
+    const ollamaDefault = DEFAULTS.ollama();
     await setOllamaConfig({
+      ...ollamaDefault,
       baseUrl: ollamaUrl,
-      model: 'qwen3.5:latest',
-      apiKey: 'ollama',
     });
 
     await setTTSConfig({

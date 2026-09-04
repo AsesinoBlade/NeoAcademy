@@ -50,11 +50,11 @@ export default function SetupPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // Step 2: Gemini API keys
+  // Step 2: Local AI providers
   const [geminiKeys, setGeminiKeys] = useState('');
-  const [ollamaUrl, setOllamaUrl] = useState('http://192.168.70.10:11434/v1');
-  const [ttsUrl, setTtsUrl] = useState('http://192.168.70.10:8880/v1');
-  const [asrUrl, setAsrUrl] = useState('http://192.168.70.10:8881/v1');
+  const [ollamaUrl, setOllamaUrl] = useState('http://127.0.0.1:11434/v1');
+  const [ttsUrl, setTtsUrl] = useState('http://127.0.0.1:8880/v1');
+  const [asrUrl, setAsrUrl] = useState('http://127.0.0.1:8881/v1');
 
   // Step 3: connectivity results
   const [connectResults, setConnectResults] = useState<Record<string, boolean | null>>({
@@ -225,7 +225,7 @@ export default function SetupPage() {
                 <CardTitle>Configure AI providers</CardTitle>
               </div>
               <CardDescription>
-                Add your Gemini API key(s) and confirm your local server addresses
+                Configure your local AI servers. Gemini is optional in fully-local mode.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -234,15 +234,14 @@ export default function SetupPage() {
                   <Label htmlFor="gemini-keys">
                     Gemini API keys{' '}
                     <span className="text-xs text-muted-foreground">
-                      (comma-separated, one per GCP project for key rotation)
+                      (optional — leave blank for fully-local mode)
                     </span>
                   </Label>
                   <Input
                     id="gemini-keys"
-                    placeholder="AIzaSy..., AIzaSy..., AIzaSy..."
+                    placeholder="Optional"
                     value={geminiKeys}
                     onChange={(e) => setGeminiKeys(e.target.value)}
-                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -295,7 +294,7 @@ export default function SetupPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               {[
-                { key: 'ollama', label: 'Ollama (Qwen 3.5)', url: ollamaUrl },
+                { key: 'ollama', label: 'Ollama (Qwen 3.8 27B)', url: ollamaUrl },
                 { key: 'tts', label: 'Kokoro TTS', url: ttsUrl },
                 { key: 'asr', label: 'Whisper ASR', url: asrUrl },
               ].map(({ key, label, url }) => (
