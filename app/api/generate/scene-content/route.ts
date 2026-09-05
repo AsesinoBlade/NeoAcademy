@@ -76,7 +76,15 @@ export async function POST(req: NextRequest) {
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
 
-    const maxSceneOutputTokens = Math.min(modelInfo?.outputWindow ?? 16384, 16384);
+    const configuredSceneOutputTokens = Number.parseInt(
+      process.env.SCENE_CONTENT_MAX_OUTPUT_TOKENS || '16384',
+      10,
+    );
+
+    const maxSceneOutputTokens = Math.min(
+      modelInfo?.outputWindow ?? configuredSceneOutputTokens,
+      configuredSceneOutputTokens,
+    );
 
     const logTokenUsage = (result: {
       usage?: {
