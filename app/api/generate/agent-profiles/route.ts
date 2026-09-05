@@ -38,6 +38,17 @@ interface RequestBody {
   availableAvatars: string[];
 }
 
+interface AgentProfilesPayload {
+  agents: Array<{
+    name: string;
+    role: string;
+    persona: string;
+    avatar: string;
+    color: string;
+    priority: number;
+  }>;
+}
+
 function stripCodeFences(text: string): string {
   let cleaned = text.trim();
   // Remove markdown code fences (```json ... ``` or ``` ... ```)
@@ -118,20 +129,31 @@ Return a JSON object with this exact structure:
         prompt: userPrompt,
       },
       'agent-profiles',
+      {
+        retries: 1,
+        validate: (text) => {
+          try {
+            const candidate = JSON.parse(stripCodeFences(text)) as AgentProfilesPayload;
+
+            if (!Array.isArray(candidate.agents) || candidate.agents.length < 2) {
+              return false;
+            }
+
+            const teacherCount = candidate.agents.filter(
+              (agent) => agent.role === 'teacher',
+            ).length;
+
+            return teacherCount === 1;
+          } catch {
+            return false;
+          }
+        },
+      },
     );
 
     // ── Parse LLM response ──
     const rawText = stripCodeFences(result.text);
-    let parsed: {
-      agents: Array<{
-        name: string;
-        role: string;
-        persona: string;
-        avatar: string;
-        color: string;
-        priority: number;
-      }>;
-    };
+    let parsed: AgentProfilesPayload;
 
     try {
       parsed = JSON.parse(rawText);
