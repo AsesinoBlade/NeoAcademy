@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, Suspense, useRef } from 'react';
+import { useSceneGenerator } from '@/lib/hooks/use-scene-generator';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import { CheckCircle2, Sparkles, AlertCircle, AlertTriangle, ArrowLeft, Bot } from 'lucide-react';
@@ -34,6 +35,7 @@ const log = createLogger('GenerationPreview');
 function GenerationPreviewContent() {
   const router = useRouter();
   const { t } = useI18n();
+  const { generateRemaining, stop: stopSceneGeneration } = useSceneGenerator();
   const hasStartedRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -41,7 +43,7 @@ function GenerationPreviewContent() {
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [isComplete] = useState(false);
+  const [isComplete, setIsComplete] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [streamingOutlines, setStreamingOutlines] = useState<SceneOutline[] | null>(null);
   const [truncationWarnings, setTruncationWarnings] = useState<string[]>([]);
@@ -85,8 +87,9 @@ function GenerationPreviewContent() {
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      stopSceneGeneration();
     };
-  }, []);
+  }, [stopSceneGeneration]);
 
   // Get API credentials from localStorage
   const getApiHeaders = () => {
@@ -703,26 +706,52 @@ function GenerationPreviewContent() {
         }
       }
 
-      // Add scene to store and navigate
+      // Add the first completed scene.
       store.addScene(data.scene);
       store.setCurrentSceneId(data.scene.id);
 
-      // Set remaining outlines as skeleton placeholders
+      // Mark the remaining outlines as pending.
       const remaining = outlines.filter((o) => o.order !== data.scene.order);
       store.setGeneratingOutlines(remaining);
 
-      // Store generation params for classroom to continue generation
-      sessionStorage.setItem(
-        'generationParams',
-        JSON.stringify({
+      // Generate every remaining scene before entering the classroom.
+      if (remaining.length > 0) {
+        await generateRemaining({
           pdfImages: currentSession.pdfImages,
+          imageMapping,
+          stageInfo,
           agents,
           userProfile,
-        }),
-      );
+        });
+      } else {
+        store.setGenerationStatus('completed');
+        store.setGeneratingOutlines([]);
+      }
 
+      // generateRemaining() pauses rather than throwing for some generation failures,
+      // so explicitly verify that every outline became a completed scene.
+      const finalState = useStageStore.getState();
+
+      if (
+        finalState.generationStatus !== 'completed' ||
+        finalState.failedOutlines.length > 0 ||
+        finalState.scenes.length !== outlines.length
+      ) {
+        throw new Error(
+          `Full class generation did not complete: ${finalState.scenes.length}/${outlines.length} scenes generated`,
+        );
+      }
+
+      // Everything is complete. Persist the full class before navigating.
+      setIsComplete(true);
       sessionStorage.removeItem('generationSession');
-      await store.saveToStorage();
+      sessionStorage.removeItem('generationParams');
+
+      await finalState.saveToStorage();
+
+      // Briefly show the completed state before opening the classroom.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
       router.push(`/classroom/${stage.id}`);
     } catch (err) {
       // AbortError is expected when navigating away — don't show as error
@@ -744,6 +773,7 @@ function GenerationPreviewContent() {
 
   const goBackToHome = () => {
     abortControllerRef.current?.abort();
+    stopSceneGeneration();
     sessionStorage.removeItem('generationSession');
     router.push('/');
   };
