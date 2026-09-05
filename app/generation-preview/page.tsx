@@ -417,12 +417,9 @@ function GenerationPreviewContent() {
           const savedIds = await saveGeneratedAgents(stage.id, agentData.agents);
           settings.setSelectedAgentIds(savedIds);
 
-          // Show card-reveal modal, continue generation once all cards are revealed
+          // Show card-reveal modal without blocking generation.
           setGeneratedAgents(agentData.agents);
           setShowAgentReveal(true);
-          await new Promise<void>((resolve) => {
-            agentRevealResolveRef.current = resolve;
-          });
 
           agents = savedIds
             .map((id) => useAgentRegistry.getState().getAgent(id))

@@ -21,7 +21,7 @@ import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
 
 const log = createLogger('Scene Content API');
 
-export const maxDuration = 300;
+export const maxDuration = 1800;
 
 export async function POST(req: NextRequest) {
   try {
@@ -76,6 +76,31 @@ export async function POST(req: NextRequest) {
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
 
+    const maxSceneOutputTokens = Math.min(modelInfo?.outputWindow ?? 16384, 16384);
+
+    const logTokenUsage = (result: {
+      usage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+      };
+    }) => {
+      const outputTokens = result.usage?.outputTokens;
+      const inputTokens = result.usage?.inputTokens;
+      const totalTokens = result.usage?.totalTokens;
+
+      if (typeof outputTokens !== 'number') {
+        log.info('Scene content token usage unavailable from provider');
+        return;
+      }
+
+      const percent = ((outputTokens / maxSceneOutputTokens) * 100).toFixed(1);
+
+      log.info(
+        `Scene content tokens: output=${outputTokens}/${maxSceneOutputTokens} (${percent}%), input=${inputTokens ?? 'unknown'}, total=${totalTokens ?? 'unknown'}`,
+      );
+    };
+
     // Vision-aware AI call function
     const aiCall = async (
       systemPrompt: string,
@@ -93,10 +118,11 @@ export async function POST(req: NextRequest) {
                 content: buildVisionUserContent(userPrompt, images),
               },
             ],
-            maxOutputTokens: Math.min(modelInfo?.outputWindow ?? 4096, 4096),
+            maxOutputTokens: maxSceneOutputTokens,
           },
           'scene-content',
         );
+        logTokenUsage(result);
         return result.text;
       }
       const result = await callLLM(
@@ -104,10 +130,11 @@ export async function POST(req: NextRequest) {
           model: languageModel,
           system: systemPrompt,
           prompt: userPrompt,
-          maxOutputTokens: Math.min(modelInfo?.outputWindow ?? 4096, 4096),
+          maxOutputTokens: maxSceneOutputTokens,
         },
         'scene-content',
       );
+      logTokenUsage(result);
       return result.text;
     };
 
