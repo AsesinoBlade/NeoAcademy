@@ -88,6 +88,13 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
   // non-teacher speaker -> teacher/moderator response -> queued user question.
   const pendingUserMessagesRef = useRef<UIMessage<ChatMessageMetadata>[]>([]);
 
+  // Live TTS sentence-prefetch state.
+  // Track how much of each streamed text part has already been queued for speech,
+  // the next sentence/chunk number, and the most recently queued playback promise.
+  const liveTtsQueuedLengthRef = useRef<Map<string, number>>(new Map());
+  const liveTtsChunkIndexRef = useRef<Map<string, number>>(new Map());
+  const liveTtsLastPromiseRef = useRef<Map<string, Promise<void>>>(new Map());
+
   const sessionsRef = useRef<ChatSession[]>(sessions);
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -241,7 +248,6 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             );
 
             if (
-              isComplete &&
               type !== 'lecture' &&
               revealedText.trim().length > 0 &&
               onLiveSpeechCompleteRef.current
@@ -253,19 +259,71 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
                   ? currentMessage.metadata.agentId
                   : null;
 
-              // Hold the conversational buffer while TTS is generated and played.
-              // QA/discussion buffers have a post-text dwell, so pausing here
-              // prevents the next agent/action from advancing.
-              buffer.pause();
+              const speechKey = `${messageId}_${partId}`;
+              let queuedLength = liveTtsQueuedLengthRef.current.get(speechKey) ?? 0;
+              let chunkIndex = liveTtsChunkIndexRef.current.get(speechKey) ?? 0;
 
-              void onLiveSpeechCompleteRef
-                .current(revealedText, agentId, `${messageId}_${partId}`)
-                .catch((err) => {
+              const queueSpeechChunk = (endIndex: number) => {
+                if (endIndex <= queuedLength) return;
+
+                const chunkText = revealedText.slice(queuedLength, endIndex).trim();
+                queuedLength = endIndex;
+
+                if (!chunkText) return;
+
+                chunkIndex += 1;
+
+                const promise = onLiveSpeechCompleteRef.current!(
+                  chunkText,
+                  agentId,
+                  `${speechKey}_s${chunkIndex}`,
+                ).catch((err) => {
                   log.warn('[LiveTTS] Speech generation/playback failed:', err);
-                })
-                .finally(() => {
+                });
+
+                liveTtsLastPromiseRef.current.set(speechKey, promise);
+              };
+
+              // Queue sentences as soon as punctuation + following whitespace
+              // becomes visible. A minimum chunk size avoids treating short
+              // abbreviations such as "Dr." as standalone speech chunks.
+              const sentenceBoundary = /[.!?](?=\s)/g;
+              sentenceBoundary.lastIndex = queuedLength;
+
+              let match: RegExpExecArray | null;
+              while ((match = sentenceBoundary.exec(revealedText)) !== null) {
+                const endIndex = match.index + 1;
+
+                if (endIndex - queuedLength < 40) continue;
+
+                queueSpeechChunk(endIndex);
+              }
+
+              // At the end of the text part, flush whatever remains — including
+              // a final sentence without trailing whitespace.
+              if (isComplete && queuedLength < revealedText.length) {
+                queueSpeechChunk(revealedText.length);
+              }
+
+              liveTtsQueuedLengthRef.current.set(speechKey, queuedLength);
+              liveTtsChunkIndexRef.current.set(speechKey, chunkIndex);
+
+              if (isComplete) {
+                // The text response is complete, but do not allow the director
+                // to advance to the next conversational turn until all queued
+                // speech for this response has finished playing.
+                buffer.pause();
+
+                const finalSpeech =
+                  liveTtsLastPromiseRef.current.get(speechKey) ?? Promise.resolve();
+
+                void finalSpeech.finally(() => {
+                  liveTtsQueuedLengthRef.current.delete(speechKey);
+                  liveTtsChunkIndexRef.current.delete(speechKey);
+                  liveTtsLastPromiseRef.current.delete(speechKey);
                   buffer.resume();
                 });
+              }
             }
           },
 

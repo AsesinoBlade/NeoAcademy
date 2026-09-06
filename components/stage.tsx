@@ -127,6 +127,15 @@ export function Stage({
 
   const engineRef = useRef<PlaybackEngine | null>(null);
   const audioPlayerRef = useRef(createAudioPlayer());
+
+  // Live Q&A/discussion speech is isolated from prerecorded lecture audio.
+  // TTS chunks may generate concurrently, but playback remains serialized.
+  const liveTtsAudioPlayerRef = useRef(createAudioPlayer());
+  const liveTtsPlaybackTailRef = useRef<Promise<void>>(Promise.resolve());
+
+  // Incrementing this invalidates previously queued/generated live-TTS chunks.
+  const liveTtsEpochRef = useRef(0);
+
   const chatAreaRef = useRef<ChatAreaRef>(null);
   const lectureSessionIdRef = useRef<string | null>(null);
   const lectureActionCounterRef = useRef(0);
@@ -176,8 +185,20 @@ export function Stage({
     await chatAreaRef.current?.resumeActiveSession();
   }, []);
 
+  const cancelLiveTts = useCallback(() => {
+    // Invalidate any generated or generating chunks from the old live turn.
+    liveTtsEpochRef.current++;
+
+    // Stop speech that is currently playing.
+    liveTtsAudioPlayerRef.current.stop();
+
+    // New live speech should not wait behind the cancelled queue.
+    liveTtsPlaybackTailRef.current = Promise.resolve();
+  }, []);
+
   /** Reset all live/discussion state (shared by doSessionCleanup & onDiscussionEnd) */
   const resetLiveState = useCallback(() => {
+    cancelLiveTts();
     setLiveSpeech(null);
     setSpeakingAgentId(null);
     setSpeechProgress(null);
@@ -186,7 +207,7 @@ export function Stage({
     setIsTopicPending(false);
     setChatIsStreaming(false);
     setChatSessionType(null);
-  }, []);
+  }, [cancelLiveTts]);
 
   /** Full scene reset (scene switch) — resetLiveState + lecture/visual state */
   const resetSceneState = useCallback(() => {
@@ -206,10 +227,21 @@ export function Stage({
   const doSessionCleanup = useCallback(() => {
     const activeType = chatSessionType;
 
-    // Engine cleanup — guard to avoid double flash from onDiscussionEnd
+    // Engine cleanup — restore the saved lecture position.
     manualStopRef.current = true;
-    engineRef.current?.handleEndDiscussion();
+
+    const engine = engineRef.current;
+    engine?.handleEndDiscussion();
+
     manualStopRef.current = false;
+
+    // handleEndDiscussion() intentionally leaves the engine idle after restoring
+    // the saved lecture cursor. Resume automatically so Q&A behaves as a true
+    // interruption rather than requiring the user to press Play again.
+    if (engine && !engine.isExhausted()) {
+      setPlaybackCompleted(false);
+      engine.continuePlayback();
+    }
 
     // Show end flash with correct session type
     if (activeType === 'qa' || activeType === 'discussion') {
@@ -441,11 +473,16 @@ export function Stage({
   // Cleanup on unmount
   useEffect(() => {
     const audioPlayer = audioPlayerRef.current;
+    const liveTtsAudioPlayer = liveTtsAudioPlayerRef.current;
+
     return () => {
       if (engineRef.current) {
         engineRef.current.stop();
       }
+
       audioPlayer.destroy();
+      liveTtsAudioPlayer.destroy();
+
       if (discussionAbortRef.current) {
         discussionAbortRef.current.abort();
       }
@@ -456,6 +493,7 @@ export function Stage({
   const ttsMuted = useSettingsStore((s) => s.ttsMuted);
   useEffect(() => {
     audioPlayerRef.current.setMuted(ttsMuted);
+    liveTtsAudioPlayerRef.current.setMuted(ttsMuted);
   }, [ttsMuted]);
 
   // Sync volume from settings store to audioPlayer
@@ -463,6 +501,7 @@ export function Stage({
   useEffect(() => {
     if (!ttsMuted) {
       audioPlayerRef.current.setVolume(ttsVolume);
+      liveTtsAudioPlayerRef.current.setVolume(ttsVolume);
     }
   }, [ttsVolume, ttsMuted]);
 
@@ -470,6 +509,7 @@ export function Stage({
   const playbackSpeed = useSettingsStore((s) => s.playbackSpeed);
   useEffect(() => {
     audioPlayerRef.current.setPlaybackRate(playbackSpeed);
+    liveTtsAudioPlayerRef.current.setPlaybackRate(playbackSpeed);
   }, [playbackSpeed]);
 
   /**
@@ -813,11 +853,9 @@ export function Stage({
             }}
             onStopDiscussion={handleStopDiscussion}
             onInputActivate={() => {
-              // Opening the input must not interrupt a live AI discussion.
-              // Pause only prerecorded lecture playback while the user types.
-              if (engineRef.current && engineMode === 'playing') {
-                engineRef.current.pause();
-              }
+              // Merely opening or typing in the question input must never
+              // interrupt prerecorded lecture playback or a live discussion.
+              // Actual interruption happens only when the user submits.
             }}
             onSoftPause={doSoftPause}
             onResumeTopic={doResumeTopic}
@@ -848,7 +886,7 @@ export function Stage({
         activeBubbleId={activeBubbleId}
         onActiveBubble={(id) => setActiveBubbleId(id)}
         currentSceneId={currentSceneId}
-        onLiveSpeechComplete={async (text, agentId, speechId) => {
+        onLiveSpeechComplete={(text, agentId, speechId) => {
           const settings = useSettingsStore.getState();
 
           // Live TTS follows the same global classroom settings as lecture TTS.
@@ -857,40 +895,73 @@ export function Stage({
             settings.ttsMuted ||
             settings.ttsProviderId === 'browser-native-tts'
           ) {
-            return;
+            return Promise.resolve();
           }
 
           const audioId = `live_tts_${speechId}`;
           const speakingAgent = agentId ? useAgentRegistry.getState().getAgent(agentId) : undefined;
 
-          try {
-            await generateAndStoreTTS(audioId, text, undefined, speakingAgent?.voiceId);
+          const speechEpoch = sceneEpochRef.current;
+          const ttsEpoch = liveTtsEpochRef.current;
 
-            await new Promise<void>((resolve) => {
-              const player = audioPlayerRef.current;
-              let settled = false;
-
-              const finish = () => {
-                if (settled) return;
-                settled = true;
-                resolve();
-              };
-
-              player.onEnded(finish);
-
-              player
-                .play(audioId)
-                .then((started) => {
-                  if (!started) finish();
-                })
-                .catch((err) => {
-                  console.warn('[Stage] Live TTS playback failed', err);
-                  finish();
-                });
+          // Begin generation immediately. Later chunks can generate while an
+          // earlier sentence is still being spoken.
+          const generation = generateAndStoreTTS(audioId, text, undefined, speakingAgent?.voiceId)
+            .then(() => true)
+            .catch((err) => {
+              console.warn('[Stage] Live TTS generation failed', err);
+              return false;
             });
-          } catch (err) {
-            console.warn('[Stage] Live TTS generation failed', err);
-          }
+
+          // Playback is strictly serialized across every live speech chunk.
+          const playback = liveTtsPlaybackTailRef.current
+            .catch(() => {
+              // A failed earlier chunk must not poison the queue.
+            })
+            .then(async () => {
+              if (sceneEpochRef.current !== speechEpoch || liveTtsEpochRef.current !== ttsEpoch) {
+                return;
+              }
+
+              const generated = await generation;
+
+              if (
+                !generated ||
+                sceneEpochRef.current !== speechEpoch ||
+                liveTtsEpochRef.current !== ttsEpoch
+              ) {
+                return;
+              }
+
+              await new Promise<void>((resolve) => {
+                const player = liveTtsAudioPlayerRef.current;
+                let settled = false;
+
+                const finish = () => {
+                  if (settled) return;
+                  settled = true;
+                  resolve();
+                };
+
+                player.onEnded(finish);
+
+                player
+                  .play(audioId)
+                  .then((started) => {
+                    if (!started) finish();
+                  })
+                  .catch((err) => {
+                    console.warn('[Stage] Live TTS playback failed', err);
+                    finish();
+                  });
+              });
+            });
+
+          liveTtsPlaybackTailRef.current = playback.catch((err) => {
+            console.warn('[Stage] Live TTS queue failed', err);
+          });
+
+          return playback;
         }}
         onLiveSpeech={(text, agentId) => {
           // Capture epoch at call time — discard if scene has changed since
