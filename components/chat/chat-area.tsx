@@ -23,6 +23,7 @@ interface ChatAreaProps {
   activeBubbleId?: string | null;
   onActiveBubble?: (messageId: string | null) => void;
   onLiveSpeech?: (text: string | null, agentId?: string | null) => void;
+  onLiveSpeechComplete?: (text: string, agentId: string | null, speechId: string) => Promise<void>;
   onSpeechProgress?: (ratio: number | null) => void;
   onThinking?: (state: { stage: string; agentId?: string } | null) => void;
   onCueUser?: (fromAgentId?: string, prompt?: string) => void;
@@ -63,6 +64,7 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
       activeBubbleId,
       onActiveBubble,
       onLiveSpeech,
+      onLiveSpeechComplete,
       onSpeechProgress,
       onThinking,
       onCueUser,
@@ -93,6 +95,7 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
       resumeBuffer,
     } = useChatSessions({
       onLiveSpeech,
+      onLiveSpeechComplete,
       onSpeechProgress,
       onThinking,
       onCueUser,

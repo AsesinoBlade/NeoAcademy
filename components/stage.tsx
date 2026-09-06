@@ -14,6 +14,7 @@ import { PlaybackEngine, computePlaybackView } from '@/lib/playback';
 import type { EngineMode, TriggerEvent, Effect } from '@/lib/playback';
 import { ActionEngine } from '@/lib/action/engine';
 import { createAudioPlayer } from '@/lib/utils/audio-player';
+import { generateAndStoreTTS } from '@/lib/hooks/use-scene-generator';
 import type { Action, DiscussionAction, SpeechAction } from '@/lib/types/action';
 // Playback state persistence removed — refresh always starts from the beginning
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
@@ -847,6 +848,50 @@ export function Stage({
         activeBubbleId={activeBubbleId}
         onActiveBubble={(id) => setActiveBubbleId(id)}
         currentSceneId={currentSceneId}
+        onLiveSpeechComplete={async (text, agentId, speechId) => {
+          const settings = useSettingsStore.getState();
+
+          // Live TTS follows the same global classroom settings as lecture TTS.
+          if (
+            !settings.ttsEnabled ||
+            settings.ttsMuted ||
+            settings.ttsProviderId === 'browser-native-tts'
+          ) {
+            return;
+          }
+
+          const audioId = `live_tts_${speechId}`;
+          const speakingAgent = agentId ? useAgentRegistry.getState().getAgent(agentId) : undefined;
+
+          try {
+            await generateAndStoreTTS(audioId, text, undefined, speakingAgent?.voiceId);
+
+            await new Promise<void>((resolve) => {
+              const player = audioPlayerRef.current;
+              let settled = false;
+
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+
+              player.onEnded(finish);
+
+              player
+                .play(audioId)
+                .then((started) => {
+                  if (!started) finish();
+                })
+                .catch((err) => {
+                  console.warn('[Stage] Live TTS playback failed', err);
+                  finish();
+                });
+            });
+          } catch (err) {
+            console.warn('[Stage] Live TTS generation failed', err);
+          }
+        }}
         onLiveSpeech={(text, agentId) => {
           // Capture epoch at call time — discard if scene has changed since
           const epoch = sceneEpochRef.current;

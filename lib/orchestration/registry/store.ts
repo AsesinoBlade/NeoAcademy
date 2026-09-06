@@ -363,6 +363,9 @@ export async function saveGeneratedAgents(
     avatar: string;
     color: string;
     priority: number;
+    voiceGender?: 'female' | 'male' | 'neutral';
+    voiceStyle?: 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+    voiceId?: string;
   }>,
 ): Promise<string[]> {
   const { db } = await import('@/lib/utils/database');

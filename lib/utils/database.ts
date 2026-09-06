@@ -163,6 +163,9 @@ export interface GeneratedAgentRecord {
   avatar: string;
   color: string;
   priority: number;
+  voiceGender?: 'female' | 'male' | 'neutral';
+  voiceStyle?: 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+  voiceId?: string;
   createdAt: number;
 }
 

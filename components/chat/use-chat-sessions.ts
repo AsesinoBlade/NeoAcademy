@@ -30,6 +30,7 @@ const log = createLogger('ChatSessions');
 
 interface UseChatSessionsOptions {
   onLiveSpeech?: (text: string | null, agentId?: string | null) => void;
+  onLiveSpeechComplete?: (text: string, agentId: string | null, speechId: string) => Promise<void>;
   onSpeechProgress?: (ratio: number | null) => void;
   onThinking?: (state: { stage: string; agentId?: string } | null) => void;
   onCueUser?: (fromAgentId?: string, prompt?: string) => void;
@@ -40,6 +41,7 @@ interface UseChatSessionsOptions {
 
 export function useChatSessions(options: UseChatSessionsOptions = {}) {
   const onLiveSpeechRef = useRef(options.onLiveSpeech);
+  const onLiveSpeechCompleteRef = useRef(options.onLiveSpeechComplete);
   const onSpeechProgressRef = useRef(options.onSpeechProgress);
   const onThinkingRef = useRef(options.onThinking);
   const onCueUserRef = useRef(options.onCueUser);
@@ -47,6 +49,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
   const onStopSessionRef = useRef(options.onStopSession);
   useEffect(() => {
     onLiveSpeechRef.current = options.onLiveSpeech;
+    onLiveSpeechCompleteRef.current = options.onLiveSpeechComplete;
     onSpeechProgressRef.current = options.onSpeechProgress;
     onThinkingRef.current = options.onThinking;
     onCueUserRef.current = options.onCueUser;
@@ -54,6 +57,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     onStopSessionRef.current = options.onStopSession;
   }, [
     options.onLiveSpeech,
+    options.onLiveSpeechComplete,
     options.onSpeechProgress,
     options.onThinking,
     options.onCueUser,
@@ -202,7 +206,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             messageId: string,
             partId: string,
             revealedText: string,
-            _isComplete: boolean,
+            isComplete: boolean,
           ) {
             setSessions((prev) =>
               prev.map((s) => {
@@ -235,6 +239,34 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
                 };
               }),
             );
+
+            if (
+              isComplete &&
+              type !== 'lecture' &&
+              revealedText.trim().length > 0 &&
+              onLiveSpeechCompleteRef.current
+            ) {
+              const currentSession = sessionsRef.current.find((s) => s.id === sessionId);
+              const currentMessage = currentSession?.messages.find((m) => m.id === messageId);
+              const agentId =
+                typeof currentMessage?.metadata?.agentId === 'string'
+                  ? currentMessage.metadata.agentId
+                  : null;
+
+              // Hold the conversational buffer while TTS is generated and played.
+              // QA/discussion buffers have a post-text dwell, so pausing here
+              // prevents the next agent/action from advancing.
+              buffer.pause();
+
+              void onLiveSpeechCompleteRef
+                .current(revealedText, agentId, `${messageId}_${partId}`)
+                .catch((err) => {
+                  log.warn('[LiveTTS] Speech generation/playback failed:', err);
+                })
+                .finally(() => {
+                  buffer.resume();
+                });
+            }
           },
 
           onActionReady(messageId: string, data: ActionItem) {

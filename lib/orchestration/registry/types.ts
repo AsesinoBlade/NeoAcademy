@@ -13,6 +13,11 @@ export interface AgentConfig {
   allowedActions: string[]; // Action types this agent can use
   priority: number; // Priority for director selection (1-10)
 
+  // Stable TTS identity for this character
+  voiceGender?: 'female' | 'male' | 'neutral';
+  voiceStyle?: 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+  voiceId?: string;
+
   // Metadata
   createdAt: Date;
   updatedAt: Date;
@@ -32,6 +37,10 @@ export interface AgentTemplate {
   color: string;
   allowedActions: string[];
   priority: number;
+
+  voiceGender?: 'female' | 'male' | 'neutral';
+  voiceStyle?: 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+  voiceId?: string;
 
   // LLM-generated agent fields
   isGenerated?: boolean; // true for LLM-generated agents

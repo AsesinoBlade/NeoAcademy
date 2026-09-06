@@ -12,6 +12,7 @@ import type { Action, SpeechAction } from '@/lib/types/action';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { createLogger } from '@/lib/logger';
+import { useAgentRegistry } from '@/lib/orchestration/registry/store';
 
 const log = createLogger('SceneGenerator');
 const TTS_MAX_TEXT_LENGTH: Partial<Record<TTSProviderId, number>> = {
@@ -209,6 +210,7 @@ export async function generateAndStoreTTS(
   audioId: string,
   text: string,
   signal?: AbortSignal,
+  voiceOverride?: string,
 ): Promise<void> {
   const settings = useSettingsStore.getState();
   if (settings.ttsProviderId === 'browser-native-tts') return;
@@ -221,7 +223,7 @@ export async function generateAndStoreTTS(
       text,
       audioId,
       ttsProviderId: settings.ttsProviderId,
-      ttsVoice: settings.ttsVoice,
+      ttsVoice: voiceOverride || settings.ttsVoice,
       ttsSpeed: settings.ttsSpeed,
       ttsApiKey: ttsProviderConfig?.apiKey || undefined,
       ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
@@ -266,6 +268,11 @@ async function generateTTSForScene(
   );
   if (speechActions.length === 0) return { success: true, failedCount: 0 };
 
+  const settingsState = useSettingsStore.getState();
+  const teacherVoiceId = settingsState.selectedAgentIds
+    ?.map((id) => useAgentRegistry.getState().getAgent(id))
+    .find((agent) => agent?.role === 'teacher')?.voiceId;
+
   let failedCount = 0;
   let lastError: string | undefined;
 
@@ -273,7 +280,7 @@ async function generateTTSForScene(
     const audioId = `tts_${action.id}`;
     action.audioId = audioId;
     try {
-      await generateAndStoreTTS(audioId, action.text, signal);
+      await generateAndStoreTTS(audioId, action.text, signal, teacherVoiceId);
     } catch (error) {
       failedCount++;
       lastError = error instanceof Error ? error.message : `TTS failed for action ${action.id}`;

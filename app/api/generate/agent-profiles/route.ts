@@ -46,7 +46,83 @@ interface AgentProfilesPayload {
     avatar: string;
     color: string;
     priority: number;
+    voiceGender?: 'female' | 'male' | 'neutral';
+    voiceStyle?: 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
   }>;
+}
+
+type VoiceGender = 'female' | 'male' | 'neutral';
+type VoiceStyle = 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+
+function selectKokoroVoice(
+  language: string,
+  gender: VoiceGender,
+  style: VoiceStyle,
+  index: number,
+): string {
+  const lang = language.toLowerCase();
+
+  // Language-specific Kokoro voices where available.
+  if (lang.startsWith('zh')) {
+    const female = ['zf_xiaobei', 'zf_xiaoni', 'zf_xiaoxiao', 'zf_xiaoyi'];
+    const male = ['zm_yunjian', 'zm_yunxi', 'zm_yunxia', 'zm_yunyang'];
+    const pool = gender === 'male' ? male : gender === 'female' ? female : [...female, ...male];
+    return pool[index % pool.length];
+  }
+
+  if (lang.startsWith('ja')) {
+    const female = ['jf_alpha', 'jf_gongitsune', 'jf_nezumi', 'jf_tebukuro'];
+    const male = ['jm_kumo'];
+    const pool = gender === 'male' ? male : gender === 'female' ? female : [...female, ...male];
+    return pool[index % pool.length];
+  }
+
+  if (lang.startsWith('it')) {
+    return gender === 'male' ? 'im_nicola' : 'if_sara';
+  }
+
+  if (lang.startsWith('fr')) {
+    return 'ff_siwis';
+  }
+
+  if (lang.startsWith('en-gb')) {
+    const female = ['bf_emma', 'bf_alice', 'bf_isabella', 'bf_lily'];
+    const male = ['bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis'];
+    const pool = gender === 'male' ? male : gender === 'female' ? female : [...female, ...male];
+    return pool[index % pool.length];
+  }
+
+  // Default English/US voices. Curated by broad vocal character.
+  const femalePools: Record<VoiceStyle, string[]> = {
+    warm: ['af_bella', 'af_sarah', 'af_nicole'],
+    calm: ['af_sarah', 'af_nicole', 'af_river'],
+    bright: ['af_sky', 'af_nova', 'af_aoede'],
+    energetic: ['af_heart', 'af_jessica', 'af_nova'],
+    deep: ['af_kore', 'af_river', 'af_nicole'],
+    youthful: ['af_sky', 'af_nova', 'af_aoede'],
+  };
+
+  const malePools: Record<VoiceStyle, string[]> = {
+    warm: ['am_liam', 'am_michael', 'am_eric'],
+    calm: ['am_michael', 'am_liam', 'am_onyx'],
+    bright: ['am_eric', 'am_puck', 'am_echo'],
+    energetic: ['am_puck', 'am_fenrir', 'am_eric'],
+    deep: ['am_adam', 'am_onyx', 'am_michael'],
+    youthful: ['am_puck', 'am_eric', 'am_liam'],
+  };
+
+  if (gender === 'female') {
+    const pool = femalePools[style];
+    return pool[index % pool.length];
+  }
+
+  if (gender === 'male') {
+    const pool = malePools[style];
+    return pool[index % pool.length];
+  }
+
+  const pool = [...femalePools[style], ...malePools[style]];
+  return pool[index % pool.length];
 }
 
 function stripCodeFences(text: string): string {
@@ -100,6 +176,11 @@ Requirements:
 - Exactly 1 agent must have role "teacher", the rest can be "assistant" or "student"
 - Priority values: teacher=10 (highest), assistant=7, student=4-6
 - Each agent needs: name, role, persona (2-3 sentences describing personality and teaching/learning style)
+- Each agent also needs a vocal profile that matches the character:
+  - voiceGender: "female", "male", or "neutral"
+  - voiceStyle: "warm", "bright", "calm", "energetic", "deep", or "youthful"
+- Choose voiceGender from the character you create. For example, a clearly female teacher such as "Ms. Stella" must use "female".
+- Choose voiceStyle to match the character's personality and role.
 - Names and personas must be in language: ${language}
 - Each agent must be assigned one avatar from this list: ${JSON.stringify(availableAvatars)}
   - Try to use different avatars for each agent
@@ -115,7 +196,9 @@ Return a JSON object with this exact structure:
       "persona": "string (2-3 sentences)",
       "avatar": "string (from available list)",
       "color": "string (hex color from palette)",
-      "priority": number (10 for teacher, 7 for assistant, 4-6 for student)
+      "priority": number (10 for teacher, 7 for assistant, 4-6 for student),
+      "voiceGender": "female" | "male" | "neutral",
+      "voiceStyle": "warm" | "bright" | "calm" | "energetic" | "deep" | "youthful"
     }
   ]
 }`;
@@ -183,16 +266,81 @@ Return a JSON object with this exact structure:
     }
 
     // ── Build output with IDs ──
-    const agents = parsed.agents.map((agent, index) => ({
-      id: `gen-${nanoid(8)}`,
-      name: agent.name,
-      role: agent.role,
-      persona: agent.persona,
-      avatar: agent.avatar || availableAvatars[index % availableAvatars.length],
-      color: agent.color || COLOR_PALETTE[index % COLOR_PALETTE.length],
-      priority:
-        agent.priority ?? (agent.role === 'teacher' ? 10 : agent.role === 'assistant' ? 7 : 5),
-    }));
+    const usedVoiceIds = new Set<string>();
+
+    const agents = parsed.agents.map((agent, index) => {
+      const voiceGender: VoiceGender =
+        agent.voiceGender === 'female' ||
+        agent.voiceGender === 'male' ||
+        agent.voiceGender === 'neutral'
+          ? agent.voiceGender
+          : 'neutral';
+
+      const voiceStyle: VoiceStyle =
+        agent.voiceStyle === 'warm' ||
+        agent.voiceStyle === 'bright' ||
+        agent.voiceStyle === 'calm' ||
+        agent.voiceStyle === 'energetic' ||
+        agent.voiceStyle === 'deep' ||
+        agent.voiceStyle === 'youthful'
+          ? agent.voiceStyle
+          : agent.role === 'teacher'
+            ? 'warm'
+            : 'bright';
+
+      // Prefer a voice appropriate to this character, but never reuse a
+      // voice already assigned to another character in the same classroom.
+      let voiceId = selectKokoroVoice(language, voiceGender, voiceStyle, index);
+
+      for (let offset = 1; usedVoiceIds.has(voiceId) && offset < 12; offset++) {
+        voiceId = selectKokoroVoice(language, voiceGender, voiceStyle, index + offset);
+      }
+
+      // If that style's pool was exhausted, try other compatible styles
+      // while preserving the character's gender.
+      if (usedVoiceIds.has(voiceId)) {
+        const fallbackStyles: VoiceStyle[] = [
+          'warm',
+          'calm',
+          'bright',
+          'energetic',
+          'deep',
+          'youthful',
+        ];
+
+        outer: for (const fallbackStyle of fallbackStyles) {
+          for (let offset = 0; offset < 12; offset++) {
+            const candidate = selectKokoroVoice(
+              language,
+              voiceGender,
+              fallbackStyle,
+              index + offset,
+            );
+
+            if (!usedVoiceIds.has(candidate)) {
+              voiceId = candidate;
+              break outer;
+            }
+          }
+        }
+      }
+
+      usedVoiceIds.add(voiceId);
+
+      return {
+        id: `gen-${nanoid(8)}`,
+        name: agent.name,
+        role: agent.role,
+        persona: agent.persona,
+        avatar: agent.avatar || availableAvatars[index % availableAvatars.length],
+        color: agent.color || COLOR_PALETTE[index % COLOR_PALETTE.length],
+        priority:
+          agent.priority ?? (agent.role === 'teacher' ? 10 : agent.role === 'assistant' ? 7 : 5),
+        voiceGender,
+        voiceStyle,
+        voiceId,
+      };
+    });
 
     log.info(`Successfully generated ${agents.length} agent profiles for "${stageInfo.name}"`);
 
