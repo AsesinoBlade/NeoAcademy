@@ -284,13 +284,17 @@ const getDefaultPDFConfig = () => ({
 
 // Initialize default Image config
 const getDefaultImageConfig = () => ({
-  imageProviderId: 'seedream' as ImageProviderId,
-  imageModelId: 'doubao-seedream-5-0-260128',
+  imageProviderId: 'local-mlx' as ImageProviderId,
+  imageModelId: 'z-image-turbo-8bit',
   imageProvidersConfig: {
     seedream: { apiKey: '', baseUrl: '', enabled: false },
     'qwen-image': { apiKey: '', baseUrl: '', enabled: false },
     'nano-banana': { apiKey: '', baseUrl: '', enabled: false },
-    'local-mlx': { apiKey: '', baseUrl: 'http://127.0.0.1:8001', enabled: true },
+    'local-mlx': {
+      apiKey: '',
+      baseUrl: 'http://127.0.0.1:8001',
+      enabled: true,
+    },
   } as Record<ImageProviderId, { apiKey: string; baseUrl: string; enabled: boolean }>,
 });
 
@@ -349,6 +353,29 @@ function ensureBuiltInProviders(state: Partial<SettingsState>): void {
       };
     }
   });
+}
+
+/**
+ * Ensure imageProvidersConfig includes every built-in image provider.
+ * This runs during migration and rehydration so newly added image
+ * providers appear without requiring the user to clear localStorage.
+ */
+function ensureBuiltInImageProviders(state: Partial<SettingsState>): void {
+  const defaults = getDefaultImageConfig();
+  const imageConfig = state.imageProvidersConfig;
+
+  if (!imageConfig) {
+    state.imageProvidersConfig = { ...defaults.imageProvidersConfig };
+    return;
+  }
+
+  for (const providerId of Object.keys(IMAGE_PROVIDERS) as ImageProviderId[]) {
+    if (!imageConfig[providerId]) {
+      imageConfig[providerId] = {
+        ...defaults.imageProvidersConfig[providerId],
+      };
+    }
+  }
 }
 
 // Migrate from old localStorage format
@@ -464,8 +491,8 @@ export const useSettingsStore = create<SettingsState>()(
         // Video settings (use defaults)
         ...defaultVideoConfig,
 
-        // Media generation toggles (off by default)
-        imageGenerationEnabled: false,
+        // Media generation toggles
+        imageGenerationEnabled: true,
         videoGenerationEnabled: false,
 
         // Audio feature toggles (on by default)
@@ -944,7 +971,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
     {
       name: 'settings-storage',
-      version: 2,
+      version: 3,
       // Migrate persisted state
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<SettingsState>;
@@ -958,6 +985,7 @@ export const useSettingsStore = create<SettingsState>()(
 
         // Ensure providersConfig has all built-in providers (also in merge below)
         ensureBuiltInProviders(state);
+        ensureBuiltInImageProviders(state);
 
         // Migrate from old ttsModel to new ttsProviderId
         if (state.ttsModel && !state.ttsProviderId) {
@@ -1000,6 +1028,28 @@ export const useSettingsStore = create<SettingsState>()(
         if (version < 2) {
           delete (state as Record<string, unknown>).deepResearchProviderId;
           delete (state as Record<string, unknown>).deepResearchProvidersConfig;
+        }
+
+        // v2 → v3: Add Local MLX image generation for fully-local installs.
+        if (version < 3) {
+          const currentImageProvider = state.imageProviderId;
+          const currentImageConfig = currentImageProvider
+            ? state.imageProvidersConfig?.[currentImageProvider]
+            : undefined;
+
+          // Preserve an image provider that the user has actually configured.
+          // Otherwise migrate the old unconfigured default to Local MLX.
+          const hasConfiguredImageProvider = Boolean(
+            currentImageConfig?.apiKey ||
+            currentImageConfig?.baseUrl ||
+            currentImageConfig?.isServerConfigured,
+          );
+
+          if (currentImageProvider === 'local-mlx' || !hasConfiguredImageProvider) {
+            state.imageProviderId = 'local-mlx';
+            state.imageModelId = 'z-image-turbo-8bit';
+            state.imageGenerationEnabled = true;
+          }
         }
 
         // Add default media generation toggles if missing
@@ -1056,6 +1106,7 @@ export const useSettingsStore = create<SettingsState>()(
       merge: (persistedState, currentState) => {
         const merged = { ...currentState, ...(persistedState as object) };
         ensureBuiltInProviders(merged as Partial<SettingsState>);
+        ensureBuiltInImageProviders(merged as Partial<SettingsState>);
         return merged as SettingsState;
       },
     },
