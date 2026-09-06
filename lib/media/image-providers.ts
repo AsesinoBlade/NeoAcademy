@@ -9,6 +9,9 @@ import type {
   ImageGenerationResult,
   ImageProviderConfig,
 } from './types';
+
+import { generateWithLocalMlx, testLocalMlxConnectivity } from './adapters/local-mlx-adapter';
+
 import { generateWithSeedream, testSeedreamConnectivity } from './adapters/seedream-adapter';
 import { generateWithQwenImage, testQwenImageConnectivity } from './adapters/qwen-image-adapter';
 import { generateWithNanoBanana, testNanoBananaConnectivity } from './adapters/nano-banana-adapter';
@@ -66,6 +69,14 @@ export const IMAGE_PROVIDERS: Record<ImageProviderId, ImageProviderConfig> = {
     ],
     supportedAspectRatios: ['16:9', '4:3', '1:1'],
   },
+  'local-mlx': {
+    id: 'local-mlx',
+    name: 'Local MLX',
+    requiresApiKey: false,
+    defaultBaseUrl: 'http://127.0.0.1:8001',
+    models: [{ id: 'z-image-turbo-8bit', name: 'Z-Image Turbo 8-bit' }],
+    supportedAspectRatios: ['16:9', '4:3', '1:1', '9:16'],
+  },
 };
 
 export async function testImageConnectivity(
@@ -78,6 +89,8 @@ export async function testImageConnectivity(
       return testQwenImageConnectivity(config);
     case 'nano-banana':
       return testNanoBananaConnectivity(config);
+    case 'local-mlx':
+      return testLocalMlxConnectivity(config);
     default:
       return {
         success: false,
@@ -97,6 +110,8 @@ export async function generateImage(
       return generateWithQwenImage(config, options);
     case 'nano-banana':
       return generateWithNanoBanana(config, options);
+    case 'local-mlx':
+      return generateWithLocalMlx(config, options);
     default:
       throw new Error(`Unsupported image provider: ${config.providerId}`);
   }

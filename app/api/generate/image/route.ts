@@ -16,7 +16,11 @@
  */
 
 import { NextRequest } from 'next/server';
-import { generateImage, aspectRatioToDimensions } from '@/lib/media/image-providers';
+import {
+  IMAGE_PROVIDERS,
+  generateImage,
+  aspectRatioToDimensions,
+} from '@/lib/media/image-providers';
 import { resolveImageApiKey, resolveImageBaseUrl } from '@/lib/server/provider-config';
 import type { ImageProviderId, ImageGenerationOptions } from '@/lib/media/types';
 import { createLogger } from '@/lib/logger';
@@ -25,7 +29,7 @@ import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 
 const log = createLogger('ImageGeneration API');
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   try {
@@ -50,7 +54,13 @@ export async function POST(request: NextRequest) {
     const apiKey = clientBaseUrl
       ? clientApiKey || ''
       : resolveImageApiKey(providerId, clientApiKey);
-    if (!apiKey) {
+    const provider = IMAGE_PROVIDERS[providerId];
+
+    if (!provider) {
+      return apiError('INVALID_REQUEST', 400, `Unsupported image provider: ${providerId}`);
+    }
+
+    if (provider.requiresApiKey && !apiKey) {
       return apiError(
         'MISSING_API_KEY',
         401,
