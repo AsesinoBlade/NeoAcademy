@@ -254,6 +254,8 @@ export interface StatelessChatRequest {
     discussionPrompt?: string;
     /** Which agent should speak first in a discussion */
     triggerAgentId?: string;
+    /** Force a specific agent for this request only. Used for deterministic handoffs. */
+    forcedAgentId?: string;
     /** Full agent configs for generated (non-default) agents that aren't in the server-side registry */
     agentConfigs?: Array<{
       id: string;

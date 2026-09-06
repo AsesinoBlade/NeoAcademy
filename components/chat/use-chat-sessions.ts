@@ -78,6 +78,12 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingSessionIdRef = useRef<string | null>(null);
+
+  // User questions submitted while an AI discussion turn is active.
+  // They are inserted only after the current AI exchange has completed:
+  // non-teacher speaker -> teacher/moderator response -> queued user question.
+  const pendingUserMessagesRef = useRef<UIMessage<ChatMessageMetadata>[]>([]);
+
   const sessionsRef = useRef<ChatSession[]>(sessions);
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -255,18 +261,19 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
               }),
             );
 
-            // Execute the action via ActionEngine (fire-and-forget for visual effects)
-            try {
-              const actionEngine = new ActionEngine(useStageStore);
-              const action = {
-                id: data.actionId,
-                type: data.actionName,
-                ...data.params,
-              } as Action;
-              actionEngine.execute(action);
-            } catch (err) {
+            // Execute the action via ActionEngine.
+            // Live AI action payloads are runtime data, so async failures must
+            // be contained here instead of becoming unhandled rejections.
+            const actionEngine = new ActionEngine(useStageStore);
+            const action = {
+              id: data.actionId,
+              type: data.actionName,
+              ...data.params,
+            } as Action;
+
+            void actionEngine.execute(action).catch((err) => {
               log.warn('[Buffer] Action execution error:', err);
-            }
+            });
           },
 
           onLiveSpeech(text: string | null, agentId: string | null) {
@@ -370,6 +377,20 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         requestTemplate.config.agentConfigs = generatedConfigs;
       }
 
+      const getAgentRole = (agentId: string): string | undefined => {
+        const registered = useAgentRegistry.getState().getAgent(agentId);
+        if (registered?.role) return registered.role;
+
+        const generated = requestTemplate.config.agentConfigs?.find(
+          (agent) => agent.id === agentId,
+        );
+
+        return typeof generated?.role === 'string' ? generated.role : undefined;
+      };
+      const teacherAgentId = requestTemplate.config.agentIds.find(
+        (agentId) => getAgentRole(agentId) === 'teacher',
+      );
+
       const defaultMaxTurns = requestTemplate.config.agentIds.length <= 1 ? 1 : 10;
       const maxTurns = settingsState.maxTurns
         ? parseInt(settingsState.maxTurns, 10) || defaultMaxTurns
@@ -380,7 +401,12 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       let currentMessages = requestTemplate.messages;
       let consecutiveEmptyTurns = 0;
 
-      while (turnCount < maxTurns) {
+      // triggerAgentId is valid only for the original first discussion turn.
+      // forcedAgentId is deliberately consumed by exactly one request.
+      let triggerAgentId = requestTemplate.config.triggerAgentId;
+      let forcedAgentId: string | undefined;
+
+      while (turnCount < maxTurns || forcedAgentId !== undefined) {
         if (controller.signal.aborted) break;
 
         // Reset loop state for this iteration
@@ -397,6 +423,14 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
           whiteboardOpen: useCanvasStore.getState().whiteboardOpen,
         };
 
+        const requestTriggerAgentId = triggerAgentId;
+        const requestForcedAgentId = forcedAgentId;
+
+        // Consume these before awaiting so they cannot accidentally leak into
+        // a later iteration of the frontend agent loop.
+        triggerAgentId = undefined;
+        forcedAgentId = undefined;
+
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -404,6 +438,11 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             ...requestTemplate,
             messages: currentMessages,
             storeState: freshStoreState,
+            config: {
+              ...requestTemplate.config,
+              triggerAgentId: requestTriggerAgentId,
+              forcedAgentId: requestForcedAgentId,
+            },
             directorState,
           }),
           signal: controller.signal,
@@ -442,6 +481,65 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         directorState = doneData.directorState;
         turnCount = directorState?.turnCount ?? turnCount + 1;
 
+        // Refresh messages immediately after the completed agent turn.
+        const currentSession = sessionsRef.current.find((s) => s.id === sessionId);
+        if (currentSession) {
+          currentMessages = currentSession.messages;
+        }
+
+        // A user may have submitted a question while this AI turn was active.
+        // Do not interrupt the AI. Complete the current exchange first:
+        //
+        //   role-player finishes -> moderator responds -> queued user question
+        //
+        // Only after the moderator response do we expose the queued user
+        // question to the director.
+        if (pendingUserMessagesRef.current.length > 0) {
+          const responses = directorState?.agentResponses ?? [];
+          const lastResponse = responses.length > 0 ? responses[responses.length - 1] : undefined;
+          const lastAgentId = lastResponse?.agentId;
+          const lastAgentRole = lastAgentId ? getAgentRole(lastAgentId) : undefined;
+
+          if (lastAgentRole !== 'teacher' && teacherAgentId) {
+            log.info(
+              `[AgentLoop] User question queued; forcing moderator "${teacherAgentId}" before user turn`,
+            );
+            forcedAgentId = teacherAgentId;
+            continue;
+          }
+
+          const queuedUserMessage = pendingUserMessagesRef.current.shift();
+
+          if (queuedUserMessage) {
+            log.info('[AgentLoop] Moderator exchange complete; inserting queued user question');
+
+            currentMessages = [...currentMessages, queuedUserMessage];
+
+            setSessions((prev) =>
+              prev.map((session) =>
+                session.id === sessionId
+                  ? {
+                      ...session,
+                      messages: [...session.messages, queuedUserMessage],
+                      status: 'active' as SessionStatus,
+                      updatedAt: Date.now(),
+                    }
+                  : session,
+              ),
+            );
+
+            // A user message begins a fresh conversational decision cycle.
+            // Keep the same session/history, but do not reuse the old director
+            // turn count or the original discussion trigger agent.
+            directorState = undefined;
+            turnCount = 0;
+            consecutiveEmptyTurns = 0;
+            loopDoneDataRef.current = null;
+
+            continue;
+          }
+        }
+
         // Check outcome
         if (doneData.cueUserReceived) {
           // Director said USER — stop loop, wait for user input
@@ -466,11 +564,6 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         }
 
         // Agent spoke — continue loop if under maxTurns
-        // Refresh messages from latest session state for next iteration
-        const currentSession = sessionsRef.current.find((s) => s.id === sessionId);
-        if (currentSession) {
-          currentMessages = currentSession.messages;
-        }
       }
 
       // Handle loop completion
@@ -550,6 +643,10 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
 
       // Only abort if this session owns the active stream
       if (wasStreaming) {
+        console.warn('[ChatSessions] ABORT from endSession', {
+          sessionId,
+          streamingSessionId: streamingSessionIdRef.current,
+        });
         abortControllerRef.current!.abort();
         abortControllerRef.current = null;
         streamingSessionIdRef.current = null;
@@ -658,6 +755,10 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
 
     // Abort SSE stream
     if (wasStreaming) {
+      console.warn('[ChatSessions] ABORT from endSession', {
+        sessionId,
+        streamingSessionId: streamingSessionIdRef.current,
+      });
       abortControllerRef.current!.abort();
       abortControllerRef.current = null;
       streamingSessionIdRef.current = null;
@@ -840,42 +941,6 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     async (content: string): Promise<void> => {
       let sessionId = activeSessionId;
 
-      // Interrupt active generation: abort stream and append "..." to the last agent message
-      if (isStreaming && abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-
-        if (sessionId) {
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== sessionId) return s;
-              const messages = [...s.messages];
-              for (let i = messages.length - 1; i >= 0; i--) {
-                if (messages[i].role === 'assistant') {
-                  const parts = [...messages[i].parts];
-                  for (let j = parts.length - 1; j >= 0; j--) {
-                    if (parts[j].type === 'text') {
-                      const textPart = parts[j] as {
-                        type: 'text';
-                        text: string;
-                      };
-                      parts[j] = {
-                        type: 'text',
-                        text: (textPart.text || '') + '...',
-                      } as UIMessage<ChatMessageMetadata>['parts'][number];
-                      messages[i] = { ...messages[i], parts };
-                      return { ...s, messages, updatedAt: Date.now() };
-                    }
-                  }
-                  break;
-                }
-              }
-              return s;
-            }),
-          );
-        }
-      }
-
       // Validate model configuration before sending
       const modelConfig = getCurrentModelConfig();
       if (!modelConfig.modelId) {
@@ -886,6 +951,37 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         toast.error(t('settings.setupNeeded'), {
           description: t('settings.apiKeyDesc'),
         });
+        return;
+      }
+
+      const now = Date.now();
+      const userMessageId = `user-${now}`;
+
+      const userMessage: UIMessage<ChatMessageMetadata> = {
+        id: userMessageId,
+        role: 'user',
+        parts: [{ type: 'text', text: content }],
+        metadata: {
+          senderName: t('common.you'),
+          senderAvatar: USER_AVATAR,
+          originalRole: 'user',
+          createdAt: now,
+        },
+      };
+
+      const currentlyStreamingSession = sessionsRef.current.find((s) => s.id === sessionId);
+      const shouldQueue =
+        !!sessionId &&
+        !!abortControllerRef.current &&
+        streamingSessionIdRef.current === sessionId &&
+        (currentlyStreamingSession?.type === 'qa' ||
+          currentlyStreamingSession?.type === 'discussion');
+
+      if (shouldQueue) {
+        pendingUserMessagesRef.current.push(userMessage);
+        log.info(
+          `[ChatArea] Queued user message while AI exchange is active: "${content.slice(0, 50)}..."`,
+        );
         return;
       }
 
@@ -911,25 +1007,10 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       streamingSessionIdRef.current = sessionId;
       setIsStreaming(true);
 
-      const now = Date.now();
-      const userMessageId = `user-${now}`;
-
       // Read all selected agent IDs from settings store
       const settingsState = useSettingsStore.getState();
       const agentIds: string[] =
         settingsState.selectedAgentIds?.length > 0 ? settingsState.selectedAgentIds : ['default-1'];
-
-      const userMessage: UIMessage<ChatMessageMetadata> = {
-        id: userMessageId,
-        role: 'user',
-        parts: [{ type: 'text', text: content }],
-        metadata: {
-          senderName: t('common.you'),
-          senderAvatar: USER_AVATAR,
-          originalRole: 'user',
-          createdAt: now,
-        },
-      };
 
       // Read current session data from ref (avoids stale closure AND keeps updater pure)
       const existingSession = sessionsRef.current.find((s) => s.id === sessionId);
@@ -1057,7 +1138,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         }
       }
     },
-    [activeSessionId, isStreaming, createSession, endSession, runAgentLoop, t],
+    [activeSessionId, createSession, endSession, runAgentLoop, t],
   );
 
   /**

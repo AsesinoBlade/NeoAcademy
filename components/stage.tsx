@@ -234,6 +234,13 @@ export function Stage({
     // End any active QA/discussion session — this synchronously aborts the SSE
     // stream inside use-chat-sessions (abortControllerRef.abort()), preventing
     // stale onLiveSpeech callbacks from leaking into the new scene.
+    console.warn(
+      '[Stage] scene effect fired',
+      'currentSceneId=',
+      currentSceneId,
+      'sceneObjectId=',
+      currentScene?.id,
+    );
     chatAreaRef.current?.endActiveSession();
 
     // Also abort the engine-level discussion controller
@@ -321,6 +328,14 @@ export function Stage({
         setDiscussionTrigger(null);
       },
       onDiscussionConfirmed: (topic, prompt, agentId) => {
+        console.warn('[Stage] onDiscussionConfirmed', {
+          topic,
+          prompt,
+          agentId,
+          currentSceneId: useStageStore.getState().currentSceneId,
+          time: new Date().toISOString(),
+        });
+
         // Start SSE discussion via ChatArea
         handleDiscussionSSE(topic, prompt, agentId);
       },
@@ -771,10 +786,7 @@ export function Stage({
               // Include 'paused' because onInputActivate pauses the engine before
               // the user finishes typing — without this the interrupt position
               // would never be saved and resuming after QA skips to the next sentence.
-              if (
-                engineRef.current &&
-                (engineMode === 'playing' || engineMode === 'live' || engineMode === 'paused')
-              ) {
+              if (engineRef.current && (engineMode === 'playing' || engineMode === 'paused')) {
                 engineRef.current.handleUserInterrupt(msg);
               } else {
                 chatAreaRef.current?.sendMessage(msg);
@@ -799,13 +811,10 @@ export function Stage({
               engineRef.current?.skipDiscussion();
             }}
             onStopDiscussion={handleStopDiscussion}
-            onInputActivate={async () => {
-              // Soft-pause QA/Discussion if streaming (opening input = implicit pause)
-              if (chatIsStreaming) {
-                await doSoftPause();
-              }
-              // Also pause playback engine
-              if (engineRef.current && (engineMode === 'playing' || engineMode === 'live')) {
+            onInputActivate={() => {
+              // Opening the input must not interrupt a live AI discussion.
+              // Pause only prerecorded lecture playback while the user types.
+              if (engineRef.current && engineMode === 'playing') {
                 engineRef.current.pause();
               }
             }}

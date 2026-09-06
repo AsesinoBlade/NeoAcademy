@@ -80,6 +80,17 @@ export class ActionEngine {
    * Synchronous actions return a Promise that resolves when the action is complete.
    */
   async execute(action: Action): Promise<void> {
+    // Runtime validation for AI-generated whiteboard text actions.
+    // TypeScript types do not protect us from malformed data arriving over SSE.
+    if (action.type === 'wb_draw_text') {
+      const content = (action as Partial<WbDrawTextAction>).content;
+
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        log.warn('Skipping malformed wb_draw_text action: missing or empty content', action);
+        return;
+      }
+    }
+
     // Auto-open whiteboard if a draw/clear/delete action is attempted while it's closed
     if (action.type.startsWith('wb_') && action.type !== 'wb_open' && action.type !== 'wb_close') {
       await this.ensureWhiteboardOpen();
@@ -280,6 +291,11 @@ export class ActionEngine {
   }
 
   private async executeWbDrawText(action: WbDrawTextAction): Promise<void> {
+    if (typeof action.content !== 'string' || action.content.trim().length === 0) {
+      log.warn('Skipping malformed wb_draw_text action: missing or empty content', action);
+      return;
+    }
+
     const wb = this.stageAPI.whiteboard.get();
     if (!wb.success || !wb.data) return;
 

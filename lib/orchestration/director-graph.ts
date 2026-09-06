@@ -56,6 +56,7 @@ const OrchestratorState = Annotation.Root({
   thinkingConfig: Annotation<ThinkingConfig | null>,
   discussionContext: Annotation<{ topic: string; prompt?: string } | null>,
   triggerAgentId: Annotation<string | null>,
+  forcedAgentId: Annotation<string | null>,
   userProfile: Annotation<{ nickname?: string; bio?: string } | null>,
   /** Request-scoped agent configs for generated agents (not in the default registry) */
   agentConfigOverrides: Annotation<Record<string, AgentConfig>>,
@@ -117,6 +118,28 @@ async function directorNode(
   if (state.turnCount >= state.maxTurns) {
     log.info(`[Director] Turn limit reached (${state.turnCount}/${state.maxTurns}), ending`);
     return { shouldEnd: true };
+  }
+
+  // ── Explicit one-turn handoff ──
+  // Used by the client when a queued user question must wait until the
+  // moderator has answered the current role-player first.
+  if (state.forcedAgentId) {
+    const forcedId = state.forcedAgentId;
+
+    if (state.availableAgentIds.includes(forcedId)) {
+      log.info(`[Director] Forced handoff: dispatching "${forcedId}"`);
+      write({
+        type: 'thinking',
+        data: { stage: 'agent_loading', agentId: forcedId },
+      });
+
+      return {
+        currentAgentId: forcedId,
+        shouldEnd: false,
+      };
+    }
+
+    log.warn(`[Director] Forced agent "${forcedId}" not in available agents, falling through`);
   }
 
   // ── Single agent: code-only director ──
@@ -537,6 +560,7 @@ export function buildInitialState(
     thinkingConfig: thinkingConfig ?? null,
     discussionContext,
     triggerAgentId: request.config.triggerAgentId || null,
+    forcedAgentId: request.config.forcedAgentId || null,
     userProfile: request.userProfile || null,
     agentConfigOverrides,
     currentAgentId: null,
