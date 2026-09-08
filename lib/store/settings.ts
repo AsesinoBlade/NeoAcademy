@@ -397,7 +397,7 @@ const migrateFromOldStorage = () => {
 
   // Parse model selection
   let providerId: ProviderId = 'openai';
-  let modelId = 'qwen3.8:27b-mlx';
+  let modelId = '';
   if (oldLlmModel) {
     const [pid, mid] = oldLlmModel.split(':');
     if (pid && mid) {
@@ -460,7 +460,7 @@ export const useSettingsStore = create<SettingsState>()(
       return {
         // Initial state (use migrated data if available)
         providerId: migratedData?.providerId || 'openai',
-        modelId: migratedData?.modelId || 'qwen3.8:27b-mlx',
+        modelId: migratedData?.modelId || '',
         providersConfig: migratedData?.providersConfig || getDefaultProvidersConfig(),
         ttsModel: migratedData?.ttsModel || 'openai-tts',
         selectedAgentIds: migratedData?.selectedAgentIds || ['default-1', 'default-2', 'default-3'],
@@ -661,6 +661,7 @@ export const useSettingsStore = create<SettingsState>()(
             const res = await fetch('/api/server-providers');
             if (!res.ok) return;
             const data = (await res.json()) as {
+              defaultModel?: string;
               providers: Record<string, { models?: string[]; baseUrl?: string }>;
               tts: Record<string, { baseUrl?: string }>;
               asr: Record<string, { baseUrl?: string }>;
@@ -909,17 +910,29 @@ export const useSettingsStore = create<SettingsState>()(
                 }
               }
 
-              // LLM auto-select: when modelId is empty
+              // LLM selection: DEFAULT_MODEL from the server is authoritative.
+              // This allows the local model to be changed entirely through .env.local.
               let autoProviderId: ProviderId | undefined;
               let autoModelId: string | undefined;
-              if (!state.modelId) {
+
+              if (data.defaultModel) {
+                const colonIndex = data.defaultModel.indexOf(':');
+
+                if (colonIndex > 0) {
+                  autoProviderId = data.defaultModel.slice(0, colonIndex) as ProviderId;
+                  autoModelId = data.defaultModel.slice(colonIndex + 1);
+                } else {
+                  autoProviderId = 'openai';
+                  autoModelId = data.defaultModel;
+                }
+              } else if (!state.modelId) {
                 for (const [pid, cfg] of Object.entries(newProvidersConfig)) {
                   if (cfg.isServerConfigured) {
-                    // Prefer server-restricted models, fall back to built-in list
                     const serverModels = cfg.serverModels;
                     const modelId = serverModels?.length
                       ? serverModels[0]
                       : PROVIDERS[pid as ProviderId]?.models[0]?.id;
+
                     if (modelId) {
                       autoProviderId = pid as ProviderId;
                       autoModelId = modelId;

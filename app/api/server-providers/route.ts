@@ -15,6 +15,7 @@ const log = createLogger('ServerProviders');
 export async function GET() {
   try {
     return apiSuccess({
+      defaultModel: process.env.DEFAULT_MODEL || '',
       providers: getServerProviders(),
       tts: getServerTTSProviders(),
       asr: getServerASRProviders(),
