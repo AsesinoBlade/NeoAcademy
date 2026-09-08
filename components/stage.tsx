@@ -220,6 +220,21 @@ export function Stage({
     setDiscussionTrigger(null);
   }, [resetLiveState]);
 
+  const unloadLocalLlm = useCallback(() => {
+    void fetch('/api/unload-local-llm', {
+      method: 'POST',
+    }).catch((error) => {
+      console.warn('[Stage] Failed to unload local LLM:', error);
+    });
+  }, []);
+
+  // The classroom begins with prerecorded lecture content, so the LLM is not
+  // needed until the student asks a live question. Release any model left
+  // resident after class pre-generation.
+  useEffect(() => {
+    unloadLocalLlm();
+  }, [unloadLocalLlm]);
+
   /**
    * Unified session cleanup — called by both roundtable stop button and chat area end button.
    * Handles: engine transition, flash, roundtable state clearing.
@@ -251,7 +266,10 @@ export function Stage({
     }
 
     resetLiveState();
-  }, [chatSessionType, resetLiveState]);
+    // The prerecorded lecture no longer needs the LLM.
+    // Free Ollama's unified memory until another live question reloads it.
+    unloadLocalLlm();
+  }, [chatSessionType, resetLiveState, unloadLocalLlm]);
 
   // Shared stop-discussion handler (used by both Roundtable and Canvas toolbar)
   const handleStopDiscussion = useCallback(async () => {
