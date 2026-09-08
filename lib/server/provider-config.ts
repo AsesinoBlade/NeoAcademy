@@ -71,6 +71,7 @@ const IMAGE_ENV_MAP: Record<string, string> = {
   IMAGE_SEEDREAM: 'seedream',
   IMAGE_QWEN_IMAGE: 'qwen-image',
   IMAGE_NANO_BANANA: 'nano-banana',
+  IMAGE_LOCAL_MLX: 'local-mlx',
 };
 
 const VIDEO_ENV_MAP: Record<string, string> = {
@@ -125,9 +126,9 @@ function loadEnvSection(
   // First, add everything from YAML as defaults
   if (yamlSection) {
     for (const [id, entry] of Object.entries(yamlSection)) {
-      if (entry?.apiKey) {
+      if (entry && (entry.apiKey || entry.baseUrl || entry.models?.length || entry.proxy)) {
         result[id] = {
-          apiKey: entry.apiKey,
+          apiKey: entry.apiKey || '',
           baseUrl: entry.baseUrl,
           models: entry.models,
           proxy: entry.proxy,
@@ -156,9 +157,11 @@ function loadEnvSection(
       continue;
     }
 
-    if (!envApiKey) continue;
+    // Keyless local providers are valid when a base URL or model list is supplied.
+    if (!envApiKey && !envBaseUrl && !envModels?.length) continue;
+
     result[providerId] = {
-      apiKey: envApiKey,
+      apiKey: envApiKey || '',
       baseUrl: envBaseUrl,
       models: envModels,
     };
@@ -325,12 +328,16 @@ export function resolvePDFBaseUrl(providerId: string, clientBaseUrl?: string): s
 // Public API — Image Generation
 // ---------------------------------------------------------------------------
 
-export function getServerImageProviders(): Record<string, Record<string, never>> {
+export function getServerImageProviders(): Record<string, { models?: string[]; baseUrl?: string }> {
   const cfg = getConfig();
-  const result: Record<string, Record<string, never>> = {};
-  for (const id of Object.keys(cfg.image)) {
+  const result: Record<string, { models?: string[]; baseUrl?: string }> = {};
+
+  for (const [id, entry] of Object.entries(cfg.image)) {
     result[id] = {};
+    if (entry.models && entry.models.length > 0) result[id].models = entry.models;
+    if (entry.baseUrl) result[id].baseUrl = entry.baseUrl;
   }
+
   return result;
 }
 

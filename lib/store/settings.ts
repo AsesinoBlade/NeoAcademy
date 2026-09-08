@@ -285,7 +285,7 @@ const getDefaultPDFConfig = () => ({
 // Initialize default Image config
 const getDefaultImageConfig = () => ({
   imageProviderId: 'local-mlx' as ImageProviderId,
-  imageModelId: 'z-image-turbo-8bit',
+  imageModelId: '',
   imageProvidersConfig: {
     seedream: { apiKey: '', baseUrl: '', enabled: false },
     'qwen-image': { apiKey: '', baseUrl: '', enabled: false },
@@ -662,11 +662,12 @@ export const useSettingsStore = create<SettingsState>()(
             if (!res.ok) return;
             const data = (await res.json()) as {
               defaultModel?: string;
+              defaultImageModel?: string;
               providers: Record<string, { models?: string[]; baseUrl?: string }>;
               tts: Record<string, { baseUrl?: string }>;
               asr: Record<string, { baseUrl?: string }>;
               pdf: Record<string, { baseUrl?: string }>;
-              image: Record<string, { baseUrl?: string }>;
+              image: Record<string, { models?: string[]; baseUrl?: string }>;
               video: Record<string, { baseUrl?: string }>;
               webSearch: Record<string, { baseUrl?: string }>;
             };
@@ -788,11 +789,27 @@ export const useSettingsStore = create<SettingsState>()(
               }
               for (const [pid, info] of Object.entries(data.image)) {
                 const key = pid as ImageProviderId;
+
                 if (newImageConfig[key]) {
+                  const builtInModelIds = new Set(
+                    (IMAGE_PROVIDERS[key]?.models || []).map((m) => m.id),
+                  );
+
+                  const existingCustomModels = newImageConfig[key].customModels || [];
+                  const existingCustomIds = new Set(existingCustomModels.map((m) => m.id));
+
+                  const serverCustomModels = (info.models || [])
+                    .filter((id) => !builtInModelIds.has(id) && !existingCustomIds.has(id))
+                    .map((id) => ({
+                      id,
+                      name: id,
+                    }));
+
                   newImageConfig[key] = {
                     ...newImageConfig[key],
                     isServerConfigured: true,
                     serverBaseUrl: info.baseUrl,
+                    customModels: [...existingCustomModels, ...serverCustomModels],
                   };
                 }
               }
@@ -881,15 +898,34 @@ export const useSettingsStore = create<SettingsState>()(
                   autoAsrProvider = serverAsrIds[0];
                 }
 
-                // Image: first server provider
+                // Image selection: DEFAULT_IMAGE_MODEL from the server is authoritative.
                 const serverImageIds = Object.keys(data.image) as ImageProviderId[];
-                if (
+
+                if (data.defaultImageModel) {
+                  const colonIndex = data.defaultImageModel.indexOf(':');
+
+                  if (colonIndex > 0) {
+                    autoImageProvider = data.defaultImageModel.slice(
+                      0,
+                      colonIndex,
+                    ) as ImageProviderId;
+                    autoImageModel = data.defaultImageModel.slice(colonIndex + 1);
+                  } else {
+                    autoImageProvider = 'local-mlx';
+                    autoImageModel = data.defaultImageModel;
+                  }
+                } else if (
                   serverImageIds.length > 0 &&
                   !newImageConfig[state.imageProviderId]?.isServerConfigured
                 ) {
                   autoImageProvider = serverImageIds[0];
-                  const models = IMAGE_PROVIDERS[autoImageProvider]?.models;
-                  if (models?.length) autoImageModel = models[0].id;
+
+                  const serverModels = data.image[autoImageProvider]?.models;
+                  const models = serverModels?.length
+                    ? serverModels
+                    : IMAGE_PROVIDERS[autoImageProvider]?.models.map((m) => m.id);
+
+                  if (models?.length) autoImageModel = models[0];
                 }
                 if (serverImageIds.length > 0 && !state.imageGenerationEnabled) {
                   autoImageEnabled = true;

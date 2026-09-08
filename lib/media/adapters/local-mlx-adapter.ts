@@ -11,7 +11,7 @@ import type {
 } from '../types';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8001';
-const DEFAULT_MODEL = 'z-image-turbo-8bit';
+const DEFAULT_MODEL = '';
 
 interface VmlxImageResponse {
   data?: Array<{
@@ -32,6 +32,10 @@ export async function testLocalMlxConnectivity(
 ): Promise<{ success: boolean; message: string }> {
   const baseUrl = config.baseUrl || DEFAULT_BASE_URL;
   const model = config.model || DEFAULT_MODEL;
+
+  if (!model) {
+    throw new Error('Local MLX image model is not configured');
+  }
 
   try {
     const response = await fetch(`${baseUrl}/v1/models`);
@@ -82,6 +86,9 @@ export async function generateWithLocalMlx(
   const baseUrl = config.baseUrl || DEFAULT_BASE_URL;
   const model = config.model || DEFAULT_MODEL;
 
+  if (!model) {
+    throw new Error('Local MLX image model is not configured');
+  }
   const width = options.width || 1024;
   const height = options.height || 1024;
 

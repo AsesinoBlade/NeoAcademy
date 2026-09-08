@@ -16,6 +16,7 @@ export async function GET() {
   try {
     return apiSuccess({
       defaultModel: process.env.DEFAULT_MODEL || '',
+      defaultImageModel: process.env.DEFAULT_IMAGE_MODEL || '',
       providers: getServerProviders(),
       tts: getServerTTSProviders(),
       asr: getServerASRProviders(),
