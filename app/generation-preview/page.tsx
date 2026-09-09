@@ -27,6 +27,7 @@ import type { Stage } from '@/lib/types/stage';
 import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
 import { AgentRevealModal } from '@/components/agent/agent-reveal-modal';
 import { createLogger } from '@/lib/logger';
+import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import { StepVisualizer } from './components/visualizers';
 
@@ -737,6 +738,79 @@ function GenerationPreviewContent() {
         throw new Error(
           `Full class generation did not complete: ${finalState.scenes.length}/${outlines.length} scenes generated`,
         );
+      }
+
+      // All LLM-dependent class generation is complete. Release the local
+      // Ollama model before starting heavy media generation.
+      try {
+        const unloadResponse = await fetch('/api/unload-local-llm', {
+          method: 'POST',
+          signal,
+        });
+
+        if (!unloadResponse.ok) {
+          log.warn('[Generation] Local LLM unload returned status', unloadResponse.status);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw err;
+        }
+        log.warn('[Generation] Failed to unload local LLM before media generation:', err);
+      }
+
+      // Media is a separate phase. Do not generate images/videos while the
+      // LLM is still generating scenes, actions, or lecture content.
+      // Generate images as their own heavyweight phase.
+      const hasImageRequests = outlines.some((outline) =>
+        outline.mediaGenerations?.some((request) => request.type === 'image'),
+      );
+
+      if (settings.imageGenerationEnabled && hasImageRequests) {
+        const isLocalMlx = settings.imageProviderId === 'local-mlx';
+
+        if (isLocalMlx) {
+          const startResponse = await fetch('/api/local-vmlx', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start' }),
+            signal,
+          });
+
+          const startData = await startResponse.json();
+
+          if (!startResponse.ok || !startData.success) {
+            throw new Error(startData.error || 'Failed to start local vMLX image service');
+          }
+        }
+
+        try {
+          await generateMediaForOutlines(outlines, stage.id, signal, 'image');
+        } finally {
+          if (isLocalMlx) {
+            try {
+              const stopResponse = await fetch('/api/local-vmlx', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'stop' }),
+              });
+
+              if (!stopResponse.ok) {
+                log.warn('[Generation] Failed to stop local vMLX image service');
+              }
+            } catch (err) {
+              log.warn('[Generation] Failed to stop local vMLX image service:', err);
+            }
+          }
+        }
+      }
+
+      // Videos are a separate phase and must not run while vMLX is resident.
+      const hasVideoRequests = outlines.some((outline) =>
+        outline.mediaGenerations?.some((request) => request.type === 'video'),
+      );
+
+      if (settings.videoGenerationEnabled && hasVideoRequests) {
+        await generateMediaForOutlines(outlines, stage.id, signal, 'video');
       }
 
       // Everything is complete. Persist the full class before navigating.

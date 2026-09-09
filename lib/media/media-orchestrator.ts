@@ -32,6 +32,7 @@ export async function generateMediaForOutlines(
   outlines: SceneOutline[],
   stageId: string,
   abortSignal?: AbortSignal,
+  mediaType?: 'image' | 'video',
 ): Promise<void> {
   const settings = useSettingsStore.getState();
   const store = useMediaGenerationStore.getState();
@@ -41,6 +42,10 @@ export async function generateMediaForOutlines(
   for (const outline of outlines) {
     if (!outline.mediaGenerations) continue;
     for (const mg of outline.mediaGenerations) {
+      // Optional phase filter — allows images and videos to run under
+      // different heavyweight local model lifecycles.
+      if (mediaType && mg.type !== mediaType) continue;
+
       // Filter by enabled flags
       if (mg.type === 'image' && !settings.imageGenerationEnabled) continue;
       if (mg.type === 'video' && !settings.videoGenerationEnabled) continue;

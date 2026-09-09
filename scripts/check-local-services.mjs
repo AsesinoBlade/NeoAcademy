@@ -1,7 +1,5 @@
 import net from 'node:net';
 
-const LOCAL_MLX_MODEL = 'z-image-turbo-8bit';
-
 const services = [
   {
     name: 'Ollama',
@@ -21,13 +19,6 @@ const services = [
     port: 8881,
     hint: 'Start Docker Desktop first, then restart NeoAcademy.',
   },
-  {
-    name: 'Local MLX',
-    host: '127.0.0.1',
-    port: 8001,
-    hint: 'Open a separate Terminal window and run: vmlx serve "$HOME/.mlxstudio/models/image/z-image-turbo-8bit" --port 8001\n  Then restart NeoAcademy.',
-    verify: verifyLocalMlx,
-  },
 ];
 
 function checkPort({ host, port }, timeout = 1500) {
@@ -45,48 +36,6 @@ function checkPort({ host, port }, timeout = 1500) {
     socket.once('error', () => finish(false));
     socket.connect(port, host);
   });
-}
-
-async function verifyLocalMlx() {
-  try {
-    const response = await fetch('http://127.0.0.1:8001/v1/models', {
-      signal: AbortSignal.timeout(3000),
-    });
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        detail: `/v1/models returned HTTP ${response.status}`,
-      };
-    }
-
-    const data = await response.json();
-    const models = Array.isArray(data?.data) ? data.data : [];
-    const modelFound = models.some((model) => model?.id === LOCAL_MLX_MODEL);
-
-    if (!modelFound) {
-      const available = models
-        .map((model) => model?.id)
-        .filter(Boolean)
-        .join(', ');
-
-      return {
-        ok: false,
-        detail: `Expected model "${LOCAL_MLX_MODEL}" was not found. Available: ${
-          available || 'none'
-        }`,
-      };
-    }
-
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      detail: `Unable to query /v1/models: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
 }
 
 console.log('\nNeoAcademy local-service preflight\n');
