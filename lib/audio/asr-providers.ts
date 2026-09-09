@@ -212,9 +212,18 @@ async function transcribeOpenAIWhisper(
     throw new Error('Invalid audio buffer type');
   }
 
+  // The local faster-whisper server uses actual Whisper model IDs rather than
+  // OpenAI's gpt-4o-mini-transcribe model name.
+  const isLocalWhisper =
+    config.baseUrl?.includes('127.0.0.1:8881') || config.baseUrl?.includes('localhost:8881');
+
+  const transcriptionModel = isLocalWhisper
+    ? 'Systran/faster-whisper-small'
+    : 'gpt-4o-mini-transcribe';
+
   try {
     const result = await transcribe({
-      model: openai.transcription('gpt-4o-mini-transcribe'),
+      model: openai.transcription(transcriptionModel),
       audio: audioData,
       providerOptions: {
         openai: {

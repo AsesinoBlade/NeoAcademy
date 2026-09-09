@@ -3,6 +3,20 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('AudioRecorder');
 
+async function ensureLocalSpeechServices(): Promise<void> {
+  const response = await fetch('/api/local-speech-services', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'start' }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || 'Failed to start local speech services');
+  }
+}
+
 // TypeScript declarations for Web Speech API
 declare global {
   interface Window {
@@ -58,6 +72,10 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
             formData.append('baseUrl', providerConfig.baseUrl);
           }
         }
+
+        // Server-side ASR depends on the local Whisper container. This is
+        // idempotent and also recovers if Docker was stopped after classroom load.
+        await ensureLocalSpeechServices();
 
         const response = await fetch('/api/transcription', {
           method: 'POST',

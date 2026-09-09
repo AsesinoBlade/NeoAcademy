@@ -133,6 +133,10 @@ export function Stage({
   const liveTtsAudioPlayerRef = useRef(createAudioPlayer());
   const liveTtsPlaybackTailRef = useRef<Promise<void>>(Promise.resolve());
 
+  // Shared classroom speech-service startup. Live TTS waits on this same promise,
+  // preventing questions asked immediately after classroom load from racing Docker.
+  const speechServicesReadyRef = useRef<Promise<void> | null>(null);
+
   // Incrementing this invalidates previously queued/generated live-TTS chunks.
   const liveTtsEpochRef = useRef(0);
 
@@ -220,6 +224,30 @@ export function Stage({
     setDiscussionTrigger(null);
   }, [resetLiveState]);
 
+  const ensureLocalSpeechServices = useCallback(() => {
+    if (!speechServicesReadyRef.current) {
+      speechServicesReadyRef.current = fetch('/api/local-speech-services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start' }),
+      })
+        .then(async (response) => {
+          const data = await response.json();
+
+          if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Failed to start local speech services');
+          }
+        })
+        .catch((error) => {
+          // Allow a later interaction to retry if startup failed.
+          speechServicesReadyRef.current = null;
+          throw error;
+        });
+    }
+
+    return speechServicesReadyRef.current;
+  }, []);
+
   const unloadLocalLlm = useCallback(() => {
     void fetch('/api/unload-local-llm', {
       method: 'POST',
@@ -233,7 +261,11 @@ export function Stage({
   // resident after class pre-generation.
   useEffect(() => {
     unloadLocalLlm();
-  }, [unloadLocalLlm]);
+
+    void ensureLocalSpeechServices().catch((error) => {
+      console.warn('[Stage] Failed to start local speech services:', error);
+    });
+  }, [unloadLocalLlm, ensureLocalSpeechServices]);
 
   /**
    * Unified session cleanup — called by both roundtable stop button and chat area end button.
@@ -633,6 +665,21 @@ export function Stage({
     setPendingSceneId(null);
   }, []);
 
+  const handleVoiceActivate = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    // Voice input must silence prerecorded lecture audio so Whisper hears
+    // the student rather than the teacher.
+    if (engine.getMode() === 'playing') {
+      engine.pause();
+
+      if (lectureSessionIdRef.current) {
+        chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
+      }
+    }
+  }, []);
+
   // play/pause toggle
   const handlePlayPause = async () => {
     const engine = engineRef.current;
@@ -875,6 +922,7 @@ export function Stage({
               // interrupt prerecorded lecture playback or a live discussion.
               // Actual interruption happens only when the user submits.
             }}
+            onVoiceActivate={handleVoiceActivate}
             onSoftPause={doSoftPause}
             onResumeTopic={doResumeTopic}
             onPlayPause={handlePlayPause}
@@ -922,9 +970,11 @@ export function Stage({
           const speechEpoch = sceneEpochRef.current;
           const ttsEpoch = liveTtsEpochRef.current;
 
-          // Begin generation immediately. Later chunks can generate while an
-          // earlier sentence is still being spoken.
-          const generation = generateAndStoreTTS(audioId, text, undefined, speakingAgent?.voiceId)
+          // Begin generation as soon as the shared classroom speech-service
+          // startup is ready. Later chunks can still generate while an earlier
+          // sentence is being spoken.
+          const generation = ensureLocalSpeechServices()
+            .then(() => generateAndStoreTTS(audioId, text, undefined, speakingAgent?.voiceId))
             .then(() => true)
             .catch((err) => {
               console.warn('[Stage] Live TTS generation failed', err);

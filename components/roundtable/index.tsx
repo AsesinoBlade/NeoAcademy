@@ -58,6 +58,7 @@ interface RoundtableProps {
   readonly onDiscussionSkip?: () => void;
   readonly onStopDiscussion?: () => void;
   readonly onInputActivate?: () => void;
+  readonly onVoiceActivate?: () => void;
   readonly onSoftPause?: () => void;
   readonly onResumeTopic?: () => void;
   readonly onPlayPause?: () => void;
@@ -118,6 +119,7 @@ export function Roundtable({
   onDiscussionSkip,
   onStopDiscussion,
   onInputActivate,
+  onVoiceActivate,
   onSoftPause,
   onResumeTopic,
   onPlayPause,
@@ -301,7 +303,7 @@ export function Roundtable({
       setIsVoiceOpen(false);
     } else {
       if (isSendCooldown) return;
-      onInputActivate?.();
+      onVoiceActivate?.();
       setIsVoiceOpen(true);
       setIsInputOpen(false);
       startRecording();

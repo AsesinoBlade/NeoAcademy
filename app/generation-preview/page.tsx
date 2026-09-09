@@ -759,58 +759,108 @@ function GenerationPreviewContent() {
       }
 
       // Media is a separate phase. Do not generate images/videos while the
-      // LLM is still generating scenes, actions, or lecture content.
-      // Generate images as their own heavyweight phase.
+      // LLM, Kokoro, or Whisper services are consuming memory.
       const hasImageRequests = outlines.some((outline) =>
         outline.mediaGenerations?.some((request) => request.type === 'image'),
       );
 
-      if (settings.imageGenerationEnabled && hasImageRequests) {
-        const isLocalMlx = settings.imageProviderId === 'local-mlx';
-
-        if (isLocalMlx) {
-          const startResponse = await fetch('/api/local-vmlx', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'start' }),
-            signal,
-          });
-
-          const startData = await startResponse.json();
-
-          if (!startResponse.ok || !startData.success) {
-            throw new Error(startData.error || 'Failed to start local vMLX image service');
-          }
-        }
-
-        try {
-          await generateMediaForOutlines(outlines, stage.id, signal, 'image');
-        } finally {
-          if (isLocalMlx) {
-            try {
-              const stopResponse = await fetch('/api/local-vmlx', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'stop' }),
-              });
-
-              if (!stopResponse.ok) {
-                log.warn('[Generation] Failed to stop local vMLX image service');
-              }
-            } catch (err) {
-              log.warn('[Generation] Failed to stop local vMLX image service:', err);
-            }
-          }
-        }
-      }
-
-      // Videos are a separate phase and must not run while vMLX is resident.
       const hasVideoRequests = outlines.some((outline) =>
         outline.mediaGenerations?.some((request) => request.type === 'video'),
       );
 
-      if (settings.videoGenerationEnabled && hasVideoRequests) {
-        await generateMediaForOutlines(outlines, stage.id, signal, 'video');
+      const hasHeavyMedia =
+        (settings.imageGenerationEnabled && hasImageRequests) ||
+        (settings.videoGenerationEnabled && hasVideoRequests);
+
+      let speechServicesStoppedForMedia = false;
+
+      if (hasHeavyMedia) {
+        const stopSpeechResponse = await fetch('/api/local-speech-services', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'stop' }),
+          signal,
+        });
+
+        const stopSpeechData = await stopSpeechResponse.json();
+
+        if (!stopSpeechResponse.ok || !stopSpeechData.success) {
+          throw new Error(
+            stopSpeechData.error || 'Failed to stop local speech services before media generation',
+          );
+        }
+
+        speechServicesStoppedForMedia = true;
+      }
+
+      try {
+        // Generate images as their own heavyweight phase.
+        if (settings.imageGenerationEnabled && hasImageRequests) {
+          const isLocalMlx = settings.imageProviderId === 'local-mlx';
+
+          if (isLocalMlx) {
+            const startResponse = await fetch('/api/local-vmlx', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'start' }),
+              signal,
+            });
+
+            const startData = await startResponse.json();
+
+            if (!startResponse.ok || !startData.success) {
+              throw new Error(startData.error || 'Failed to start local vMLX image service');
+            }
+          }
+
+          try {
+            await generateMediaForOutlines(outlines, stage.id, signal, 'image');
+          } finally {
+            if (isLocalMlx) {
+              try {
+                const stopResponse = await fetch('/api/local-vmlx', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'stop' }),
+                });
+
+                if (!stopResponse.ok) {
+                  log.warn('[Generation] Failed to stop local vMLX image service');
+                }
+              } catch (err) {
+                log.warn('[Generation] Failed to stop local vMLX image service:', err);
+              }
+            }
+          }
+        }
+
+        // Videos are a separate phase and must not run while vMLX is resident.
+        if (settings.videoGenerationEnabled && hasVideoRequests) {
+          await generateMediaForOutlines(outlines, stage.id, signal, 'video');
+        }
+      } finally {
+        // The classroom needs Kokoro for live speech and Whisper for microphone
+        // input. Restore them even if media generation fails.
+        if (speechServicesStoppedForMedia) {
+          try {
+            const startSpeechResponse = await fetch('/api/local-speech-services', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'start' }),
+            });
+
+            const startSpeechData = await startSpeechResponse.json();
+
+            if (!startSpeechResponse.ok || !startSpeechData.success) {
+              throw new Error(
+                startSpeechData.error || 'Failed to restore local speech services before classroom',
+              );
+            }
+          } catch (err) {
+            log.error('[Generation] Failed to restore local speech services:', err);
+            throw err;
+          }
+        }
       }
 
       // Everything is complete. Persist the full class before navigating.

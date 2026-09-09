@@ -7,18 +7,6 @@ const services = [
     port: 11434,
     hint: 'Start Ollama, then restart NeoAcademy.',
   },
-  {
-    name: 'Kokoro TTS',
-    host: '127.0.0.1',
-    port: 8880,
-    hint: 'Start Docker Desktop first, then restart NeoAcademy.',
-  },
-  {
-    name: 'Whisper ASR',
-    host: '127.0.0.1',
-    port: 8881,
-    hint: 'Start Docker Desktop first, then restart NeoAcademy.',
-  },
 ];
 
 function checkPort({ host, port }, timeout = 1500) {
