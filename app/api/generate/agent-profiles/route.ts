@@ -31,6 +31,24 @@ const COLOR_PALETTE = [
   '#a855f7',
 ];
 
+const FEMALE_AVATARS = [
+  '/avatars/assist.png',
+  '/avatars/assist-2.png',
+  '/avatars/clown.png',
+  '/avatars/clown-2.png',
+  '/avatars/curious.png',
+  '/avatars/curious-2.png',
+  '/avatars/teacher-2.png',
+  '/avatars/thinker.png',
+  '/avatars/thinker-2.png',
+];
+
+const MALE_AVATARS = [
+  '/avatars/note-taker.png',
+  '/avatars/note-taker-2.png',
+  '/avatars/teacher.png',
+];
+
 interface RequestBody {
   stageInfo: { name: string; description?: string };
   sceneOutlines?: { title: string; description?: string }[];
@@ -43,7 +61,6 @@ interface AgentProfilesPayload {
     name: string;
     role: string;
     persona: string;
-    avatar: string;
     color: string;
     priority: number;
     voiceGender?: 'female' | 'male' | 'neutral';
@@ -53,6 +70,78 @@ interface AgentProfilesPayload {
 
 type VoiceGender = 'female' | 'male' | 'neutral';
 type VoiceStyle = 'warm' | 'bright' | 'calm' | 'energetic' | 'deep' | 'youthful';
+
+function selectAvatar(
+  availableAvatars: string[],
+  gender: VoiceGender,
+  role: string,
+  index: number,
+): string {
+  const allowed =
+    gender === 'female'
+      ? FEMALE_AVATARS
+      : gender === 'male'
+        ? MALE_AVATARS
+        : [...FEMALE_AVATARS, ...MALE_AVATARS];
+
+  const available = allowed.filter((avatar) => availableAvatars.includes(avatar));
+
+  if (available.length === 0) {
+    return availableAvatars[index % availableAvatars.length];
+  }
+
+  // Prefer teacher-specific artwork for the teacher when possible.
+  if (role === 'teacher') {
+    const teacherAvatar =
+      gender === 'female'
+        ? '/avatars/teacher-2.png'
+        : gender === 'male'
+          ? '/avatars/teacher.png'
+          : undefined;
+
+    if (teacherAvatar && available.includes(teacherAvatar)) {
+      return teacherAvatar;
+    }
+  }
+
+  return available[index % available.length];
+}
+
+function normalizeCharacterGender(
+  name: string,
+  persona: string,
+  requestedGender?: VoiceGender,
+): VoiceGender {
+  const identityText = `${name} ${persona}`.toLowerCase();
+
+  const femaleSignal =
+    /\b(ms|mrs|miss)\.?\b/.test(identityText) ||
+    /\bshe\b/.test(identityText) ||
+    /\bher\b/.test(identityText) ||
+    /\bhers\b/.test(identityText) ||
+    /\bherself\b/.test(identityText);
+
+  const maleSignal =
+    /\bmr\.?\b/.test(identityText) ||
+    /\bhe\b/.test(identityText) ||
+    /\bhim\b/.test(identityText) ||
+    /\bhis\b/.test(identityText) ||
+    /\bhimself\b/.test(identityText);
+
+  if (femaleSignal && !maleSignal) {
+    return 'female';
+  }
+
+  if (maleSignal && !femaleSignal) {
+    return 'male';
+  }
+
+  if (requestedGender === 'female' || requestedGender === 'male' || requestedGender === 'neutral') {
+    return requestedGender;
+  }
+
+  return 'neutral';
+}
 
 function selectKokoroVoice(
   language: string,
@@ -179,11 +268,13 @@ Requirements:
 - Each agent also needs a vocal profile that matches the character:
   - voiceGender: "female", "male", or "neutral"
   - voiceStyle: "warm", "bright", "calm", "energetic", "deep", or "youthful"
-- Choose voiceGender from the character you create. For example, a clearly female teacher such as "Ms. Stella" must use "female".
+- voiceGender is the character's canonical gender and MUST agree with the character's name, title, pronouns, and persona.
+- For example, "Ms. Stella", "Mrs. Chen", or a persona using she/her must use voiceGender "female".
+- "Mr. James" or a persona using he/him must use voiceGender "male".
+- Do not choose voiceGender merely as a preferred voice sound; it represents the character.
+- Use "neutral" only when the character is intentionally gender-neutral or the name/persona does not establish a gender. Do not use "neutral" for a clearly male or female character.
 - Choose voiceStyle to match the character's personality and role.
 - Names and personas must be in language: ${language}
-- Each agent must be assigned one avatar from this list: ${JSON.stringify(availableAvatars)}
-  - Try to use different avatars for each agent
 - Each agent must be assigned one color from this list: ${JSON.stringify(COLOR_PALETTE)}
   - Each agent must have a different color
 
@@ -194,7 +285,6 @@ Return a JSON object with this exact structure:
       "name": "string",
       "role": "teacher" | "assistant" | "student",
       "persona": "string (2-3 sentences)",
-      "avatar": "string (from available list)",
       "color": "string (hex color from palette)",
       "priority": number (10 for teacher, 7 for assistant, 4-6 for student),
       "voiceGender": "female" | "male" | "neutral",
@@ -269,12 +359,7 @@ Return a JSON object with this exact structure:
     const usedVoiceIds = new Set<string>();
 
     const agents = parsed.agents.map((agent, index) => {
-      const voiceGender: VoiceGender =
-        agent.voiceGender === 'female' ||
-        agent.voiceGender === 'male' ||
-        agent.voiceGender === 'neutral'
-          ? agent.voiceGender
-          : 'neutral';
+      const voiceGender = normalizeCharacterGender(agent.name, agent.persona, agent.voiceGender);
 
       const voiceStyle: VoiceStyle =
         agent.voiceStyle === 'warm' ||
@@ -332,7 +417,7 @@ Return a JSON object with this exact structure:
         name: agent.name,
         role: agent.role,
         persona: agent.persona,
-        avatar: agent.avatar || availableAvatars[index % availableAvatars.length],
+        avatar: selectAvatar(availableAvatars, voiceGender, agent.role, index),
         color: agent.color || COLOR_PALETTE[index % COLOR_PALETTE.length],
         priority:
           agent.priority ?? (agent.role === 'teacher' ? 10 : agent.role === 'assistant' ? 7 : 5),
