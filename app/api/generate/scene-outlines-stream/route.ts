@@ -37,57 +37,98 @@ const log = createLogger('Outlines Stream');
 
 export const maxDuration = 300;
 
+function isSceneOutlineCandidate(value: unknown): value is SceneOutline {
+  if (!value || typeof value !== 'object') return false;
+
+  const candidate = value as Partial<SceneOutline>;
+
+  return (
+    typeof candidate.title === 'string' &&
+    candidate.title.trim().length > 0 &&
+    typeof candidate.description === 'string' &&
+    Array.isArray(candidate.keyPoints) &&
+    candidate.keyPoints.length > 0 &&
+    ['slide', 'quiz', 'interactive', 'pbl'].includes(candidate.type || '')
+  );
+}
+
 /**
  * Incremental JSON array parser.
- * Extracts complete top-level objects from a partially-streamed JSON array.
- * Returns newly found objects (skipping `alreadyParsed` count).
+ * Extracts complete top-level outline objects from the first top-level JSON array.
+ * Nested objects inside mediaGenerations/quizConfig/etc. are ignored.
  */
 function extractNewOutlines(buffer: string, alreadyParsed: number): SceneOutline[] {
   const results: SceneOutline[] = [];
 
-  // Find the start of the JSON array (skip any markdown fencing)
-  const stripped = buffer.replace(/^[\s\S]*?(?=\[)/, '');
-  const arrayStart = stripped.indexOf('[');
+  // Skip any prose/markdown before the first array.
+  const arrayStart = buffer.indexOf('[');
   if (arrayStart === -1) return results;
 
-  let depth = 0;
+  let arrayDepth = 0;
+  let objectDepth = 0;
   let objectStart = -1;
   let inString = false;
   let escaped = false;
-  let objectCount = 0;
+  let validOutlineCount = 0;
 
-  for (let i = arrayStart + 1; i < stripped.length; i++) {
-    const char = stripped[i];
+  for (let i = arrayStart; i < buffer.length; i++) {
+    const char = buffer[i];
 
     if (escaped) {
       escaped = false;
       continue;
     }
+
     if (char === '\\' && inString) {
       escaped = true;
       continue;
     }
+
     if (char === '"') {
       inString = !inString;
       continue;
     }
+
     if (inString) continue;
 
-    if (char === '{') {
-      if (depth === 0) objectStart = i;
-      depth++;
-    } else if (char === '}') {
-      depth--;
-      if (depth === 0 && objectStart >= 0) {
-        objectCount++;
-        if (objectCount > alreadyParsed) {
-          try {
-            const obj = JSON.parse(stripped.substring(objectStart, i + 1));
-            results.push(obj);
-          } catch {
-            // Incomplete or invalid JSON — skip
+    if (char === '[') {
+      arrayDepth++;
+      continue;
+    }
+
+    if (char === ']') {
+      arrayDepth--;
+      if (arrayDepth === 0) break;
+      continue;
+    }
+
+    // Only capture objects directly inside the outermost array.
+    if (arrayDepth === 1 && char === '{') {
+      if (objectDepth === 0) {
+        objectStart = i;
+      }
+      objectDepth++;
+      continue;
+    }
+
+    if (arrayDepth === 1 && char === '}') {
+      objectDepth--;
+
+      if (objectDepth === 0 && objectStart >= 0) {
+        try {
+          const obj = JSON.parse(buffer.substring(objectStart, i + 1));
+
+          if (isSceneOutlineCandidate(obj)) {
+            validOutlineCount++;
+
+            if (validOutlineCount > alreadyParsed) {
+              results.push(obj);
+            }
           }
+        } catch {
+          // Incomplete or invalid JSON — wait for more streamed text.
         }
+
         objectStart = -1;
       }
     }
@@ -95,7 +136,6 @@ function extractNewOutlines(buffer: string, alreadyParsed: number): SceneOutline
 
   return results;
 }
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -317,6 +357,11 @@ export async function POST(req: NextRequest) {
           if (parsedOutlines.length > 0) {
             // Replace sequential gen_img_N/gen_vid_N with globally unique IDs
             const uniquifiedOutlines = uniquifyMediaElementIds(parsedOutlines);
+            log.info(
+              `Parsed outlines: ${uniquifiedOutlines
+                .map((outline) => `${outline.order}:${outline.type}:${outline.title}`)
+                .join(' | ')}`,
+            );
             // Send done event with all outlines
             const doneEvent = JSON.stringify({
               type: 'done',
