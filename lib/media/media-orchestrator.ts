@@ -12,6 +12,7 @@ import { db, mediaFileKey } from '@/lib/utils/database';
 import type { SceneOutline } from '@/lib/types/generation';
 import type { MediaGenerationRequest } from '@/lib/media/types';
 import { createLogger } from '@/lib/logger';
+import { logGenerationProgress } from '@/lib/generation/progress-log';
 
 const log = createLogger('MediaOrchestrator');
 
@@ -26,7 +27,7 @@ class MediaApiError extends Error {
 
 /**
  * Launch media generation for all mediaGenerations declared in outlines.
- * Runs in parallel with content/action generation — does not block.
+ * Runs as a dedicated media phase after class content generation.
  */
 export async function generateMediaForOutlines(
   outlines: SceneOutline[],
@@ -61,10 +62,33 @@ export async function generateMediaForOutlines(
   // Enqueue all as pending
   useMediaGenerationStore.getState().enqueueTasks(stageId, allRequests);
 
+  const phaseLabel = mediaType === 'image' ? 'Image' : mediaType === 'video' ? 'Video' : 'Media';
+
+  logGenerationProgress(
+    `[MediaOrchestrator] ${phaseLabel} phase: ${allRequests.length} item${allRequests.length === 1 ? '' : 's'} to generate`,
+  );
+
   // Process requests serially — image/video APIs have limited concurrency
-  for (const req of allRequests) {
+  for (let index = 0; index < allRequests.length; index++) {
     if (abortSignal?.aborted) break;
+
+    const req = allRequests[index];
+
+    logGenerationProgress(
+      `[MediaOrchestrator] Generating ${req.type} ${index + 1} of ${allRequests.length}`,
+    );
+
     await generateSingleMedia(req, stageId, abortSignal);
+
+    logGenerationProgress(
+      `[MediaOrchestrator] Completed ${req.type} ${index + 1} of ${allRequests.length}`,
+    );
+  }
+
+  if (!abortSignal?.aborted) {
+    logGenerationProgress(
+      `[MediaOrchestrator] ${phaseLabel} phase complete: ${allRequests.length} of ${allRequests.length}`,
+    );
   }
 }
 

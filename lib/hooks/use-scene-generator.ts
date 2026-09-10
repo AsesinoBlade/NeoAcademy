@@ -12,6 +12,7 @@ import type { Action, SpeechAction } from '@/lib/types/action';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { createLogger } from '@/lib/logger';
 import { useAgentRegistry } from '@/lib/orchestration/registry/store';
+import { logGenerationProgress } from '@/lib/generation/progress-log';
 
 const log = createLogger('SceneGenerator');
 const TTS_MAX_TEXT_LENGTH: Partial<Record<TTSProviderId, number>> = {
@@ -256,7 +257,7 @@ export async function generateAndStoreTTS(
 }
 
 /** Generate TTS for all speech actions in a scene. Returns result. */
-async function generateTTSForScene(
+export async function generateTTSForScene(
   scene: Scene,
   signal?: AbortSignal,
 ): Promise<{ success: boolean; failedCount: number; error?: string }> {
@@ -390,6 +391,13 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             break;
           }
 
+          const slideNumber = store.getState().scenes.length + 1;
+          const totalSlides = outlines.length;
+
+          logGenerationProgress(
+            `[SceneGenerator] Generating slide ${slideNumber} of ${totalSlides}: ${outline.title}`,
+          );
+
           store.getState().setCurrentGeneratingOrder(outline.order);
 
           // Step 1: Generate content
@@ -442,23 +450,6 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
           if (actionsResult.success && actionsResult.scene) {
             const scene = actionsResult.scene;
-            const settings = useSettingsStore.getState();
-
-            // TTS generation — failure means the whole scene fails
-            if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
-              const ttsResult = await generateTTSForScene(scene, signal);
-              if (!ttsResult.success) {
-                if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-                  pausedByFailureOrAbort = true;
-                  break;
-                }
-                store.getState().addFailedOutline(outline);
-                options.onSceneFailed?.(outline, ttsResult.error || 'TTS generation failed');
-                store.getState().setGenerationStatus('paused');
-                pausedByFailureOrAbort = true;
-                break;
-              }
-            }
 
             // Epoch changed — stage switched, discard this scene
             if (store.getState().generationEpoch !== startEpoch) {
@@ -468,6 +459,9 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
             removeGeneratingOutline(outline.id);
             store.getState().addScene(scene);
+            log.info(
+              `[SceneGenerator] Completed slide ${slideNumber} of ${totalSlides}: ${outline.title}`,
+            );
             options.onSceneGenerated?.(scene, outline.order);
             previousSpeeches = actionsResult.previousSpeeches || [];
           } else {

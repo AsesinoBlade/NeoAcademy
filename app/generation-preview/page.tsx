@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState, Suspense, useRef } from 'react';
-import { useSceneGenerator } from '@/lib/hooks/use-scene-generator';
+
+import { generateTTSForScene, useSceneGenerator } from '@/lib/hooks/use-scene-generator';
+import { logGenerationProgress } from '@/lib/generation/progress-log';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import { CheckCircle2, Sparkles, AlertCircle, AlertTriangle, ArrowLeft, Bot } from 'lucide-react';
@@ -148,6 +150,27 @@ function GenerationPreviewContent() {
 
     try {
       // Compute active steps for this session (recomputed after session mutations)
+
+      // Keep Docker/Kokoro/Whisper out of memory while Ollama performs
+      // agent, outline, content, and action generation.
+      log.info('[Generation] Stopping local speech services before LLM generation');
+
+      const stopSpeechResponse = await fetch('/api/local-speech-services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+        signal,
+      });
+
+      const stopSpeechData = await stopSpeechResponse.json();
+
+      if (!stopSpeechResponse.ok || !stopSpeechData.success) {
+        throw new Error(
+          stopSpeechData.error || 'Failed to stop local speech services before LLM generation',
+        );
+      }
+
+      log.info('[Generation] Local speech services stopped; LLM generation starting');
       let activeSteps = getActiveSteps(currentSession);
 
       // Determine if we need the PDF analysis step
@@ -566,6 +589,24 @@ function GenerationPreviewContent() {
         throw new Error(t('generation.outlineEmptyResponse'));
       }
 
+      const plannedImageCount = outlines.reduce(
+        (count, outline) =>
+          count +
+          (outline.mediaGenerations?.filter((request) => request.type === 'image').length ?? 0),
+        0,
+      );
+
+      const plannedVideoCount = outlines.reduce(
+        (count, outline) =>
+          count +
+          (outline.mediaGenerations?.filter((request) => request.type === 'video').length ?? 0),
+        0,
+      );
+
+      logGenerationProgress(`[Generation] Outline complete: ${outlines.length} slides planned`);
+      logGenerationProgress(`[Generation] Images planned: ${plannedImageCount}`);
+      logGenerationProgress(`[Generation] Videos planned: ${plannedVideoCount}`);
+
       // Store stage and outlines
       const store = useStageStore.getState();
       store.setStage(stage);
@@ -592,6 +633,10 @@ function GenerationPreviewContent() {
       store.setGeneratingOutlines(outlines);
 
       const firstOutline = outlines[0];
+
+      logGenerationProgress(
+        `[Generation] Generating slide 1 of ${outlines.length}: ${firstOutline.title}`,
+      );
 
       // Step 2: Generate content (currentStepIndex is already 2)
       const contentResp = await fetch('/api/generate/scene-content', {
@@ -648,65 +693,13 @@ function GenerationPreviewContent() {
         throw new Error(data.error || t('generation.sceneGenerateFailed'));
       }
 
-      // Generate TTS for first scene (part of actions step — blocking)
-      if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
-        const ttsProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
-        const speechActions = (data.scene.actions || []).filter(
-          (a: { type: string; text?: string }) => a.type === 'speech' && a.text,
-        );
-
-        let ttsFailCount = 0;
-        for (const action of speechActions) {
-          const audioId = `tts_${action.id}`;
-          action.audioId = audioId;
-          try {
-            const resp = await fetch('/api/generate/tts', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                text: action.text,
-                audioId,
-                ttsProviderId: settings.ttsProviderId,
-                ttsVoice: settings.ttsVoice,
-                ttsSpeed: settings.ttsSpeed,
-                ttsApiKey: ttsProviderConfig?.apiKey || undefined,
-                ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
-              }),
-              signal,
-            });
-            if (!resp.ok) {
-              ttsFailCount++;
-              continue;
-            }
-            const ttsData = await resp.json();
-            if (!ttsData.success) {
-              ttsFailCount++;
-              continue;
-            }
-            const binary = atob(ttsData.base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            const blob = new Blob([bytes], { type: `audio/${ttsData.format}` });
-            await db.audioFiles.put({
-              id: audioId,
-              blob,
-              format: ttsData.format,
-              createdAt: Date.now(),
-            });
-          } catch (err) {
-            log.warn(`[TTS] Failed for ${audioId}:`, err);
-            ttsFailCount++;
-          }
-        }
-
-        if (ttsFailCount > 0 && speechActions.length > 0) {
-          throw new Error(t('generation.speechFailed'));
-        }
-      }
-
       // Add the first completed scene.
       store.addScene(data.scene);
       store.setCurrentSceneId(data.scene.id);
+
+      logGenerationProgress(
+        `[Generation] Completed slide 1 of ${outlines.length}: ${firstOutline.title}`,
+      );
 
       // Mark the remaining outlines as pending.
       const remaining = outlines.filter((o) => o.order !== data.scene.order);
@@ -756,6 +749,56 @@ function GenerationPreviewContent() {
           throw err;
         }
         log.warn('[Generation] Failed to unload local LLM before media generation:', err);
+      }
+
+      // ── Dedicated TTS phase ──
+      // All LLM work is complete, so Ollama has been unloaded before starting
+      // Docker/Kokoro. This keeps the two heavyweight services from competing
+      // for unified memory during class generation.
+      if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
+        log.info('[Generation] Starting local speech services for TTS phase');
+
+        const startSpeechResponse = await fetch('/api/local-speech-services', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'start' }),
+          signal,
+        });
+
+        const startSpeechData = await startSpeechResponse.json();
+
+        if (!startSpeechResponse.ok || !startSpeechData.success) {
+          throw new Error(
+            startSpeechData.error || 'Failed to start local speech services for TTS generation',
+          );
+        }
+
+        const scenesForTTS = [...useStageStore.getState().scenes].sort((a, b) => a.order - b.order);
+
+        log.info(`[Generation] TTS phase: ${scenesForTTS.length} slides to generate`);
+
+        for (let index = 0; index < scenesForTTS.length; index++) {
+          if (signal.aborted) {
+            throw new DOMException('Generation aborted', 'AbortError');
+          }
+
+          const scene = scenesForTTS[index];
+
+          log.info(`[Generation] Generating TTS for slide ${index + 1} of ${scenesForTTS.length}`);
+
+          const ttsResult = await generateTTSForScene(scene, signal);
+
+          if (!ttsResult.success) {
+            throw new Error(
+              ttsResult.error ||
+                `TTS generation failed for slide ${index + 1} of ${scenesForTTS.length}`,
+            );
+          }
+
+          log.info(`[Generation] Completed TTS for slide ${index + 1} of ${scenesForTTS.length}`);
+        }
+
+        log.info(`[Generation] TTS phase complete: ${scenesForTTS.length} slides`);
       }
 
       // Media is a separate phase. Do not generate images/videos while the

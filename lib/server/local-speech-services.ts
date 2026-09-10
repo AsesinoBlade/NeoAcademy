@@ -55,6 +55,39 @@ function checkPort(port: number, timeout = 1000): Promise<boolean> {
   });
 }
 
+async function checkHttp(url: string, timeoutMs = 3000): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitForHttp(url: string, name: string, timeoutMs = 120000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await checkHttp(url)) {
+      return;
+    }
+
+    await sleep(1000);
+  }
+
+  throw new Error(`${name} did not become HTTP-ready within ${timeoutMs / 1000} seconds`);
+}
+
 async function waitForDockerDesktop(shouldBeRunning: boolean, timeoutMs = 120000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
@@ -161,8 +194,8 @@ export async function getLocalSpeechServicesStatus() {
   const [kokoroRunning, whisperRunning, kokoroHealthy, whisperHealthy] = await Promise.all([
     containerIsRunning(KOKORO_CONTAINER),
     containerIsRunning(WHISPER_CONTAINER),
-    checkPort(KOKORO_PORT),
-    checkPort(WHISPER_PORT),
+    checkHttp(`http://127.0.0.1:${KOKORO_PORT}/v1/models`),
+    checkHttp(`http://127.0.0.1:${WHISPER_PORT}/v1/models`),
   ]);
 
   return {
@@ -187,8 +220,8 @@ export async function startLocalSpeechServices() {
   await ensureContainer(WHISPER_CONTAINER);
 
   await Promise.all([
-    waitForPort(KOKORO_PORT, 'Kokoro TTS'),
-    waitForPort(WHISPER_PORT, 'Whisper ASR'),
+    waitForHttp(`http://127.0.0.1:${KOKORO_PORT}/v1/models`, 'Kokoro TTS'),
+    waitForHttp(`http://127.0.0.1:${WHISPER_PORT}/v1/models`, 'Whisper ASR'),
   ]);
 
   return {
