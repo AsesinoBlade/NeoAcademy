@@ -141,6 +141,7 @@ const IMAGE_PROVIDER_NAMES: Record<ImageProviderId, string> = {
   'qwen-image': 'providerQwenImage',
   'nano-banana': 'providerNanoBanana',
   'local-mlx': 'providerLocalMLX',
+  comfyui: 'ComfyUI',
 };
 
 const IMAGE_PROVIDER_ICONS: Record<ImageProviderId, string> = {
@@ -148,6 +149,7 @@ const IMAGE_PROVIDER_ICONS: Record<ImageProviderId, string> = {
   'qwen-image': '/logos/bailian.svg',
   'nano-banana': '/logos/gemini.svg',
   'local-mlx': '',
+  comfyui: '',
 };
 
 const VIDEO_PROVIDER_NAMES: Record<VideoProviderId, string> = {

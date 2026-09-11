@@ -77,6 +77,14 @@ export const IMAGE_PROVIDERS: Record<ImageProviderId, ImageProviderConfig> = {
     models: [{ id: 'z-image-turbo-8bit', name: 'Z-Image Turbo 8-bit' }],
     supportedAspectRatios: ['16:9', '4:3', '1:1', '9:16'],
   },
+  comfyui: {
+    id: 'comfyui',
+    name: 'ComfyUI',
+    requiresApiKey: false,
+    defaultBaseUrl: 'http://127.0.0.1:8188',
+    models: [],
+    supportedAspectRatios: ['16:9', '4:3', '1:1', '9:16'],
+  },
 };
 
 export async function testImageConnectivity(

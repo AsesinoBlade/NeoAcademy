@@ -842,7 +842,10 @@ function GenerationPreviewContent() {
         throw new Error('Failed to load local runtime profile');
       }
       const runtimeProfile = (await runtimeProfileResponse.json()) as {
-        image?: { backend?: 'vmlx' | 'comfyui' | 'none'; available?: boolean };
+        image?: {
+          backend?: 'vmlx' | 'comfyui' | 'none';
+          available?: boolean;
+        };
         video?: { backend?: 'vmlx' | 'comfyui' | 'none'; available?: boolean };
         speech?: { backend?: 'docker' | 'none'; available?: boolean };
       };
