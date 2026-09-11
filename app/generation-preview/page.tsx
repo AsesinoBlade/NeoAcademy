@@ -835,22 +835,40 @@ function GenerationPreviewContent() {
 
         speechServicesStoppedForMedia = true;
       }
+      const runtimeProfileResponse = await fetch('/api/local-runtime-profile', {
+        signal,
+      });
+      if (!runtimeProfileResponse.ok) {
+        throw new Error('Failed to load local runtime profile');
+      }
+      const runtimeProfile = (await runtimeProfileResponse.json()) as {
+        image?: { backend?: 'vmlx' | 'comfyui' | 'none'; available?: boolean };
+        video?: { backend?: 'vmlx' | 'comfyui' | 'none'; available?: boolean };
+        speech?: { backend?: 'docker' | 'none'; available?: boolean };
+      };
+
+      const imageBackend = runtimeProfile.image?.backend ?? 'none';
+      const videoBackend = runtimeProfile.video?.backend ?? 'none';
+
+      logGenerationProgress(
+        `[Generation] Runtime profile loaded: image=${imageBackend}, video=${videoBackend}`,
+      );
 
       try {
         // Generate images as their own heavyweight phase.
         if (settings.imageGenerationEnabled && hasImageRequests) {
-          const isLocalMlx = settings.imageProviderId === 'local-mlx';
+          const shouldManageLocalImageService =
+            settings.imageProviderId === 'local-mlx' && imageBackend === 'vmlx';
 
-          if (isLocalMlx) {
+          if (shouldManageLocalImageService) {
+            log.info('[Generation] Starting local vMLX image service');
             const startResponse = await fetch('/api/local-vmlx', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ action: 'start' }),
               signal,
             });
-
             const startData = await startResponse.json();
-
             if (!startResponse.ok || !startData.success) {
               throw new Error(startData.error || 'Failed to start local vMLX image service');
             }
@@ -859,14 +877,14 @@ function GenerationPreviewContent() {
           try {
             await generateMediaForOutlines(outlines, stage.id, signal, 'image');
           } finally {
-            if (isLocalMlx) {
+            if (shouldManageLocalImageService) {
               try {
+                log.info('[Generation] Stopping local vMLX image service');
                 const stopResponse = await fetch('/api/local-vmlx', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ action: 'stop' }),
                 });
-
                 if (!stopResponse.ok) {
                   log.warn('[Generation] Failed to stop local vMLX image service');
                 }
