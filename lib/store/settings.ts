@@ -278,7 +278,7 @@ const getDefaultPDFConfig = () => ({
   pdfProviderId: 'unpdf' as PDFProviderId,
   pdfProvidersConfig: {
     unpdf: { apiKey: '', baseUrl: '', enabled: true },
-    mineru: { apiKey: '', baseUrl: '', enabled: false },
+    // mineru: { apiKey: '', baseUrl: '', enabled: false },
   } as Record<PDFProviderId, { apiKey: string; baseUrl: string; enabled: boolean }>,
 });
 
@@ -294,6 +294,11 @@ const getDefaultImageConfig = () => ({
       apiKey: '',
       baseUrl: 'http://127.0.0.1:8001',
       enabled: true,
+    },
+    comfyui: {
+      apiKey: '',
+      baseUrl: 'http://127.0.0.1:8188',
+      enabled: false,
     },
   } as Record<ImageProviderId, { apiKey: string; baseUrl: string; enabled: boolean }>,
 });
@@ -943,6 +948,23 @@ export const useSettingsStore = create<SettingsState>()(
                 }
                 if (serverVideoIds.length > 0 && !state.videoGenerationEnabled) {
                   autoVideoEnabled = true;
+                }
+              }
+
+              // Image selection: DEFAULT_IMAGE_MODEL from the server is authoritative.
+              // This allows each machine to select its image backend entirely through .env.local.
+              if (data.defaultImageModel) {
+                const colonIndex = data.defaultImageModel.indexOf(':');
+
+                if (colonIndex > 0) {
+                  autoImageProvider = data.defaultImageModel.slice(
+                    0,
+                    colonIndex,
+                  ) as ImageProviderId;
+                  autoImageModel = data.defaultImageModel.slice(colonIndex + 1);
+                } else {
+                  autoImageProvider = 'local-mlx';
+                  autoImageModel = data.defaultImageModel;
                 }
               }
 

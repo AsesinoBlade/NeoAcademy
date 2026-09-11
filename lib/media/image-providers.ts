@@ -15,6 +15,7 @@ import { generateWithLocalMlx, testLocalMlxConnectivity } from './adapters/local
 import { generateWithSeedream, testSeedreamConnectivity } from './adapters/seedream-adapter';
 import { generateWithQwenImage, testQwenImageConnectivity } from './adapters/qwen-image-adapter';
 import { generateWithNanoBanana, testNanoBananaConnectivity } from './adapters/nano-banana-adapter';
+import { generateWithComfyUi, testComfyUiConnectivity } from './adapters/comfyui-adapter';
 
 export const IMAGE_PROVIDERS: Record<ImageProviderId, ImageProviderConfig> = {
   seedream: {
@@ -99,6 +100,8 @@ export async function testImageConnectivity(
       return testNanoBananaConnectivity(config);
     case 'local-mlx':
       return testLocalMlxConnectivity(config);
+    case 'comfyui':
+      return testComfyUiConnectivity(config);
     default:
       return {
         success: false,
@@ -120,6 +123,8 @@ export async function generateImage(
       return generateWithNanoBanana(config, options);
     case 'local-mlx':
       return generateWithLocalMlx(config, options);
+    case 'comfyui':
+      return generateWithComfyUi(config, options);
     default:
       throw new Error(`Unsupported image provider: ${config.providerId}`);
   }
