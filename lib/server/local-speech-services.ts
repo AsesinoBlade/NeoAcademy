@@ -1,5 +1,8 @@
 import { execFile, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -9,6 +12,37 @@ const WHISPER_CONTAINER = 'neoacademy-whisper';
 
 const KOKORO_PORT = 8880;
 const WHISPER_PORT = 8881;
+
+const DOCKER_STATE_FILE = path.join(os.tmpdir(), 'neoacademy-docker-desktop.json');
+
+interface ManagedDockerState {
+  startedAt: number;
+}
+
+function readManagedDockerState(): ManagedDockerState | null {
+  try {
+    return JSON.parse(fs.readFileSync(DOCKER_STATE_FILE, 'utf8')) as ManagedDockerState;
+  } catch {
+    return null;
+  }
+}
+
+function writeManagedDockerState(): void {
+  fs.writeFileSync(
+    DOCKER_STATE_FILE,
+    JSON.stringify({
+      startedAt: Date.now(),
+    }),
+  );
+}
+
+function clearManagedDockerState(): void {
+  try {
+    fs.unlinkSync(DOCKER_STATE_FILE);
+  } catch {
+    // Already absent.
+  }
+}
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -179,10 +213,11 @@ async function ensureContainer(name: string): Promise<void> {
 export async function getLocalSpeechServicesStatus() {
   const dockerDesktopRunning = dockerDesktopIsRunning();
   const dockerEngineReady = dockerEngineIsReady();
-
+  const dockerDesktopManaged = !!readManagedDockerState();
   if (!dockerEngineReady) {
     return {
       dockerDesktopRunning,
+      dockerDesktopManaged,
       dockerEngineReady: false,
       kokoroRunning: false,
       whisperRunning: false,
@@ -200,6 +235,7 @@ export async function getLocalSpeechServicesStatus() {
 
   return {
     dockerDesktopRunning,
+    dockerDesktopManaged,
     dockerEngineReady: true,
     kokoroRunning,
     whisperRunning,
@@ -212,6 +248,14 @@ export async function startLocalSpeechServices() {
   if (!dockerDesktopIsRunning()) {
     await execFileAsync('docker', ['desktop', 'start']);
     await waitForDockerDesktop(true);
+    writeManagedDockerState();
+  } else if (readManagedDockerState()) {
+    // Docker is already running and was previously started by NeoAcademy.
+    // Keep the ownership marker.
+  } else {
+    // Docker was already running before NeoAcademy needed it.
+    // Do not claim ownership.
+    clearManagedDockerState();
   }
 
   await waitForDockerEngine();
@@ -254,12 +298,24 @@ export async function stopLocalSpeechServices() {
     }
   }
 
-  await execFileAsync('docker', ['desktop', 'stop']);
+  const managedDocker = readManagedDockerState();
 
-  await waitForDockerDesktop(false, 120000);
+  if (managedDocker) {
+    await execFileAsync('docker', ['desktop', 'stop']);
+    await waitForDockerDesktop(false, 120000);
+    clearManagedDockerState();
+
+    return {
+      success: true,
+      stopped: true,
+      dockerDesktopStopped: true,
+    };
+  }
 
   return {
     success: true,
     stopped: true,
+    dockerDesktopStopped: false,
+    reason: 'docker-desktop-not-managed',
   };
 }
