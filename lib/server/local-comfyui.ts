@@ -122,7 +122,7 @@ async function checkHealth(baseUrl: string): Promise<boolean> {
   }
 }
 
-async function waitForHealth(baseUrl: string, timeoutMs = 90000): Promise<void> {
+async function waitForHealth(baseUrl: string, timeoutMs = 300000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {

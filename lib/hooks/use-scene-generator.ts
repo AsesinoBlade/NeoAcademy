@@ -459,7 +459,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
             removeGeneratingOutline(outline.id);
             store.getState().addScene(scene);
-            log.info(
+            logGenerationProgress(
               `[SceneGenerator] Completed slide ${slideNumber} of ${totalSlides}: ${outline.title}`,
             );
             options.onSceneGenerated?.(scene, outline.order);
@@ -485,7 +485,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
       } catch (err: unknown) {
         // AbortError is expected when stop() is called — don't treat as failure
         if (err instanceof DOMException && err.name === 'AbortError') {
-          log.info('Generation aborted');
+          logGenerationProgress('Generation aborted');
           store.getState().setGenerationStatus('paused');
         } else {
           throw err;
