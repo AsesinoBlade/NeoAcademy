@@ -25,21 +25,14 @@ function getConfiguredComfyUi(): {
     );
   }
 
-  const defaultImageModel = process.env.DEFAULT_IMAGE_MODEL || '';
-  const separator = defaultImageModel.indexOf(':');
-  const provider = separator >= 0 ? defaultImageModel.slice(0, separator) : '';
-
-  if (provider !== 'comfyui') {
-    throw new Error('DEFAULT_IMAGE_MODEL must specify a comfyui model');
-  }
-
   const root = process.env.COMFYUI_ROOT;
 
   if (!root) {
     throw new Error('COMFYUI_ROOT is not configured');
   }
 
-  const baseUrl = process.env.IMAGE_COMFYUI_BASE_URL || DEFAULT_BASE_URL;
+  const baseUrl =
+    process.env.IMAGE_COMFYUI_BASE_URL || process.env.VIDEO_COMFYUI_BASE_URL || DEFAULT_BASE_URL;
   const url = new URL(baseUrl);
 
   if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {

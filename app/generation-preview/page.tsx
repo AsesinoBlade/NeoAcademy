@@ -853,6 +853,43 @@ function GenerationPreviewContent() {
       const imageBackend = runtimeProfile.image?.backend ?? 'none';
       const videoBackend = runtimeProfile.video?.backend ?? 'none';
 
+      const imageUsesComfyUi =
+        settings.imageGenerationEnabled &&
+        hasImageRequests &&
+        settings.imageProviderId === 'comfyui' &&
+        imageBackend === 'comfyui';
+
+      const videoUsesComfyUi =
+        settings.videoGenerationEnabled &&
+        hasVideoRequests &&
+        settings.videoProviderId === 'comfyui' &&
+        videoBackend === 'comfyui';
+
+      let comfyUiStartedForMedia = false;
+
+      const ensureComfyUiStarted = async () => {
+        if (comfyUiStartedForMedia) return;
+
+        log.info('[Generation] Starting local ComfyUI media service');
+
+        const startResponse = await fetch('/api/local-comfyui', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'start' }),
+          signal,
+        });
+
+        const startData = await startResponse.json();
+
+        if (!startResponse.ok || !startData.success) {
+          throw new Error(startData.error || 'Failed to start local ComfyUI media service');
+        }
+
+        comfyUiStartedForMedia = true;
+
+        log.info('[Generation] Local ComfyUI media service is ready');
+      };
+
       logGenerationProgress(
         `[Generation] Runtime profile loaded: image=${imageBackend}, video=${videoBackend}`,
       );
@@ -860,18 +897,17 @@ function GenerationPreviewContent() {
       try {
         // Generate images as their own heavyweight phase.
         if (settings.imageGenerationEnabled && hasImageRequests) {
+          if (imageUsesComfyUi) {
+            await ensureComfyUiStarted();
+          }
+
           const localImageService =
             settings.imageProviderId === 'local-mlx' && imageBackend === 'vmlx'
               ? {
                   name: 'vMLX',
                   endpoint: '/api/local-vmlx',
                 }
-              : settings.imageProviderId === 'comfyui' && imageBackend === 'comfyui'
-                ? {
-                    name: 'ComfyUI',
-                    endpoint: '/api/local-comfyui',
-                  }
-                : null;
+              : null;
 
           if (localImageService) {
             log.info(`[Generation] Starting local ${localImageService.name} image service`);
@@ -922,11 +958,34 @@ function GenerationPreviewContent() {
 
         // Videos are a separate phase and must not run while vMLX is resident.
         if (settings.videoGenerationEnabled && hasVideoRequests) {
+          if (videoUsesComfyUi) {
+            await ensureComfyUiStarted();
+          }
+
           await generateMediaForOutlines(outlines, stage.id, signal, 'video');
         }
       } finally {
         // The classroom needs Kokoro for live speech and Whisper for microphone
         // input. Restore them even if media generation fails.
+
+        if (comfyUiStartedForMedia) {
+          try {
+            log.info('[Generation] Stopping local ComfyUI media service');
+
+            const stopResponse = await fetch('/api/local-comfyui', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'stop' }),
+            });
+
+            if (!stopResponse.ok) {
+              log.warn('[Generation] Failed to stop local ComfyUI media service');
+            }
+          } catch (err) {
+            log.warn('[Generation] Failed to stop local ComfyUI media service:', err);
+          }
+        }
+
         if (speechServicesStoppedForMedia) {
           try {
             const startSpeechResponse = await fetch('/api/local-speech-services', {

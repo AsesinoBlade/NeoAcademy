@@ -80,6 +80,7 @@ const VIDEO_ENV_MAP: Record<string, string> = {
   VIDEO_KLING: 'kling',
   VIDEO_VEO: 'veo',
   VIDEO_SORA: 'sora',
+  VIDEO_COMFYUI: 'comfyui',
 };
 
 const WEB_SEARCH_ENV_MAP: Record<string, string> = {
@@ -359,12 +360,22 @@ export function resolveImageBaseUrl(
 // Public API — Video Generation
 // ---------------------------------------------------------------------------
 
-export function getServerVideoProviders(): Record<string, Record<string, never>> {
+export function getServerVideoProviders(): Record<string, { models?: string[]; baseUrl?: string }> {
   const cfg = getConfig();
-  const result: Record<string, Record<string, never>> = {};
-  for (const id of Object.keys(cfg.video)) {
+  const result: Record<string, { models?: string[]; baseUrl?: string }> = {};
+
+  for (const [id, entry] of Object.entries(cfg.video)) {
     result[id] = {};
+
+    if (entry.models && entry.models.length > 0) {
+      result[id].models = entry.models;
+    }
+
+    if (entry.baseUrl) {
+      result[id].baseUrl = entry.baseUrl;
+    }
   }
+
   return result;
 }
 

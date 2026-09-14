@@ -312,6 +312,11 @@ const getDefaultVideoConfig = () => ({
     kling: { apiKey: '', baseUrl: '', enabled: false },
     veo: { apiKey: '', baseUrl: '', enabled: false },
     sora: { apiKey: '', baseUrl: '', enabled: false },
+    comfyui: {
+      apiKey: '',
+      baseUrl: 'http://127.0.0.1:8188',
+      enabled: false,
+    },
   } as Record<VideoProviderId, { apiKey: string; baseUrl: string; enabled: boolean }>,
 });
 
@@ -378,6 +383,29 @@ function ensureBuiltInImageProviders(state: Partial<SettingsState>): void {
     if (!imageConfig[providerId]) {
       imageConfig[providerId] = {
         ...defaults.imageProvidersConfig[providerId],
+      };
+    }
+  }
+}
+
+/**
+ * Ensure videoProvidersConfig includes every built-in video provider.
+ * This runs during migration and rehydration so newly added video
+ * providers appear without requiring the user to clear localStorage.
+ */
+function ensureBuiltInVideoProviders(state: Partial<SettingsState>): void {
+  const defaults = getDefaultVideoConfig();
+  const videoConfig = state.videoProvidersConfig;
+
+  if (!videoConfig) {
+    state.videoProvidersConfig = { ...defaults.videoProvidersConfig };
+    return;
+  }
+
+  for (const providerId of Object.keys(VIDEO_PROVIDERS) as VideoProviderId[]) {
+    if (!videoConfig[providerId]) {
+      videoConfig[providerId] = {
+        ...defaults.videoProvidersConfig[providerId],
       };
     }
   }
@@ -1057,7 +1085,7 @@ export const useSettingsStore = create<SettingsState>()(
         // Ensure providersConfig has all built-in providers (also in merge below)
         ensureBuiltInProviders(state);
         ensureBuiltInImageProviders(state);
-
+        ensureBuiltInVideoProviders(state);
         // Migrate from old ttsModel to new ttsProviderId
         if (state.ttsModel && !state.ttsProviderId) {
           // Map old ttsModel values to new ttsProviderId
@@ -1178,6 +1206,7 @@ export const useSettingsStore = create<SettingsState>()(
         const merged = { ...currentState, ...(persistedState as object) };
         ensureBuiltInProviders(merged as Partial<SettingsState>);
         ensureBuiltInImageProviders(merged as Partial<SettingsState>);
+        ensureBuiltInVideoProviders(merged as Partial<SettingsState>);
         return merged as SettingsState;
       },
     },

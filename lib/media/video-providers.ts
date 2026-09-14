@@ -12,6 +12,10 @@ import type {
 import { generateWithSeedance, testSeedanceConnectivity } from './adapters/seedance-adapter';
 import { generateWithKling, testKlingConnectivity } from './adapters/kling-adapter';
 import { generateWithVeo, testVeoConnectivity } from './adapters/veo-adapter';
+import {
+  generateWithComfyUiVideo,
+  testComfyUiVideoConnectivity,
+} from './adapters/comfyui-video-adapter';
 
 export const VIDEO_PROVIDERS: Record<VideoProviderId, VideoProviderConfig> = {
   seedance: {
@@ -74,6 +78,17 @@ export const VIDEO_PROVIDERS: Record<VideoProviderId, VideoProviderConfig> = {
     supportedAspectRatios: ['16:9', '1:1', '9:16'],
     maxDuration: 20,
   },
+  comfyui: {
+    id: 'comfyui',
+    name: 'ComfyUI',
+    requiresApiKey: false,
+    defaultBaseUrl: 'http://127.0.0.1:8188',
+    models: [{ id: 'wan2.2-ti2v-5b', name: 'Wan 2.2 TI2V 5B' }],
+    supportedAspectRatios: ['16:9'],
+    supportedDurations: [5],
+    supportedResolutions: ['720p'],
+    maxDuration: 5,
+  },
 };
 
 export async function testVideoConnectivity(
@@ -86,6 +101,8 @@ export async function testVideoConnectivity(
       return testKlingConnectivity(config);
     case 'veo':
       return testVeoConnectivity(config);
+    case 'comfyui':
+      return testComfyUiVideoConnectivity(config);
     default:
       return {
         success: false,
@@ -149,6 +166,8 @@ export async function generateVideo(
       return generateWithKling(config, options);
     case 'veo':
       return generateWithVeo(config, options);
+    case 'comfyui':
+      return generateWithComfyUiVideo(config, options);
     default:
       throw new Error(`Unsupported video provider: ${config.providerId}`);
   }
