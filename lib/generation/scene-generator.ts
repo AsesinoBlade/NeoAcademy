@@ -4,7 +4,7 @@
  * Generates full scenes (slide/quiz/interactive/pbl with actions)
  * from scene outlines.
  */
-
+import { estimateTextHeight, fitTextToHeight } from '@/lib/layout/text-layout';
 import { nanoid } from 'nanoid';
 import katex from 'katex';
 import { MAX_VISION_IMAGES } from '@/lib/constants/generation';
@@ -347,11 +347,30 @@ function fixElementDefaults(
       if (!textEl.defaultFontName) {
         textEl.defaultFontName = 'Microsoft YaHei';
       }
+
       if (!textEl.defaultColor) {
         textEl.defaultColor = '#333333';
       }
+
       if (!textEl.content) {
         textEl.content = '';
+      }
+
+      const width = typeof textEl.width === 'number' && textEl.width > 0 ? textEl.width : 400;
+
+      const currentHeight =
+        typeof textEl.height === 'number' && textEl.height > 0 ? textEl.height : 0;
+
+      const estimatedHeight = estimateTextHeight({
+        html: String(textEl.content),
+        width,
+        lineHeight: typeof textEl.lineHeight === 'number' ? textEl.lineHeight : 1.5,
+      });
+
+      if (estimatedHeight > currentHeight) {
+        log.debug(`Expanding text element height from ${currentHeight} to ${estimatedHeight}`);
+
+        textEl.height = estimatedHeight;
       }
 
       return textEl as typeof el;
@@ -415,6 +434,426 @@ function fixElementDefaults(
 
     return el;
   });
+}
+
+function fitTextElementsToShapeContainers(
+  elements: GeneratedSlideData['elements'],
+): GeneratedSlideData['elements'] {
+  const fitted = elements.map((el) => ({ ...el }));
+
+  const shapes = fitted.filter((el) => {
+    if (el.type !== 'shape') return false;
+
+    const width = el.width ?? 0;
+    const height = el.height ?? 0;
+
+    // Ignore decorative lines and very small shapes.
+    if (width < 100 || height < 50) {
+      return false;
+    }
+
+    // Ignore anything that looks like a full-slide background.
+    if (width >= 950 && height >= 500) {
+      return false;
+    }
+
+    return true;
+  });
+
+  for (const element of fitted) {
+    if (element.type !== 'text') {
+      continue;
+    }
+
+    const textLeft = element.left ?? 0;
+    const textTop = element.top ?? 0;
+    const textWidth = element.width ?? 0;
+    const textRight = textLeft + textWidth;
+
+    const candidateShapes = shapes.filter((shape) => {
+      const shapeLeft = shape.left ?? 0;
+      const shapeTop = shape.top ?? 0;
+      const shapeWidth = shape.width ?? 0;
+      const shapeHeight = shape.height ?? 0;
+
+      const shapeRight = shapeLeft + shapeWidth;
+      const shapeBottom = shapeTop + shapeHeight;
+
+      // The text must start inside the shape vertically and be
+      // horizontally contained by it.
+      return (
+        textTop >= shapeTop &&
+        textTop < shapeBottom &&
+        textLeft >= shapeLeft - 2 &&
+        textRight <= shapeRight + 2
+      );
+    });
+
+    if (candidateShapes.length === 0) {
+      continue;
+    }
+
+    // When shapes are nested, use the smallest plausible container.
+    const container = candidateShapes.reduce((smallest, shape) => {
+      const smallestArea = (smallest.width ?? 0) * (smallest.height ?? 0);
+
+      const shapeArea = (shape.width ?? 0) * (shape.height ?? 0);
+
+      return shapeArea < smallestArea ? shape : smallest;
+    });
+
+    const containerBottom = (container.top ?? 0) + (container.height ?? 0);
+
+    // Leave a little breathing room at the bottom of the card.
+    const bottomPadding = 10;
+
+    const availableHeight = containerBottom - textTop - bottomPadding;
+
+    if (availableHeight <= 0) {
+      continue;
+    }
+
+    const currentHeight = element.height ?? 0;
+
+    if (currentHeight <= availableHeight) {
+      continue;
+    }
+
+    if (!('content' in element) || typeof element.content !== 'string') {
+      continue;
+    }
+
+    const result = fitTextToHeight({
+      html: element.content,
+      width: textWidth,
+      maxHeight: availableHeight,
+      lineHeight: typeof element.lineHeight === 'number' ? element.lineHeight : 1.5,
+      minimumFontSize: 14,
+    });
+
+    if (result.changed) {
+      log.info('Fitted text to shape container', {
+        textTop,
+        textLeft,
+        textWidth,
+        oldHeight: currentHeight,
+        newHeight: result.estimatedHeight,
+        availableHeight,
+        scale: Number(result.scale.toFixed(2)),
+        container: {
+          top: container.top,
+          left: container.left,
+          width: container.width,
+          height: container.height,
+        },
+      });
+
+      element.content = result.html;
+      element.height = result.estimatedHeight;
+    }
+
+    if (result.estimatedHeight > availableHeight) {
+      log.debug('Estimated text still exceeds shape container after fitting', {
+        estimatedHeight: result.estimatedHeight,
+        availableHeight,
+        textTop,
+        textLeft,
+      });
+    }
+  }
+
+  return fitted;
+}
+
+async function compactSeverelyOverflowingTextWithAI(
+  elements: GeneratedSlideData['elements'],
+  aiCall: AICallFn,
+): Promise<GeneratedSlideData['elements']> {
+  const COMPACT_REWRITE_MIN_OVERFLOW_PX = 30;
+  const COMPACT_REWRITE_MIN_RATIO = 1.3;
+  const MINIMUM_TEXT_LENGTH = 80;
+
+  const result = elements.map((el) => ({ ...el }));
+
+  const shapes = result.filter((el) => {
+    if (el.type !== 'shape') return false;
+
+    const width = el.width ?? 0;
+    const height = el.height ?? 0;
+
+    if (width < 100 || height < 50) return false;
+    if (width >= 950 && height >= 500) return false;
+
+    return true;
+  });
+
+  const stripHtml = (html: string): string =>
+    html
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const markupSkeleton = (html: string): string | null => {
+    if (!html.includes('<')) {
+      return null;
+    }
+
+    return html
+      .replace(/>([^<]*)</g, '><')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  interface RewriteCandidate {
+    index: number;
+    html: string;
+    plainText: string;
+    width: number;
+    availableHeight: number;
+    estimatedHeight: number;
+    targetPercent: number;
+    markupSkeleton: string | null;
+  }
+
+  const candidates: RewriteCandidate[] = [];
+
+  for (let index = 0; index < result.length; index++) {
+    const element = result[index];
+
+    if (element.type !== 'text') {
+      continue;
+    }
+
+    if (!('content' in element) || typeof element.content !== 'string') {
+      continue;
+    }
+
+    const plainText = stripHtml(element.content);
+
+    // Do not rewrite headings, labels, or other short text.
+    if (plainText.length < MINIMUM_TEXT_LENGTH) {
+      continue;
+    }
+
+    const textLeft = element.left ?? 0;
+    const textTop = element.top ?? 0;
+    const textWidth = element.width ?? 0;
+    const textRight = textLeft + textWidth;
+
+    const candidateShapes = shapes.filter((shape) => {
+      const shapeLeft = shape.left ?? 0;
+      const shapeTop = shape.top ?? 0;
+      const shapeWidth = shape.width ?? 0;
+      const shapeHeight = shape.height ?? 0;
+
+      const shapeRight = shapeLeft + shapeWidth;
+      const shapeBottom = shapeTop + shapeHeight;
+
+      return (
+        textTop >= shapeTop &&
+        textTop < shapeBottom &&
+        textLeft >= shapeLeft - 2 &&
+        textRight <= shapeRight + 2
+      );
+    });
+
+    if (candidateShapes.length === 0) {
+      continue;
+    }
+
+    const container = candidateShapes.reduce((smallest, shape) => {
+      const smallestArea = (smallest.width ?? 0) * (smallest.height ?? 0);
+
+      const shapeArea = (shape.width ?? 0) * (shape.height ?? 0);
+
+      return shapeArea < smallestArea ? shape : smallest;
+    });
+
+    const containerBottom = (container.top ?? 0) + (container.height ?? 0);
+
+    const availableHeight = containerBottom - textTop - 10;
+
+    if (availableHeight <= 0) {
+      continue;
+    }
+
+    // The font fitter has already run, so element.height now represents
+    // our best post-fit estimate.
+    const estimatedHeight = element.height ?? 0;
+
+    if (estimatedHeight <= availableHeight) {
+      continue;
+    }
+
+    const overflow = estimatedHeight - availableHeight;
+    const overflowRatio = estimatedHeight / availableHeight;
+
+    if (overflow <= COMPACT_REWRITE_MIN_OVERFLOW_PX || overflowRatio < COMPACT_REWRITE_MIN_RATIO) {
+      continue;
+    }
+
+    const targetRatio = Math.min(0.9, Math.max(0.45, availableHeight / estimatedHeight));
+
+    candidates.push({
+      index,
+      html: element.content,
+      plainText,
+      width: textWidth,
+      availableHeight,
+      estimatedHeight,
+      targetPercent: Math.round(targetRatio * 100),
+      markupSkeleton: markupSkeleton(element.content),
+    });
+  }
+
+  if (candidates.length === 0) {
+    return result;
+  }
+
+  log.info(
+    `Requesting compact rewrites for ${candidates.length} severely overflowing text block(s)`,
+  );
+
+  const requestItems = candidates.map((candidate, requestIndex) => ({
+    id: requestIndex,
+    targetPercent: candidate.targetPercent,
+    html: candidate.html,
+  }));
+
+  const systemPrompt = `
+You compact educational slide text without changing its meaning.
+
+For each item:
+- Preserve every factual point and the exact meaning.
+- Do not add facts.
+- Do not remove facts.
+- Do not change names, numbers, terminology, or conclusions.
+- Remove redundancy and prefer shorter, direct wording.
+- Aim for the requested targetPercent of the original wording.
+- Preserve the EXACT existing HTML tags and style attributes.
+- Change only the human-readable text inside those tags.
+- Do not add or remove HTML elements.
+- Do not use Markdown.
+
+Return valid JSON only in this exact form:
+{
+  "items": [
+    {
+      "id": 0,
+      "html": "rewritten HTML"
+    }
+  ]
+}
+`.trim();
+
+  const userPrompt = JSON.stringify(
+    {
+      items: requestItems,
+    },
+    null,
+    2,
+  );
+
+  try {
+    const response = await aiCall(systemPrompt, userPrompt);
+
+    const parsed = parseJsonResponse<{
+      items?: Array<{
+        id?: number;
+        html?: string;
+      }>;
+    }>(response);
+
+    if (!parsed?.items || !Array.isArray(parsed.items)) {
+      log.warn('Compact rewrite returned invalid response; keeping original text');
+      return result;
+    }
+
+    for (let requestIndex = 0; requestIndex < candidates.length; requestIndex++) {
+      const candidate = candidates[requestIndex];
+
+      const rewrittenItem = parsed.items.find((item) => item.id === requestIndex);
+
+      if (!rewrittenItem || typeof rewrittenItem.html !== 'string') {
+        continue;
+      }
+
+      const rewrittenHtml = rewrittenItem.html.trim();
+
+      if (!rewrittenHtml) {
+        continue;
+      }
+
+      // If the original had HTML structure, require the model to preserve
+      // that structure exactly. Otherwise reject the rewrite.
+      if (
+        candidate.markupSkeleton !== null &&
+        markupSkeleton(rewrittenHtml) !== candidate.markupSkeleton
+      ) {
+        log.warn(`Rejected compact rewrite for element ${candidate.index}: HTML structure changed`);
+        continue;
+      }
+
+      const newPlainText = stripHtml(rewrittenHtml);
+
+      if (!newPlainText) {
+        continue;
+      }
+
+      const newEstimatedHeight = estimateTextHeight({
+        html: rewrittenHtml,
+        width: candidate.width,
+        defaultFontSize: 14,
+        lineHeight: 1.5,
+      });
+
+      // Only accept a rewrite if it actually improves our estimate.
+      if (newEstimatedHeight >= candidate.estimatedHeight) {
+        log.debug(`Rejected compact rewrite for element ${candidate.index}: no height improvement`);
+        continue;
+      }
+
+      const element = result[candidate.index];
+
+      if (element.type !== 'text' || !('content' in element)) {
+        continue;
+      }
+
+      log.info('Applied compact text rewrite', {
+        elementIndex: candidate.index,
+        oldLength: candidate.plainText.length,
+        newLength: newPlainText.length,
+        oldEstimatedHeight: candidate.estimatedHeight,
+        newEstimatedHeight,
+        availableHeight: candidate.availableHeight,
+        targetPercent: candidate.targetPercent,
+      });
+
+      element.content = rewrittenHtml;
+      element.height = newEstimatedHeight;
+
+      if (newEstimatedHeight > candidate.availableHeight) {
+        log.warn('Text remains severely constrained after compact rewrite', {
+          elementIndex: candidate.index,
+          estimatedHeight: newEstimatedHeight,
+          availableHeight: candidate.availableHeight,
+        });
+      }
+    }
+  } catch (error) {
+    log.warn(
+      `Compact text rewrite failed; keeping fitted text: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  return result;
 }
 
 /**
@@ -587,8 +1026,20 @@ async function generateSlideContent(
   const fixedElements = fixElementDefaults(generatedData.elements, assignedImages);
   log.debug(`After element fixing: ${fixedElements.length} elements`);
 
-  // Process LaTeX elements: render latex string → HTML via KaTeX
-  const latexProcessedElements = processLatexElements(fixedElements);
+  const containerFittedElements = fitTextElementsToShapeContainers(fixedElements);
+
+  log.debug(`After container text fitting: ${containerFittedElements.length} elements`);
+
+  const compactedElements = await compactSeverelyOverflowingTextWithAI(
+    containerFittedElements,
+    aiCall,
+  );
+
+  log.debug(`After severe-overflow compaction: ${compactedElements.length} elements`);
+
+  // Process LaTeX elements
+  const latexProcessedElements = processLatexElements(compactedElements);
+
   log.debug(`After LaTeX processing: ${latexProcessedElements.length} elements`);
 
   // Resolve image_id references to actual URLs
