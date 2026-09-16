@@ -8,7 +8,7 @@
  * - Fire-and-forget: spotlight, laser — dispatch and return immediately
  * - Synchronous: speech, whiteboard, discussion — await completion
  */
-
+import { estimateTextHeight, fitTextToHeight } from '@/lib/layout/text-layout';
 import type { StageStore } from '@/lib/api/stage-api';
 import { createStageAPI } from '@/lib/api/stage-api';
 import { useCanvasStore } from '@/lib/store/canvas';
@@ -47,6 +47,16 @@ const SHAPE_PATHS: Record<string, string> = {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeWhiteboardFontSizes(html: string): string {
+  return html.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_match, sizeText: string) => {
+    const size = Number.parseFloat(sizeText);
+
+    const cappedSize = Math.min(28, Math.max(14, size));
+
+    return `font-size: ${cappedSize}px`;
+  });
 }
 
 // ==================== ActionEngine ====================
@@ -163,7 +173,6 @@ export class ActionEngine {
     useCanvasStore.getState().setSpotlight(action.elementId, {
       dimness: action.dimOpacity ?? 0.5,
     });
-    this.scheduleEffectClear();
   }
 
   private executeLaser(action: LaserAction): void {
@@ -176,15 +185,29 @@ export class ActionEngine {
   // ==================== Synchronous — Speech ====================
 
   private async executeSpeech(action: SpeechAction): Promise<void> {
-    if (!this.audioPlayer) return;
+    if (!this.audioPlayer) {
+      useCanvasStore.getState().clearAllEffects();
+      return;
+    }
 
     return new Promise<void>((resolve) => {
-      this.audioPlayer!.onEnded(() => resolve());
+      let finished = false;
+
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+
+        useCanvasStore.getState().clearAllEffects();
+        resolve();
+      };
+
+      this.audioPlayer!.onEnded(finish);
+
       this.audioPlayer!.play(action.audioId || '')
         .then((audioStarted) => {
-          if (!audioStarted) resolve();
+          if (!audioStarted) finish();
         })
-        .catch(() => resolve());
+        .catch(finish);
     });
   }
 
@@ -300,20 +323,145 @@ export class ActionEngine {
     if (!wb.success || !wb.data) return;
 
     const fontSize = action.fontSize ?? 18;
+    const width = action.width ?? 400;
+
     let htmlContent = action.content;
     if (!htmlContent.startsWith('<')) {
       htmlContent = `<p style="font-size: ${fontSize}px;">${htmlContent}</p>`;
     }
 
+    const requestedHeight = action.height ?? 100;
+
+    const estimatedHeight = estimateTextHeight({
+      html: htmlContent,
+      width,
+      defaultFontSize: fontSize,
+      lineHeight: 1.5,
+    });
+
+    htmlContent = normalizeWhiteboardFontSizes(htmlContent);
+
+    let height = Math.max(requestedHeight, estimatedHeight);
+    const gap = 12;
+    const boardBottom = 562.5 - 10;
+
+    let top = action.y;
+
+    const existingTextElements = (wb.data.elements ?? []).filter(
+      (element) => element.type === 'text',
+    );
+
+    for (const existing of existingTextElements) {
+      const existingLeft = existing.left ?? 0;
+      const existingTop = existing.top ?? 0;
+      const existingWidth = existing.width ?? 0;
+      const existingHeight = existing.height ?? 0;
+
+      const existingRight = existingLeft + existingWidth;
+      const existingBottom = existingTop + existingHeight;
+
+      const newLeft = action.x;
+      const newRight = newLeft + width;
+
+      const horizontalOverlap = Math.min(existingRight, newRight) - Math.max(existingLeft, newLeft);
+
+      if (horizontalOverlap <= 0) {
+        continue;
+      }
+
+      const minimumUsefulOverlap = Math.min(40, Math.min(existingWidth, width) * 0.25);
+
+      if (horizontalOverlap < minimumUsefulOverlap) {
+        continue;
+      }
+
+      const proposedTop = existingBottom + gap;
+
+      if (top < proposedTop) {
+        top = proposedTop;
+      }
+    }
+
+    if (top + height > boardBottom) {
+      const availableHeight = boardBottom - top;
+
+      if (availableHeight > 0) {
+        const fitted = fitTextToHeight({
+          html: htmlContent,
+          width,
+          maxHeight: availableHeight,
+          defaultFontSize: Math.min(28, Math.max(14, fontSize)),
+          minimumFontSize: 14,
+          lineHeight: 1.5,
+        });
+
+        if (fitted.changed) {
+          log.debug('Fitted whiteboard text into remaining space', {
+            requestedTop: action.y,
+            collisionAdjustedTop: top,
+            oldHeight: height,
+            newHeight: fitted.estimatedHeight,
+            availableHeight,
+            scale: Number(fitted.scale.toFixed(2)),
+          });
+
+          htmlContent = fitted.html;
+          height = fitted.estimatedHeight;
+        }
+
+        if (height > availableHeight) {
+          log.warn('Whiteboard text still exceeds remaining space', {
+            top,
+            height,
+            availableHeight,
+            overflow: height - availableHeight,
+          });
+        }
+      } else {
+        log.warn('No vertical space remains for whiteboard text', {
+          requestedTop: action.y,
+          collisionAdjustedTop: top,
+          height,
+          boardBottom,
+        });
+      }
+    }
+
+    if (height > requestedHeight) {
+      log.debug('Expanded whiteboard text height', {
+        requestedHeight,
+        estimatedHeight,
+        finalHeight: height,
+        x: action.x,
+        y: action.y,
+        width,
+      });
+    }
+
+    const requestedElementId = action.elementId || action.id || 'wb_text';
+
+    const existingIds = new Set((wb.data.elements ?? []).map((element) => element.id));
+
+    let elementId = requestedElementId;
+
+    if (existingIds.has(elementId)) {
+      elementId = `${requestedElementId}_${action.id}`;
+
+      log.warn('Duplicate whiteboard element ID; generated unique ID', {
+        requestedElementId,
+        generatedElementId: elementId,
+      });
+    }
+
     this.stageAPI.whiteboard.addElement(
       {
-        id: action.elementId || '',
+        id: elementId,
         type: 'text',
         content: htmlContent,
         left: action.x,
-        top: action.y,
-        width: action.width ?? 400,
-        height: action.height ?? 100,
+        top,
+        width,
+        height,
         rotate: 0,
         defaultFontName: 'Microsoft YaHei',
         defaultColor: action.color ?? '#333333',

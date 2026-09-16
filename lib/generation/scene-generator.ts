@@ -1391,11 +1391,28 @@ export async function generateSceneActions(
     const response = await aiCall(prompts.system, prompts.user);
     const actions = parseActionsFromStructuredOutput(response, outline.type);
 
+    //    if (actions.length > 0) {
+    //      // Validate and fill in Action IDs
+    //      return processActions(actions, content.elements, agents);
+    //    }
+    //start of temp code
+
     if (actions.length > 0) {
+      log.info(
+        'Generated slide action sequence',
+        actions.map((action, index) => ({
+          index,
+          type: action.type,
+          title: action.title,
+          elementId: 'elementId' in action ? action.elementId : undefined,
+          text: action.type === 'speech' ? action.text.substring(0, 80) : undefined,
+        })),
+      );
+
       // Validate and fill in Action IDs
       return processActions(actions, content.elements, agents);
     }
-
+    // end of temp code
     return generateDefaultSlideActions(outline, content.elements);
   }
 
