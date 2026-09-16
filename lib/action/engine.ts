@@ -437,7 +437,6 @@ export class ActionEngine {
         width,
       });
     }
-
     const requestedElementId = action.elementId || action.id || 'wb_text';
 
     const existingIds = new Set((wb.data.elements ?? []).map((element) => element.id));
