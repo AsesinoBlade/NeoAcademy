@@ -6,7 +6,11 @@
  */
 
 import { SLIDE_ONLY_ACTIONS } from '@/lib/types/action';
-
+import {
+  WHITEBOARD_LARGE_HEADING_FONT_SIZE,
+  WHITEBOARD_SMALL_HEADING_FONT_SIZE,
+  WHITEBOARD_TEXT_FONT_SIZE,
+} from '@/lib/config/whiteboard-fonts';
 // ==================== Effective Actions ====================
 
 /**
@@ -34,8 +38,8 @@ export function getActionDescriptions(allowedActions: string[]): string {
       'Point at an element with a laser pointer effect. Parameters: { elementId: string, color?: string }',
     wb_open:
       'Open the whiteboard for hand-drawn explanations, formulas, diagrams, or step-by-step derivations. Creates a new whiteboard if none exists. Call this before adding elements. Parameters: {}',
-    wb_draw_text:
-      'Add text to the whiteboard. Use for writing formulas, steps, or key points. Parameters: { content: string, x: number, y: number, width?: number, height?: number, fontSize?: number, color?: string, elementId?: string }',
+
+    wb_draw_text: `Add text to the whiteboard. Use fontSize ${WHITEBOARD_LARGE_HEADING_FONT_SIZE} for major headings, ${WHITEBOARD_SMALL_HEADING_FONT_SIZE} for smaller headings/subheadings, and ${WHITEBOARD_TEXT_FONT_SIZE} for normal explanatory text. Parameters: { content: string, x: number, y: number, width?: number, height?: number, fontSize?: number, color?: string, elementId?: string }`,
     wb_draw_shape:
       'Add a shape to the whiteboard. Use for diagrams and visual explanations. Parameters: { shape: "rectangle"|"circle"|"triangle", x: number, y: number, width: number, height: number, fillColor?: string, elementId?: string }',
     wb_draw_chart:

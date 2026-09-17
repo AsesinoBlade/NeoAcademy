@@ -8,7 +8,12 @@
  * - Fire-and-forget: spotlight, laser — dispatch and return immediately
  * - Synchronous: speech, whiteboard, discussion — await completion
  */
-import { estimateTextHeight, fitTextToHeight } from '@/lib/layout/text-layout';
+import {
+  WHITEBOARD_LARGE_HEADING_FONT_SIZE,
+  WHITEBOARD_SMALL_HEADING_FONT_SIZE,
+  WHITEBOARD_TEXT_FONT_SIZE,
+} from '@/lib/config/whiteboard-fonts';
+import { estimateTextHeight } from '@/lib/layout/text-layout';
 import type { StageStore } from '@/lib/api/stage-api';
 import { createStageAPI } from '@/lib/api/stage-api';
 import { useCanvasStore } from '@/lib/store/canvas';
@@ -49,13 +54,39 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeWhiteboardFontSize(size: number): number {
+  // Preserve the configured semantic sizes when the model follows our guidance.
+  if (size === WHITEBOARD_LARGE_HEADING_FONT_SIZE) {
+    return WHITEBOARD_LARGE_HEADING_FONT_SIZE;
+  }
+
+  if (size === WHITEBOARD_SMALL_HEADING_FONT_SIZE) {
+    return WHITEBOARD_SMALL_HEADING_FONT_SIZE;
+  }
+
+  if (size === WHITEBOARD_TEXT_FONT_SIZE) {
+    return WHITEBOARD_TEXT_FONT_SIZE;
+  }
+
+  // Also normalize legacy/model-generated oversized values.
+  // Existing generations commonly use roughly:
+  // 28px+ for major headings, 24-27px for smaller headings,
+  // and 18-23px for ordinary body text.
+  if (size >= 28) {
+    return WHITEBOARD_LARGE_HEADING_FONT_SIZE;
+  }
+
+  if (size >= 24) {
+    return WHITEBOARD_SMALL_HEADING_FONT_SIZE;
+  }
+
+  return WHITEBOARD_TEXT_FONT_SIZE;
+}
+
 function normalizeWhiteboardFontSizes(html: string): string {
   return html.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_match, sizeText: string) => {
     const size = Number.parseFloat(sizeText);
-
-    const cappedSize = Math.min(28, Math.max(14, size));
-
-    return `font-size: ${cappedSize}px`;
+    return `font-size: ${normalizeWhiteboardFontSize(size)}px`;
   });
 }
 
@@ -322,7 +353,7 @@ export class ActionEngine {
     const wb = this.stageAPI.whiteboard.get();
     if (!wb.success || !wb.data) return;
 
-    const fontSize = action.fontSize ?? 18;
+    const fontSize = normalizeWhiteboardFontSize(action.fontSize ?? WHITEBOARD_TEXT_FONT_SIZE);
     const width = action.width ?? 400;
 
     let htmlContent = action.content;
@@ -330,7 +361,9 @@ export class ActionEngine {
       htmlContent = `<p style="font-size: ${fontSize}px;">${htmlContent}</p>`;
     }
 
-    const requestedHeight = action.height ?? 100;
+    htmlContent = normalizeWhiteboardFontSizes(htmlContent);
+
+    const requestedHeight = action.height;
 
     const estimatedHeight = estimateTextHeight({
       html: htmlContent,
@@ -339,9 +372,9 @@ export class ActionEngine {
       lineHeight: 1.5,
     });
 
-    htmlContent = normalizeWhiteboardFontSizes(htmlContent);
+    let height =
+      requestedHeight !== undefined ? Math.max(requestedHeight, estimatedHeight) : estimatedHeight;
 
-    let height = Math.max(requestedHeight, estimatedHeight);
     const gap = 12;
     const boardBottom = 562.5 - 10;
 
@@ -383,65 +416,22 @@ export class ActionEngine {
     }
 
     if (top + height > boardBottom) {
-      const availableHeight = boardBottom - top;
+      log.info('Whiteboard text does not fit; continuing on fresh board', {
+        content: action.content,
+        requestedTop: action.y,
+        collisionAdjustedTop: top,
+        height,
+        boardBottom,
+      });
 
-      if (availableHeight > 0) {
-        const fitted = fitTextToHeight({
-          html: htmlContent,
-          width,
-          maxHeight: availableHeight,
-          defaultFontSize: Math.min(28, Math.max(14, fontSize)),
-          minimumFontSize: 14,
-          lineHeight: 1.5,
-        });
+      await this.executeWbClear();
 
-        if (fitted.changed) {
-          log.debug('Fitted whiteboard text into remaining space', {
-            requestedTop: action.y,
-            collisionAdjustedTop: top,
-            oldHeight: height,
-            newHeight: fitted.estimatedHeight,
-            availableHeight,
-            scale: Number(fitted.scale.toFixed(2)),
-          });
-
-          htmlContent = fitted.html;
-          height = fitted.estimatedHeight;
-        }
-        if (height > availableHeight) {
-          log.info('Whiteboard text cannot fully fit; continuing on fresh board', {
-            content: action.content,
-            requestedTop: action.y,
-            collisionAdjustedTop: top,
-            height,
-            availableHeight,
-            boardBottom,
-          });
-
-          await this.executeWbClear();
-
-          // Start this overflowing element at the top of the fresh whiteboard.
-          this.whiteboardVerticalOffset = Math.max(0, action.y - 30);
-          top = 30;
-        }
-      } else {
-        log.info('Whiteboard full; continuing on fresh board', {
-          content: action.content,
-          requestedTop: action.y,
-          collisionAdjustedTop: top,
-          boardBottom,
-        });
-
-        await this.executeWbClear();
-
-        // Shift this page's remaining model coordinates upward so the first
-        // overflowing element begins near the top of the fresh whiteboard.
-        this.whiteboardVerticalOffset = Math.max(0, action.y - 30);
-        top = 30;
-      }
+      // Start this overflowing element at the top of the fresh whiteboard.
+      this.whiteboardVerticalOffset = Math.max(0, action.y - 30);
+      top = 30;
     }
 
-    if (height > requestedHeight) {
+    if (requestedHeight !== undefined && height > requestedHeight) {
       log.debug('Expanded whiteboard text height', {
         requestedHeight,
         estimatedHeight,

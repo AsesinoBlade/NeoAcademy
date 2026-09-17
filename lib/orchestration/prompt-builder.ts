@@ -4,6 +4,11 @@
  * Builds system prompts and converts messages for the LLM.
  */
 
+import {
+  WHITEBOARD_LARGE_HEADING_FONT_SIZE,
+  WHITEBOARD_SMALL_HEADING_FONT_SIZE,
+  WHITEBOARD_TEXT_FONT_SIZE,
+} from '@/lib/config/whiteboard-fonts';
 import type { StatelessChatRequest } from '@/lib/types/chat';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { WhiteboardActionRecord, AgentTurnSummary } from './director-prompt';
@@ -231,7 +236,7 @@ ${orderingPrinciples}
 ${buildLengthGuidelines(agentConfig.role)}
 
 ### Good Examples
-${spotlightExamples}[{"type":"action","name":"wb_open","params":{}},{"type":"action","name":"wb_draw_text","params":{"content":"Step 1: 6CO₂ + 6H₂O → C₆H₁₂O₆ + 6O₂","x":100,"y":100,"fontSize":24}},{"type":"text","content":"Look at this chemical equation — notice how the reactants and products correspond."}]
+${spotlightExamples}[{"type":"action","name":"wb_open","params":{}},{"type":"action","name":"wb_draw_text","params":{"content":"Step 1: 6CO₂ + 6H₂O → C₆H₁₂O₆ + 6O₂","x":100,"y":100,"fontSize":${WHITEBOARD_SMALL_HEADING_FONT_SIZE}}},{"type":"text","content":"Look at this chemical equation — notice how the reactants and products correspond."}]
 
 [{"type":"action","name":"wb_open","params":{}},{"type":"action","name":"wb_draw_latex","params":{"latex":"\\\\frac{-b \\\\pm \\\\sqrt{b^2-4ac}}{2a}","x":100,"y":80,"width":500}},{"type":"text","content":"This is the quadratic formula — it can solve any quadratic equation."},{"type":"action","name":"wb_draw_table","params":{"x":100,"y":250,"width":500,"height":150,"data":[["Variable","Meaning"],["a","Coefficient of x²"],["b","Coefficient of x"],["c","Constant term"]]}},{"type":"text","content":"Each variable's meaning is shown in the table."}]
 
@@ -320,6 +325,8 @@ ${common}
  */
 function buildWhiteboardGuidelines(role: string): string {
   const common = `- Before drawing on the whiteboard, check the "Current State" section below for existing whiteboard elements.
+  - Whiteboard font sizes: use ${WHITEBOARD_LARGE_HEADING_FONT_SIZE} for major headings, ${WHITEBOARD_SMALL_HEADING_FONT_SIZE} for smaller headings/subheadings, and ${WHITEBOARD_TEXT_FONT_SIZE} for normal explanatory text.
+- Do not use larger font sizes unless explicitly requested by the user.
 - Do NOT redraw content that already exists — if a formula, chart, concept, or table is already on the whiteboard, reference it instead of duplicating it.
 - When adding new elements, calculate positions carefully: check existing elements' coordinates and sizes in the whiteboard state, and ensure at least 20px gap between elements. Canvas size is 1000×562. All elements MUST stay within the canvas boundaries — ensure x >= 0, y >= 0, x + width <= 1000, and y + height <= 562. Never place elements that extend beyond the edges.
 - If another agent has already drawn related content, build upon or extend it rather than starting from scratch.`;
