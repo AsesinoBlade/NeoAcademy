@@ -137,8 +137,20 @@ Personalize your teaching based on their background when relevant. Address them 
   // Ordering principles
   const orderingPrinciples = hasSlideActions
     ? `- spotlight/laser actions should appear BEFORE the corresponding text object (point first, then speak)
-- whiteboard actions can interleave WITH text objects (draw while speaking)`
-    : `- whiteboard actions can interleave WITH text objects (draw while speaking)`;
+	- WHITEBOARD PACING (CRITICAL): Never emit more than TWO consecutive wb_draw_* actions without a type:"text" object immediately afterward.
+	- A heading plus its explanation may be drawn as two consecutive actions, but then you MUST speak about that specific material before drawing the next heading or concept.
+	- If you draw or write whiteboard teaching content, you MUST include a type:"text" object explaining that content in the SAME response before the JSON array ends.
+	- NEVER end your response immediately after whiteboard drawing actions. Drawing content without speaking about it is an incomplete teaching turn.
+	- For a numbered list, multi-step derivation, or several named concepts: draw ONE item or step, explain it aloud, then draw the next item or step.
+	- NEVER draw an entire multi-item whiteboard first and explain it afterward.
+	- If the next item will not fit, finish speaking about the material currently visible, then emit wb_clear, then draw the next item and explain it.`
+    : `- WHITEBOARD PACING (CRITICAL): Never emit more than TWO consecutive wb_draw_* actions without a type:"text" object immediately afterward.
+	- A heading plus its explanation may be drawn as two consecutive actions, but then you MUST speak about that specific material before drawing the next heading or concept.
+	- If you draw or write whiteboard teaching content, you MUST include a type:"text" object explaining that content in the SAME response before the JSON array ends.
+	- NEVER end your response immediately after whiteboard drawing actions. Drawing content without speaking about it is an incomplete teaching turn.
+	- For a numbered list, multi-step derivation, or several named concepts: draw ONE item or step, explain it aloud, then draw the next item or step.
+	- NEVER draw an entire multi-item whiteboard first and explain it afterward.
+	- If the next item will not fit, finish speaking about the material currently visible, then emit wb_clear, then draw the next item and explain it.`;
 
   // Good examples — include spotlight/laser examples only for slide scenes
   const spotlightExamples = hasSlideActions
@@ -178,6 +190,18 @@ ${agentConfig.persona}
 ## Your Classroom Role
 ${roleGuideline}
 ${studentProfileSection}${peerContext}${languageConstraint}
+
+# Active User Request Priority (CRITICAL)
+- When the user has made a direct question or teaching request, that request is your PRIMARY task.
+- The Current State, current scene, slide content, and course lesson are contextual information only. They do NOT override the user's active request.
+- If your previous response completed only part of a multi-part user request, continue with the remaining requested parts on your next turn.
+- Do NOT return to the underlying course lesson, resume the current scene's topic, or ask questions about unrelated slide content until the user's request has been fully answered.
+- A new response turn does NOT mean the user's task has ended. For example, if the user asked for three laws and you explained only the first law, continue with the second and third laws on subsequent turns.
+- You may use, clear, or replace existing whiteboard content as needed to complete the user's request.
+- After the user's main teaching request has been completed, participate naturally in follow-up discussion.
+- During follow-up discussion, prefer verbal responses. Do NOT redraw or recreate whiteboard material that is already complete unless a new explanation, correction, or diagram truly requires it.
+- If existing whiteboard content already supports the discussion, refer to it rather than drawing it again.
+
 # Output Format
 You MUST output a JSON array for ALL responses. Each element is an object with a \`type\` field:
 
@@ -187,7 +211,7 @@ ${formatExample}
 1. Output a single JSON array — no explanation, no code fences
 2. \`type:"action"\` objects contain \`name\` and \`params\`
 3. \`type:"text"\` objects contain \`content\` (speech text)
-4. Action and text objects can freely interleave in any order
+4. WHITEBOARD ORDERING RULE: After at most TWO consecutive wb_draw_* actions, you MUST emit a type:"text" object before any further wb_draw_* action.
 5. The \`]\` closing bracket marks the end of your response
 6. CRITICAL: ALWAYS start your response with \`[\` — even if your previous message was interrupted. Never continue a partial response as plain text. Every response must be a complete, independent JSON array.
 
@@ -750,7 +774,7 @@ export function convertMessagesToOpenAI(
       if (msg.role === 'assistant') {
         // Assistant messages use JSON array format to serve as few-shot examples
         // that match the expected output format from the system prompt
-        const items: Array<{ type: string; [key: string]: string }> = [];
+        const items: Array<{ type: string; [key: string]: unknown }> = [];
 
         if (msg.parts) {
           for (const part of msg.parts) {
@@ -761,17 +785,14 @@ export function convertMessagesToOpenAI(
             } else if ((p.type as string)?.startsWith('action-') && p.state === 'result') {
               const actionName = (p.actionName ||
                 (p.type as string).replace('action-', '')) as string;
-              const output = p.output as Record<string, unknown> | undefined;
-              const isSuccess = output?.success === true;
-              const resultSummary = isSuccess
-                ? output?.data
-                  ? `result: ${JSON.stringify(output.data).slice(0, 100)}`
-                  : 'success'
-                : (output?.error as string) || 'failed';
+
+              const input =
+                p.input && typeof p.input === 'object' ? (p.input as Record<string, unknown>) : {};
+
               items.push({
                 type: 'action',
                 name: actionName,
-                result: resultSummary,
+                params: input,
               });
             }
           }

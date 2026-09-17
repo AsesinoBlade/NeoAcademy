@@ -162,18 +162,21 @@ export function parseStructuredChunk(chunk: string, state: ParserState): ParseRe
   const trimmed = state.buffer.trimEnd();
   const isArrayClosed = trimmed.endsWith(']') && trimmed.length > 1;
 
-  // Step 3: Try incremental parse — jsonrepair first (fixes unescaped quotes), fallback to partial-json
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial-json returns any[]
+  // Step 3: Incrementally parse the growing JSON array.
+  // partial-json is deliberately used first because the stream is expected
+  // to be incomplete. jsonrepair can prematurely "complete" an unfinished
+  // action and cause malformed actions to be emitted before their params arrive.
   let parsed: any[];
+
   try {
-    const repaired = jsonrepair(state.buffer);
-    parsed = JSON.parse(repaired);
+    parsed = parsePartialJson(
+      state.buffer,
+      Allow.ARR | Allow.OBJ | Allow.STR | Allow.NUM | Allow.BOOL | Allow.NULL,
+    );
   } catch {
     try {
-      parsed = parsePartialJson(
-        state.buffer,
-        Allow.ARR | Allow.OBJ | Allow.STR | Allow.NUM | Allow.BOOL | Allow.NULL,
-      );
+      const repaired = jsonrepair(state.buffer);
+      parsed = JSON.parse(repaired);
     } catch {
       return result;
     }
@@ -187,6 +190,21 @@ export function parseStructuredChunk(chunk: string, state: ParserState): ParseRe
   // When the array is closed, all items are complete.
   // When still streaming, items [0..N-2] are complete; item [N-1] may be partial.
   const completeUpTo = isArrayClosed ? parsed.length : Math.max(0, parsed.length - 1);
+
+  // Incremental parsing must never move backward. jsonrepair/partial-json can
+  // temporarily return a shorter array while the newest streamed object is
+  // malformed or incomplete. If we accepted that shorter result,
+  // lastParsedItemCount would regress and previously emitted items would be
+  // emitted again when parsing recovers.
+  if (completeUpTo < state.lastParsedItemCount) {
+    log.debug('Ignoring regressed incremental parse', {
+      completeUpTo,
+      lastParsedItemCount: state.lastParsedItemCount,
+      parsedLength: parsed.length,
+    });
+
+    return result;
+  }
 
   // Count segment indices for items already emitted
   let textSegmentIndex = 0;

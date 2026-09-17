@@ -466,7 +466,7 @@ const migrateFromOldStorage = () => {
     }
   }
 
-  let maxTurns = '10';
+  let maxTurns = '15';
   if (oldMaxTurns) maxTurns = oldMaxTurns;
 
   return {
@@ -497,7 +497,7 @@ export const useSettingsStore = create<SettingsState>()(
         providersConfig: migratedData?.providersConfig || getDefaultProvidersConfig(),
         ttsModel: migratedData?.ttsModel || 'openai-tts',
         selectedAgentIds: migratedData?.selectedAgentIds || ['default-1', 'default-2', 'default-3'],
-        maxTurns: migratedData?.maxTurns?.toString() || '10',
+        maxTurns: migratedData?.maxTurns?.toString() || '15',
         agentMode: 'auto' as const,
         autoAgentCount: 3,
 
@@ -1070,7 +1070,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
     {
       name: 'settings-storage',
-      version: 3,
+      version: 4,
       // Migrate persisted state
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<SettingsState>;
@@ -1149,6 +1149,12 @@ export const useSettingsStore = create<SettingsState>()(
             state.imageModelId = 'z-image-turbo-8bit';
             state.imageGenerationEnabled = true;
           }
+        }
+
+        // v3 → v4: Raise the old default discussion limit from 10 to 15.
+        // Preserve any value the user explicitly customized.
+        if (version < 4 && state.maxTurns === '10') {
+          state.maxTurns = '15';
         }
 
         // Add default media generation toggles if missing

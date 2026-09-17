@@ -51,7 +51,7 @@ export function getActionDescriptions(allowedActions: string[]): string {
     wb_delete:
       'Delete a specific element from the whiteboard by its ID. Use to remove an outdated, incorrect, or overlapping element without clearing the entire board. Parameters: { elementId: string }',
     wb_close:
-      'Close the whiteboard and return to the slide view. Always close after you finish drawing. Parameters: {}',
+      'Close the whiteboard and return to the slide view. Use only when you intentionally want to leave the whiteboard and return to the slide. Do NOT close merely because you finished drawing or because your current response is ending. Parameters: {}',
     play_video:
       'Start playback of a video element on the current slide. Synchronous — blocks until the video finishes playing. Use a speech action before this to introduce the video. Parameters: { elementId: string }',
   };

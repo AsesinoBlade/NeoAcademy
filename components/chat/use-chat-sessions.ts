@@ -136,6 +136,8 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
   // StreamBuffer instances per session (SSE + lecture share the same buffer model)
   const buffersRef = useRef<Map<string, StreamBuffer>>(new Map());
 
+  const actionEnginesRef = useRef<Map<string, ActionEngine>>(new Map());
+
   // Tracks the single message ID per lecture session
   const lectureMessageIds = useRef<Map<string, string>>(new Map());
 
@@ -168,6 +170,13 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       // For discussion/QA sessions, add pacing delays so fast models don't
       // rush through text and actions. Lecture pacing is handled by PlaybackEngine.
       const pacingOptions = type === 'lecture' ? {} : { postTextDelayMs: 1200, actionDelayMs: 800 };
+
+      let actionEngine = actionEnginesRef.current.get(sessionId);
+
+      if (!actionEngine) {
+        actionEngine = new ActionEngine(useStageStore);
+        actionEnginesRef.current.set(sessionId, actionEngine);
+      }
 
       const buffer = new StreamBuffer(
         {
@@ -354,7 +363,6 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             // Execute the action via ActionEngine.
             // Live AI action payloads are runtime data, so async failures must
             // be contained here instead of becoming unhandled rejections.
-            const actionEngine = new ActionEngine(useStageStore);
             const action = {
               id: data.actionId,
               type: data.actionName,
@@ -481,7 +489,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         (agentId) => getAgentRole(agentId) === 'teacher',
       );
 
-      const defaultMaxTurns = requestTemplate.config.agentIds.length <= 1 ? 1 : 10;
+      const defaultMaxTurns = requestTemplate.config.agentIds.length <= 1 ? 1 : 15;
       const maxTurns = settingsState.maxTurns
         ? parseInt(settingsState.maxTurns, 10) || defaultMaxTurns
         : defaultMaxTurns;
@@ -749,6 +757,13 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         buf.shutdown();
         buffersRef.current.delete(sessionId);
       }
+
+      const engine = actionEnginesRef.current.get(sessionId);
+      if (engine) {
+        engine.dispose();
+        actionEnginesRef.current.delete(sessionId);
+      }
+
       lectureMessageIds.current.delete(sessionId);
       lectureLastActionIndexRef.current.delete(sessionId);
 
@@ -841,6 +856,12 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     if (buf) {
       buf.shutdown();
       buffersRef.current.delete(sessionId);
+    }
+
+    const engine = actionEnginesRef.current.get(sessionId);
+    if (engine) {
+      engine.dispose();
+      actionEnginesRef.current.delete(sessionId);
     }
 
     // Abort SSE stream

@@ -69,7 +69,7 @@ export class ActionEngine {
   private stageAPI: ReturnType<typeof createStageAPI>;
   private audioPlayer: AudioPlayer | null;
   private effectTimer: ReturnType<typeof setTimeout> | null = null;
-
+  private whiteboardVerticalOffset = 0;
   constructor(stageStore: StageStore, audioPlayer?: AudioPlayer) {
     this.stageStore = stageStore;
     this.stageAPI = createStageAPI(stageStore);
@@ -345,7 +345,7 @@ export class ActionEngine {
     const gap = 12;
     const boardBottom = 562.5 - 10;
 
-    let top = action.y;
+    let top = Math.max(30, action.y - this.whiteboardVerticalOffset);
 
     const existingTextElements = (wb.data.elements ?? []).filter(
       (element) => element.type === 'text',
@@ -408,22 +408,36 @@ export class ActionEngine {
           htmlContent = fitted.html;
           height = fitted.estimatedHeight;
         }
-
         if (height > availableHeight) {
-          log.warn('Whiteboard text still exceeds remaining space', {
-            top,
+          log.info('Whiteboard text cannot fully fit; continuing on fresh board', {
+            content: action.content,
+            requestedTop: action.y,
+            collisionAdjustedTop: top,
             height,
             availableHeight,
-            overflow: height - availableHeight,
+            boardBottom,
           });
+
+          await this.executeWbClear();
+
+          // Start this overflowing element at the top of the fresh whiteboard.
+          this.whiteboardVerticalOffset = Math.max(0, action.y - 30);
+          top = 30;
         }
       } else {
-        log.warn('No vertical space remains for whiteboard text', {
+        log.info('Whiteboard full; continuing on fresh board', {
+          content: action.content,
           requestedTop: action.y,
           collisionAdjustedTop: top,
-          height,
           boardBottom,
         });
+
+        await this.executeWbClear();
+
+        // Shift this page's remaining model coordinates upward so the first
+        // overflowing element begins near the top of the fresh whiteboard.
+        this.whiteboardVerticalOffset = Math.max(0, action.y - 30);
+        top = 30;
       }
     }
 
@@ -678,6 +692,7 @@ export class ActionEngine {
     // Actually remove elements
     this.stageAPI.whiteboard.update({ elements: [] }, wb.data.id);
     useCanvasStore.getState().setWhiteboardClearing(false);
+    this.whiteboardVerticalOffset = 0;
   }
 
   private async executeWbClose(): Promise<void> {

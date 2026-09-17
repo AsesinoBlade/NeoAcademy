@@ -215,6 +215,31 @@ async function directorNode(
     const decision = parseDirectorDecision(content);
 
     if (decision.shouldEnd || !decision.nextAgentId) {
+      const hasNonTeacherParticipation = state.agentResponses.some((response) => {
+        const agent = agents.find((a) => a.id === response.agentId);
+        return agent && agent.role !== 'teacher';
+      });
+
+      if (!state.discussionContext && !hasNonTeacherParticipation) {
+        const followUpAgent = agents.find((agent) => agent.role !== 'teacher');
+
+        if (followUpAgent) {
+          log.info(
+            `[Director] Overriding premature END: dispatching follow-up agent "${followUpAgent.id}"`,
+          );
+
+          write({
+            type: 'thinking',
+            data: { stage: 'agent_loading', agentId: followUpAgent.id },
+          });
+
+          return {
+            currentAgentId: followUpAgent.id,
+            shouldEnd: false,
+          };
+        }
+      }
+
       log.info('[Director] Decision: END');
       return { shouldEnd: true };
     }
