@@ -19,7 +19,12 @@
  */
 
 import type { LanguageModel } from 'ai';
-import type { StatelessChatRequest, StatelessEvent, ParsedAction } from '@/lib/types/chat';
+import type {
+  StatelessChatRequest,
+  StatelessEvent,
+  ParsedAction,
+  ParsedClassQuestion,
+} from '@/lib/types/chat';
 import type { ThinkingConfig } from '@/lib/types/provider';
 import type { WhiteboardActionRecord } from './director-prompt';
 import { createOrchestrationGraph, buildInitialState } from './director-graph';
@@ -71,9 +76,13 @@ export function createParserState(): ParserState {
 export interface ParseResult {
   textChunks: string[];
   actions: ParsedAction[];
+  classQuestions: ParsedClassQuestion[];
   isDone: boolean;
-  /** Ordered sequence recording original interleaving of text and action segments */
-  ordered: Array<{ type: 'text'; index: number } | { type: 'action'; index: number }>;
+  ordered: Array<
+    | { type: 'text'; index: number }
+    | { type: 'action'; index: number }
+    | { type: 'class_question'; index: number }
+  >;
 }
 
 /**
@@ -110,7 +119,20 @@ function emitItem(
     // director-graph can read result.actions[entry.index] correctly.
     result.ordered.push({ type: 'action', index: result.actions.length - 1 });
     return { textSegmentIndex, actionSegmentIndex: actionSegmentIndex + 1 };
+  } else if (item.type === 'class_question') {
+    const content = (item.content as string) || '';
+
+    if (content) {
+      result.classQuestions.push({ content });
+      result.ordered.push({
+        type: 'class_question',
+        index: result.classQuestions.length - 1,
+      });
+    }
+
+    return { textSegmentIndex, actionSegmentIndex };
   }
+
   return { textSegmentIndex, actionSegmentIndex };
 }
 
@@ -137,6 +159,7 @@ export function parseStructuredChunk(chunk: string, state: ParserState): ParseRe
   const result: ParseResult = {
     textChunks: [],
     actions: [],
+    classQuestions: [],
     isDone: false,
     ordered: [],
   };
@@ -287,6 +310,7 @@ export function finalizeParser(state: ParserState): ParseResult {
   const result: ParseResult = {
     textChunks: [],
     actions: [],
+    classQuestions: [],
     isDone: true,
     ordered: [],
   };
@@ -309,6 +333,7 @@ export function finalizeParser(state: ParserState): ParseResult {
     const finalChunk = parseStructuredChunk('', state);
     result.textChunks.push(...finalChunk.textChunks);
     result.actions.push(...finalChunk.actions);
+    result.classQuestions.push(...finalChunk.classQuestions);
     result.ordered.push(...finalChunk.ordered);
 
     // If final parse yielded nothing, emit raw text after `[` as fallback

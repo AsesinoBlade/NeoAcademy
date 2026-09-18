@@ -65,6 +65,12 @@ export interface CueUserItem {
   prompt?: string;
 }
 
+export interface ClassQuestionItem {
+  kind: 'class_question';
+  fromAgentId: string;
+  prompt: string;
+}
+
 export interface DoneItem {
   kind: 'done';
   totalActions: number;
@@ -84,6 +90,7 @@ export type BufferItem =
   | TextItem
   | ActionItem
   | ThinkingItem
+  | ClassQuestionItem
   | CueUserItem
   | DoneItem
   | ErrorItem;
@@ -116,6 +123,7 @@ export interface StreamBufferCallbacks {
    */
   onSpeechProgress(ratio: number | null): void;
   onThinking(data: { stage: string; agentId?: string } | null): void;
+  onClassQuestion(fromAgentId: string, prompt: string): void;
   onCueUser(fromAgentId?: string, prompt?: string): void;
   onDone(data: {
     totalActions: number;
@@ -243,6 +251,12 @@ export class StreamBuffer {
     this.items.push({ kind: 'thinking', ...data });
   }
 
+  pushClassQuestion(data: { fromAgentId: string; prompt: string }): void {
+    if (this._disposed) return;
+    this.sealLastText();
+    this.items.push({ kind: 'class_question', ...data });
+  }
+
   pushCueUser(data: { fromAgentId?: string; prompt?: string }): void {
     if (this._disposed) return;
     this.items.push({ kind: 'cue_user', ...data });
@@ -337,6 +351,9 @@ export class StreamBuffer {
           break;
         case 'thinking':
           this.cb.onThinking(item);
+          break;
+        case 'class_question':
+          this.cb.onClassQuestion(item.fromAgentId, item.prompt);
           break;
         case 'cue_user':
           this.cb.onCueUser(item.fromAgentId, item.prompt);
@@ -501,6 +518,13 @@ export class StreamBuffer {
         this.advanceNonText();
         break;
 
+      case 'class_question':
+        this.cb.onClassQuestion(item.fromAgentId, item.prompt);
+        this.readIndex++;
+        this.charCursor = 0;
+        this.advanceNonText();
+        break;
+
       case 'cue_user':
         this.cb.onCueUser(item.fromAgentId, item.prompt);
         this.readIndex++;
@@ -573,6 +597,9 @@ export class StreamBuffer {
           continue; // no delay — keep advancing
         case 'thinking':
           this.cb.onThinking(next);
+          break;
+        case 'class_question':
+          this.cb.onClassQuestion(next.fromAgentId, next.prompt);
           break;
         case 'cue_user':
           this.cb.onCueUser(next.fromAgentId, next.prompt);

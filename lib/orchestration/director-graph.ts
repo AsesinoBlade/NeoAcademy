@@ -361,6 +361,7 @@ async function runAgentGeneration(
   const parserState = createParserState();
   let fullText = '';
   let actionCount = 0;
+  let classQuestionEncountered = false;
   const whiteboardActions: WhiteboardActionRecord[] = [];
 
   try {
@@ -388,25 +389,31 @@ async function runAgentGeneration(
               );
               continue;
             }
+
             const text = rawText.replace(/^>+\s?/gm, '');
             if (!text) continue;
+
             fullText += text;
+
             write({
               type: 'text_delta',
               data: { content: text, messageId },
             });
+
             emittedTextCount++;
           } else if (entry.type === 'action') {
             const ac = parseResult.actions[entry.index];
             if (!ac) continue;
+
             if (!effectiveActions.includes(ac.actionName)) {
               log.warn(
                 `[AgentGenerate] Agent ${agentConfig.name} attempted disallowed action: ${ac.actionName}, skipping`,
               );
               continue;
             }
+
             actionCount++;
-            // Record whiteboard actions to the ledger
+
             if (ac.actionName.startsWith('wb_')) {
               whiteboardActions.push({
                 actionName: ac.actionName as WhiteboardActionRecord['actionName'],
@@ -415,6 +422,7 @@ async function runAgentGeneration(
                 params: ac.params,
               });
             }
+
             write({
               type: 'action',
               data: {
@@ -425,7 +433,34 @@ async function runAgentGeneration(
                 messageId,
               },
             });
+          } else if (entry.type === 'class_question') {
+            const question = parseResult.classQuestions[entry.index];
+            if (!question?.content) continue;
+
+            const text = question.content.replace(/^>+\s?/gm, '');
+            if (!text) continue;
+
+            fullText += text;
+
+            write({
+              type: 'text_delta',
+              data: { content: text, messageId },
+            });
+
+            write({
+              type: 'class_question',
+              data: {
+                fromAgentId: agentId,
+                prompt: text,
+              },
+            });
+
+            classQuestionEncountered = true;
+            break;
           }
+        }
+        if (classQuestionEncountered) {
+          break;
         }
 
         // Emit trailing partial text deltas not covered by ordered
@@ -444,18 +479,24 @@ async function runAgentGeneration(
     }
 
     // Finalize: emit any remaining content if the model didn't produce valid JSON
-    const finalResult = finalizeParser(parserState);
-    for (const entry of finalResult.ordered) {
-      if (entry.type === 'text') {
-        const rawText = finalResult.textChunks[entry.index];
-        if (!rawText) continue;
-        const text = rawText.replace(/^>+\s?/gm, '');
-        if (!text) continue;
-        fullText += text;
-        write({
-          type: 'text_delta',
-          data: { content: text, messageId },
-        });
+    if (!classQuestionEncountered) {
+      const finalResult = finalizeParser(parserState);
+
+      for (const entry of finalResult.ordered) {
+        if (entry.type === 'text') {
+          const rawText = finalResult.textChunks[entry.index];
+          if (!rawText) continue;
+
+          const text = rawText.replace(/^>+\s?/gm, '');
+          if (!text) continue;
+
+          fullText += text;
+
+          write({
+            type: 'text_delta',
+            data: { content: text, messageId },
+          });
+        }
       }
     }
   } catch (error) {

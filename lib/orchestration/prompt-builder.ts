@@ -178,6 +178,14 @@ Personalize your teaching based on their background when relevant. Address them 
 - Prefer variety: mix spotlights, laser, and whiteboard for engaging teaching. Don't use the same action type repeatedly.`
     : '';
 
+  const classQuestionGuidelines =
+    agentConfig.role === 'teacher'
+      ? `4. \`type:"class_question"\` objects contain \`content\` and are used ONLY when you intentionally ask the class a question and want another classroom participant to answer before you continue.
+  5. A \`class_question\` MUST be the FINAL object in your JSON array. End the response immediately after it.
+  6. Do NOT put the same question in both a \`type:"text"\` object and a \`type:"class_question"\` object. The class_question content itself is spoken aloud.
+  7. Use \`class_question\` only for a genuine handoff where you want an answer. Do NOT use it for rhetorical questions, questions you immediately answer yourself, or ordinary explanatory phrasing.`
+      : `4. Do NOT emit \`type:"class_question"\`. Only the lead teacher may explicitly hand the floor to the class.`;
+
   const roleGuideline = ROLE_GUIDELINES[agentConfig.role] || ROLE_GUIDELINES.student;
 
   // Build language constraint from stage language
@@ -216,9 +224,10 @@ ${formatExample}
 1. Output a single JSON array — no explanation, no code fences
 2. \`type:"action"\` objects contain \`name\` and \`params\`
 3. \`type:"text"\` objects contain \`content\` (speech text)
-4. WHITEBOARD ORDERING RULE: After at most TWO consecutive wb_draw_* actions, you MUST emit a type:"text" object before any further wb_draw_* action.
-5. The \`]\` closing bracket marks the end of your response
-6. CRITICAL: ALWAYS start your response with \`[\` — even if your previous message was interrupted. Never continue a partial response as plain text. Every response must be a complete, independent JSON array.
+${classQuestionGuidelines}
+8. WHITEBOARD ORDERING RULE: After at most TWO consecutive wb_draw_* actions, you MUST emit a type:"text" object before any further wb_draw_* action.
+9. The \`]\` closing bracket marks the end of your response
+10. CRITICAL: ALWAYS start your response with \`[\` — even if your previous message was interrupted. Never continue a partial response as plain text. Every response must be a complete, independent JSON array.
 
 ## Ordering Principles
 ${orderingPrinciples}
@@ -226,11 +235,13 @@ ${orderingPrinciples}
 ## Speech Guidelines (CRITICAL)
 - Effects fire concurrently with your speech — students see results as you speak
 - Text content is what you SAY OUT LOUD to students - natural teaching speech
+- For teachers: when you genuinely want a classroom participant to answer before you continue, use type:"class_question" instead of ordinary type:"text", and make it the final item in the response.
 - Do NOT say "let me add...", "I'll create...", "now I'm going to..."
 - Do NOT describe your actions - just speak naturally as a teacher
 - Students see action results appear on screen - you don't need to announce them
 - Your speech should flow naturally regardless of whether actions succeed or fail
 - NEVER use markdown formatting (blockquotes >, headings #, bold **, lists -, code blocks) in text content — it is spoken aloud, not rendered
+- Never imply that another participant spoke, answered, agreed, or made a point unless their actual contribution appears in the conversation or peer context. Do not begin with acknowledgements such as "Exactly", "Good point", "Good start", "Right", or similar responses unless you are genuinely responding to something another speaker just said.
 
 ## Length & Style (CRITICAL)
 ${buildLengthGuidelines(agentConfig.role)}
@@ -239,6 +250,18 @@ ${buildLengthGuidelines(agentConfig.role)}
 ${spotlightExamples}[{"type":"action","name":"wb_open","params":{}},{"type":"action","name":"wb_draw_text","params":{"content":"Step 1: 6CO₂ + 6H₂O → C₆H₁₂O₆ + 6O₂","x":100,"y":100,"fontSize":${WHITEBOARD_SMALL_HEADING_FONT_SIZE}}},{"type":"text","content":"Look at this chemical equation — notice how the reactants and products correspond."}]
 
 [{"type":"action","name":"wb_open","params":{}},{"type":"action","name":"wb_draw_latex","params":{"latex":"\\\\frac{-b \\\\pm \\\\sqrt{b^2-4ac}}{2a}","x":100,"y":80,"width":500}},{"type":"text","content":"This is the quadratic formula — it can solve any quadratic equation."},{"type":"action","name":"wb_draw_table","params":{"x":100,"y":250,"width":500,"height":150,"data":[["Variable","Meaning"],["a","Coefficient of x²"],["b","Coefficient of x"],["c","Constant term"]]}},{"type":"text","content":"Each variable's meaning is shown in the table."}]
+
+${
+  agentConfig.role === 'teacher'
+    ? `### Class Participation Example
+[{"type":"text","content":"Water keeps plant cells firm and carries dissolved nutrients."},{"type":"class_question","content":"What do you think happens to a plant when its roots cannot get enough water?"}]
+
+When you emit class_question, STOP THERE. Do not add more text or actions after it. Wait for the participant's response before continuing the lesson.
+
+`
+    : ''
+}
+
 
 ### Bad Examples (DO NOT do this)
 [{"type":"text","content":"Let me open the whiteboard"},{"type":"action",...}] (Don't announce actions!)

@@ -93,6 +93,11 @@ export async function processSSEStream(
               break;
             }
 
+            case 'class_question': {
+              buffer.pushClassQuestion(event.data);
+              break;
+            }
+
             case 'cue_user': {
               buffer.pushCueUser(event.data);
               break;

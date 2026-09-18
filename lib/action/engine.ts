@@ -378,6 +378,16 @@ export class ActionEngine {
     const gap = 12;
     const boardBottom = 562.5 - 10;
 
+    const isHeading =
+      fontSize === WHITEBOARD_LARGE_HEADING_FONT_SIZE ||
+      fontSize === WHITEBOARD_SMALL_HEADING_FONT_SIZE;
+
+    // Keep enough room below a heading for about three lines of normal explanatory text.
+    // This prevents headings from being orphaned at the bottom of the whiteboard.
+    const headingFollowupReserve = isHeading
+      ? Math.ceil(WHITEBOARD_TEXT_FONT_SIZE * 1.5 * 3 + 20 + gap)
+      : 0;
+
     let top = Math.max(30, action.y - this.whiteboardVerticalOffset);
 
     const existingTextElements = (wb.data.elements ?? []).filter(
@@ -415,12 +425,13 @@ export class ActionEngine {
       }
     }
 
-    if (top + height > boardBottom) {
+    if (top + height + headingFollowupReserve > boardBottom) {
       log.info('Whiteboard text does not fit; continuing on fresh board', {
         content: action.content,
         requestedTop: action.y,
         collisionAdjustedTop: top,
         height,
+        headingFollowupReserve,
         boardBottom,
       });
 

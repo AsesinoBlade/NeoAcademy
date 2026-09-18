@@ -291,6 +291,9 @@ export interface ParsedAction {
   actionName: string;
   params: Record<string, unknown>;
 }
+export interface ParsedClassQuestion {
+  content: string;
+}
 
 /** @deprecated Use ParsedAction instead */
 export type ParsedToolCall = ParsedAction;
@@ -324,6 +327,13 @@ export type StatelessEvent =
   | {
       type: 'thinking';
       data: { stage: 'director' | 'agent_loading'; agentId?: string };
+    }
+  | {
+      type: 'class_question';
+      data: {
+        fromAgentId: string;
+        prompt: string;
+      };
     }
   | { type: 'cue_user'; data: { fromAgentId?: string; prompt?: string } }
   | {

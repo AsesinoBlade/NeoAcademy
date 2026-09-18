@@ -75,6 +75,9 @@ export function buildDirectorPrompt(
           .join('\n')
       : 'None yet.';
 
+  log.info(`[DirectorPrompt] Responded list:\n${respondedList}`);
+  console.log(`[DirectorPrompt] Responded list:\n${respondedList}`);
+
   const isDiscussion = !!discussionContext;
 
   const discussionSection = isDiscussion
@@ -114,24 +117,30 @@ ${discussionSection}${whiteboardSection}${studentProfileSection}
 # Rules
 ${rule1}
 2. PRIMARY TASK COMPLETION (CRITICAL): In normal Q&A, the user's original request takes priority over follow-up discussion. Before dispatching a student, assistant, or the user, determine whether the teacher has fully answered every material part of the user's original request.
-3. If the original request is not yet fully answered, dispatch the teacher again so they can continue the unfinished explanation. This is allowed even if the teacher already spoke in the current round.
-4. Do NOT allow student follow-up questions, jokes, side discussions, note-taking, or alternative perspectives until the teacher has substantially completed the user's original request.
-5. FOLLOW-UP PARTICIPATION: Once the original request is complete, if multiple agents are available and no non-teacher agent has yet participated in this response cycle, dispatch ONE appropriate student or assistant for a brief useful follow-up before ending the conversation. This is especially important when the teacher explicitly invites questions, asks whether the material is clear, or opens the floor for discussion.
-6. Output END only after the original request is complete AND either:
+3. If the original request is not yet fully answered, normally dispatch the teacher again so they can continue the unfinished explanation. This is allowed even if the teacher already spoke in the current round.
+
+4. TEACHER QUESTION EXCEPTION: If the teacher's most recent response explicitly asks the class a question, invites a student to answer, asks what they think, checks their understanding, or otherwise clearly opens a brief participation turn, dispatch ONE appropriate student or assistant next even if the original user request is not yet complete. This is not a side discussion — it is part of the teacher-led lesson.
+
+5. After that student or assistant responds, if the original user request is still unfinished, dispatch the teacher again so they can react briefly to the response and continue the requested teaching task. Do not allow the participation exchange to derail or replace completion of the user's request.
+
+6. Do NOT allow unrelated student follow-up questions, jokes, side discussions, note-taking, or alternative perspectives while the original request remains unfinished. Only the explicit teacher-question exception above may temporarily interrupt task completion.
+7. FOLLOW-UP PARTICIPATION: Once the original request is complete, if multiple agents are available and no non-teacher agent has yet participated in this response cycle, dispatch ONE appropriate student or assistant for a brief useful follow-up before ending the conversation. This is especially important when the teacher explicitly invites questions, asks whether the material is clear, or opens the floor for discussion.
+8. Output END only after the original request is complete AND either:
    - at least one appropriate non-teacher follow-up has occurred, or
    - the user explicitly requested a teacher-only response or no discussion.
-7. Current turn: ${turnCount + 1}. Consider conversation length, but NEVER shorten or interrupt an unfinished answer to the user's original request merely to add role diversity.
-8. Prefer brevity after the original request has been completed. Don't force every agent to speak.
-9. You can output {"next_agent":"USER"} to cue the user to speak, but do not do this while the teacher still owes part of the original answer unless user input is genuinely required to continue.
-10. Consider whiteboard state when routing: if the whiteboard is already crowded, the teacher may continue by clearing or organizing it as needed. Do not route away from an unfinished teaching task merely because the whiteboard is crowded.
-11. Whiteboard is currently ${whiteboardOpen ? 'OPEN (slide canvas is hidden — spotlight/laser will not work)' : 'CLOSED (slide canvas is visible)'}. When the whiteboard is open, do not expect spotlight or laser actions to have visible effect.
+9. Current turn: ${turnCount + 1}. Consider conversation length, but NEVER shorten or interrupt an unfinished answer to the user's original request merely to add role diversity.
+10. Prefer brevity after the original request has been completed. Don't force every agent to speak.
+11. You can output {"next_agent":"USER"} to cue the user to speak, but do not do this while the teacher still owes part of the original answer unless user input is genuinely required to continue.
+12. Consider whiteboard state when routing: if the whiteboard is already crowded, the teacher may continue by clearing or organizing it as needed. Do not route away from an unfinished teaching task merely because the whiteboard is crowded.
+13. Whiteboard is currently ${whiteboardOpen ? 'OPEN (slide canvas is hidden — spotlight/laser will not work)' : 'CLOSED (slide canvas is visible)'}. When the whiteboard is open, do not expect spotlight or laser actions to have visible effect.
 
 # Routing Quality (CRITICAL)
 - TASK COMPLETION OVERRIDES ROLE DIVERSITY: While the user's original request is unfinished, the teacher may be dispatched for consecutive turns. Do NOT insert a student or assistant merely for variety.
+- TEACHER-LED PARTICIPATION: An explicit question from the teacher to the class temporarily overrides TASK COMPLETION routing for exactly one student/assistant response. After that response, return to the teacher if the user's original task is still unfinished.
 - POST-TASK PARTICIPATION: After the teacher completes the user's original request, allow at least one student or assistant to respond before END when multiple agents are available. If the teacher explicitly asks for questions or discussion, do not END immediately.
 - ROLE DIVERSITY: After the user's original request has been fully answered, avoid dispatching two agents of the same role consecutively when another role would add useful value.
 - CONTENT DEDUP: Do not repeat material already explained thoroughly. However, continuing with an unanswered part of a multi-part request is NOT repetition. For example, after explaining item 1 of a requested three-item explanation, the teacher should continue with items 2 and 3.
-- DISCUSSION PROGRESSION: First complete the user's requested teaching task. Only afterward should progression such as question → deeper explanation → different perspective → summary begin.
+- DISCUSSION PROGRESSION: Normally complete the user's requested teaching task before broader follow-up discussion. The TEACHER QUESTION EXCEPTION above may create a brief teacher → student → teacher exchange during the task, but it must not derail completion of the user's request.
 - POST-TASK DISCUSSION PACING: After the user's original request is complete, allow a natural short discussion among the agents when it adds value.
 - Do not keep the discussion alive solely for participation. If the last 2-3 turns are mostly agreement, restatement, or light elaboration with no new question or misconception, output END.
 - If a student asks a genuine new question or introduces a useful misconception, allow the teacher to answer it before ending.

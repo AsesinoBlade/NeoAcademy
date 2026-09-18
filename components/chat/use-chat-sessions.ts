@@ -106,6 +106,10 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     totalAgents: number;
     agentHadContent?: boolean;
     cueUserReceived: boolean;
+    classQuestion?: {
+      fromAgentId: string;
+      prompt: string;
+    };
   } | null>(null);
 
   // Reload sessions when stage changes (course switch)
@@ -388,6 +392,25 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
           onThinking(data: { stage: string; agentId?: string } | null) {
             onThinkingRef.current?.(data);
           },
+          onClassQuestion(fromAgentId: string, prompt: string) {
+            log.info(`[AgentLoop] Class question from "${fromAgentId}": ${JSON.stringify(prompt)}`);
+
+            if (loopDoneDataRef.current) {
+              loopDoneDataRef.current.classQuestion = {
+                fromAgentId,
+                prompt,
+              };
+            } else {
+              loopDoneDataRef.current = {
+                totalAgents: 0,
+                cueUserReceived: false,
+                classQuestion: {
+                  fromAgentId,
+                  prompt,
+                },
+              };
+            }
+          },
 
           onCueUser(fromAgentId?: string, prompt?: string) {
             // Track cue_user for agent loop
@@ -414,6 +437,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
               totalAgents: data.totalAgents,
               agentHadContent: data.agentHadContent ?? true,
               cueUserReceived: loopDoneDataRef.current?.cueUserReceived ?? false,
+              classQuestion: loopDoneDataRef.current?.classQuestion,
             };
             // Session completion is handled by runAgentLoop, not here
             // (Lectures don't use the agent loop and complete via endSession)
@@ -489,10 +513,23 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         (agentId) => getAgentRole(agentId) === 'teacher',
       );
 
-      const defaultMaxTurns = requestTemplate.config.agentIds.length <= 1 ? 1 : 15;
-      const maxTurns = settingsState.maxTurns
-        ? parseInt(settingsState.maxTurns, 10) || defaultMaxTurns
-        : defaultMaxTurns;
+      const configuredMaxTurns = Number.parseInt(process.env.NEXT_PUBLIC_MAX_AGENT_TURNS ?? '', 10);
+
+      const defaultMaxTurns =
+        requestTemplate.config.agentIds.length <= 1
+          ? 1
+          : Number.isFinite(configuredMaxTurns) && configuredMaxTurns > 0
+            ? configuredMaxTurns
+            : 15;
+
+      const maxTurns =
+        requestTemplate.config.agentIds.length <= 1
+          ? 1
+          : Number.isFinite(configuredMaxTurns) && configuredMaxTurns > 0
+            ? configuredMaxTurns
+            : settingsState.maxTurns
+              ? parseInt(settingsState.maxTurns, 10) || defaultMaxTurns
+              : defaultMaxTurns;
 
       let directorState: DirectorState | undefined = undefined;
       let turnCount = 0;
@@ -503,6 +540,8 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       // forcedAgentId is deliberately consumed by exactly one request.
       let triggerAgentId = requestTemplate.config.triggerAgentId;
       let forcedAgentId: string | undefined;
+
+      let classQuestionResumeAgentId: string | undefined;
 
       while (turnCount < maxTurns || forcedAgentId !== undefined) {
         if (controller.signal.aborted) break;
@@ -572,6 +611,10 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
           totalAgents: number;
           agentHadContent?: boolean;
           cueUserReceived: boolean;
+          classQuestion?: {
+            fromAgentId: string;
+            prompt: string;
+          };
         } | null;
         if (!doneData) break; // No done event — something went wrong
 
@@ -583,6 +626,41 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         const currentSession = sessionsRef.current.find((s) => s.id === sessionId);
         if (currentSession) {
           currentMessages = currentSession.messages;
+        }
+
+        if (classQuestionResumeAgentId) {
+          const resumeAgentId = classQuestionResumeAgentId;
+          classQuestionResumeAgentId = undefined;
+
+          log.info(
+            `[AgentLoop] Class participant answered — returning control to teacher "${resumeAgentId}"`,
+          );
+
+          forcedAgentId = resumeAgentId;
+          continue;
+        }
+
+        if (doneData.classQuestion) {
+          const { fromAgentId, prompt } = doneData.classQuestion;
+
+          const respondingAgentId = requestTemplate.config.agentIds.find((agentId) => {
+            if (agentId === fromAgentId) return false;
+            return getAgentRole(agentId) !== 'teacher';
+          });
+
+          if (respondingAgentId) {
+            log.info(
+              `[AgentLoop] Class question from "${fromAgentId}" — forcing participant "${respondingAgentId}": ${JSON.stringify(prompt)}`,
+            );
+
+            classQuestionResumeAgentId = fromAgentId;
+            forcedAgentId = respondingAgentId;
+            continue;
+          }
+
+          log.warn(
+            `[AgentLoop] Class question from "${fromAgentId}" but no non-teacher participant is available`,
+          );
         }
 
         // A user may have submitted a question while this AI turn was active.
