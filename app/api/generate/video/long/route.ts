@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { isFfmpegAvailable } from '@/lib/server/video-processing';
 import { NextRequest } from 'next/server';
-
+import { getLocalRuntimeCapabilities } from '@/lib/server/local-runtime-profile';
 import { generateLongVideoPlan } from '@/lib/media/long-video-planner';
 import type { LongVideoJob } from '@/lib/media/long-video-job';
 import {
@@ -103,6 +103,16 @@ export async function POST(req: NextRequest) {
       }
 
       startingImageExtension = extension;
+    }
+
+    const runtimeCapabilities = getLocalRuntimeCapabilities();
+
+    if (!runtimeCapabilities.video.available) {
+      return apiError(
+        'GENERATION_FAILED',
+        503,
+        `Long-video generation is not available for the ${runtimeCapabilities.profile} runtime profile.`,
+      );
     }
 
     if (!(await isFfmpegAvailable())) {
