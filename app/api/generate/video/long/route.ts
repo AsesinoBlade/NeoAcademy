@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-
+import { isFfmpegAvailable } from '@/lib/server/video-processing';
 import { NextRequest } from 'next/server';
 
 import { generateLongVideoPlan } from '@/lib/media/long-video-planner';
@@ -103,6 +103,14 @@ export async function POST(req: NextRequest) {
       }
 
       startingImageExtension = extension;
+    }
+
+    if (!(await isFfmpegAvailable())) {
+      return apiError(
+        'GENERATION_FAILED',
+        503,
+        'FFmpeg is required for long-video generation but was not found on this machine.',
+      );
     }
 
     const { model: languageModel, modelInfo, modelString } = resolveModelFromHeaders(req);

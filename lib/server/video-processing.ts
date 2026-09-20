@@ -5,6 +5,18 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+export async function isFfmpegAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync('ffmpeg', ['-version'], {
+      timeout: 5_000,
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function extractLastFrame(videoPath: string, outputPath: string): Promise<string> {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
