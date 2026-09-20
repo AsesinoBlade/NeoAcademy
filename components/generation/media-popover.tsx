@@ -1,5 +1,5 @@
 'use client';
-
+import { useRouter } from 'next/navigation';
 import { useState, useCallback, useMemo, Fragment } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -75,6 +75,7 @@ function getVoiceDisplayName(name: string, lang: string): string {
 
 export function MediaPopover({ onSettingsOpen }: MediaPopoverProps) {
   const { t, locale } = useI18n();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('image');
   const { previewing, startPreview, stopPreview } = useTTSPreview();
@@ -314,22 +315,40 @@ export function MediaPopover({ onSettingsOpen }: MediaPopoverProps) {
           )}
 
           {activeTab === 'video' && (
-            <TabPanel
-              icon={Video}
-              label={t('media.videoCapability')}
-              enabled={videoGenerationEnabled}
-              onToggle={setVideoGenerationEnabled}
-            >
-              <GroupedSelect
-                groups={videoGroups}
-                selectedGroupId={videoProviderId}
-                selectedItemId={videoModelId}
-                onSelect={(gid, iid) => {
-                  setVideoProvider(gid as VideoProviderId);
-                  setVideoModelId(iid);
+            <div className="space-y-3">
+              <TabPanel
+                icon={Video}
+                label={t('media.videoCapability')}
+                enabled={videoGenerationEnabled}
+                onToggle={setVideoGenerationEnabled}
+              >
+                <GroupedSelect
+                  groups={videoGroups}
+                  selectedGroupId={videoProviderId}
+                  selectedItemId={videoModelId}
+                  onSelect={(gid, iid) => {
+                    setVideoProvider(gid as VideoProviderId);
+                    setVideoModelId(iid);
+                  }}
+                />
+              </TabPanel>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  router.push('/generate-video');
                 }}
-              />
-            </TabPanel>
+                className="w-full flex items-center justify-between rounded-lg border border-border/40 bg-background/80 px-3 py-2 text-xs font-medium text-foreground/80 hover:bg-muted/60 hover:text-foreground transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <Video className="size-3.5 text-violet-600 dark:text-violet-400" />
+                  Generate Video
+                </span>
+
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </button>
+            </div>
           )}
 
           {activeTab === 'tts' && (

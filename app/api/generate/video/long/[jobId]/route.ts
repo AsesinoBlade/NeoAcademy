@@ -34,7 +34,10 @@ export async function GET(_request: Request, context: RouteContext) {
       completedSegments: job.completedSegments,
       currentSegmentIndex: job.currentSegmentIndex,
       segments: job.segments,
-      outputPath: job.outputPath,
+      outputUrl:
+        job.status === 'completed' && job.outputPath
+          ? `/api/generate/video/long/${job.id}/output`
+          : undefined,
       error: job.error,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
