@@ -91,7 +91,13 @@ When a slide scene needs an image or video but no suitable PDF image exists, mar
 
 - Add a `mediaGenerations` array to the scene outline
 - Each entry specifies: `type` ("image" or "video"), `prompt` (description for the generation model), `elementId` (unique placeholder), and optionally `aspectRatio` (default "16:9") and `style`
-- **Image IDs**: use `"gen_img_1"`, `"gen_img_2"`, etc. — IDs are **globally unique across the entire course**, NOT reset per scene
+- For video entries, also specify `durationSeconds`. Allowed values are 5, 10, 15, 20, 25, or 30 seconds.
+- Choose the shortest duration that can clearly convey the intended motion or process:
+  - 5 seconds: one very simple motion or visual beat
+  - 10 seconds: one clear action or short transition
+  - 15 seconds: normal educational animation or short process; use this as the default when uncertain
+  - 20-30 seconds: multi-stage demonstrations or processes that genuinely need additional time
+- Do not make videos longer merely for pacing. Duration should reflect how much visual information must be communicated.- **Image IDs**: use `"gen_img_1"`, `"gen_img_2"`, etc. — IDs are **globally unique across the entire course**, NOT reset per scene
 - **Video IDs**: use `"gen_vid_1"`, `"gen_vid_2"`, etc. — same global numbering rule
 - The prompt should describe the desired media clearly and specifically
 - **Language in images**: If the image contains text, labels, or annotations, the prompt MUST explicitly specify that all text in the image should be in the course language (e.g., "all labels in Chinese" for zh-CN courses, "all labels in English" for en-US courses). For purely visual images without text, language does not matter.
@@ -137,6 +143,7 @@ Video example:
     "type": "video",
     "prompt": "A smooth animation showing water molecules evaporating from the ocean surface, rising into the atmosphere, and forming clouds",
     "elementId": "gen_vid_1",
+    "durationSeconds": 15,
     "aspectRatio": "16:9"
   }
 ]

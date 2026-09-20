@@ -2,9 +2,10 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createLogger } from '@/lib/logger';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8188';
-const STATE_FILE = path.join(os.tmpdir(), 'neoacademy-comfyui-8188.json');
+const DEFAULT_BASE_URL = 'http://127.0.0.1:3100';
+const log = createLogger('LocalComfyUI');
 
 interface ManagedComfyUiState {
   pid: number;
@@ -13,11 +14,18 @@ interface ManagedComfyUiState {
   startedAt: number;
 }
 
+function getStateFile(port: string): string {
+  return path.join(os.tmpdir(), `neoacademy-comfyui-${port}.json`);
+}
+
 function getConfiguredComfyUi(): {
   root: string;
   pythonPath: string;
   mainPath: string;
   baseUrl: string;
+  host: string;
+  port: string;
+  stateFile: string;
 } {
   if (process.platform !== 'win32') {
     throw new Error(
@@ -33,11 +41,15 @@ function getConfiguredComfyUi(): {
 
   const baseUrl =
     process.env.IMAGE_COMFYUI_BASE_URL || process.env.VIDEO_COMFYUI_BASE_URL || DEFAULT_BASE_URL;
+
   const url = new URL(baseUrl);
 
   if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
     throw new Error('Automatic ComfyUI lifecycle management only supports localhost');
   }
+
+  const host = url.hostname;
+  const port = url.port || '3100';
 
   const pythonPath = path.join(root, 'python_embeded', 'python.exe');
   const mainPath = path.join(root, 'ComfyUI', 'main.py');
@@ -46,25 +58,28 @@ function getConfiguredComfyUi(): {
     root,
     pythonPath,
     mainPath,
-    baseUrl: `${url.protocol}//${url.hostname}:${url.port || '8188'}`,
+    host,
+    port,
+    baseUrl: `${url.protocol}//${host}:${port}`,
+    stateFile: getStateFile(port),
   };
 }
 
-function readManagedState(): ManagedComfyUiState | null {
+function readManagedState(stateFile: string): ManagedComfyUiState | null {
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as ManagedComfyUiState;
+    return JSON.parse(fs.readFileSync(stateFile, 'utf8')) as ManagedComfyUiState;
   } catch {
     return null;
   }
 }
 
-function writeManagedState(state: ManagedComfyUiState): void {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state));
+function writeManagedState(stateFile: string, state: ManagedComfyUiState): void {
+  fs.writeFileSync(stateFile, JSON.stringify(state));
 }
 
-function clearManagedState(): void {
+function clearManagedState(stateFile: string): void {
   try {
-    fs.unlinkSync(STATE_FILE);
+    fs.unlinkSync(stateFile);
   } catch {
     // Already absent.
   }
@@ -139,13 +154,13 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
 
 export async function getLocalComfyUiStatus() {
   const config = getConfiguredComfyUi();
-  const state = readManagedState();
+  const state = readManagedState(config.stateFile);
 
   const healthy = await checkHealth(config.baseUrl);
   const managed = !!state && processLooksLikeManagedComfyUi(state);
 
   if (state && !managed) {
-    clearManagedState();
+    clearManagedState(config.stateFile);
   }
 
   return {
@@ -154,12 +169,15 @@ export async function getLocalComfyUiStatus() {
     pid: managed ? state!.pid : undefined,
     root: config.root,
     baseUrl: config.baseUrl,
+    host: config.host,
+    port: config.port,
   };
 }
 
 export async function startLocalComfyUi() {
   const config = getConfiguredComfyUi();
-  const existingState = readManagedState();
+  log.info(`Preparing managed ComfyUI at ${config.baseUrl}`);
+  const existingState = readManagedState(config.stateFile);
 
   if (existingState && processLooksLikeManagedComfyUi(existingState)) {
     await waitForHealth(config.baseUrl);
@@ -173,7 +191,7 @@ export async function startLocalComfyUi() {
   }
 
   if (existingState) {
-    clearManagedState();
+    clearManagedState(config.stateFile);
   }
 
   // If ComfyUI was started manually, use it but do not take ownership of it.
@@ -193,6 +211,8 @@ export async function startLocalComfyUi() {
     throw new Error(`ComfyUI main.py not found: ${config.mainPath}`);
   }
 
+  log.info(`Starting managed ComfyUI at ${config.baseUrl}`);
+
   const child = spawn(
     config.pythonPath,
     [
@@ -201,6 +221,10 @@ export async function startLocalComfyUi() {
       '--windows-standalone-build',
       '--disable-dynamic-vram',
       '--disable-auto-launch',
+      '--listen',
+      config.host,
+      '--port',
+      config.port,
     ],
     {
       cwd: config.root,
@@ -223,11 +247,13 @@ export async function startLocalComfyUi() {
   };
 
   child.unref();
-  writeManagedState(state);
+  writeManagedState(config.stateFile, state);
 
   try {
     await waitForHealth(config.baseUrl);
+    log.info(`Managed ComfyUI ready at ${config.baseUrl} (pid=${child.pid})`);
   } catch (error) {
+    log.error(`Managed ComfyUI failed to become ready at ${config.baseUrl} (pid=${child.pid})`);
     try {
       execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
         stdio: 'ignore',
@@ -237,7 +263,7 @@ export async function startLocalComfyUi() {
       // Process may already have exited.
     }
 
-    clearManagedState();
+    clearManagedState(config.stateFile);
     throw error;
   }
 
@@ -250,7 +276,8 @@ export async function startLocalComfyUi() {
 }
 
 export async function stopLocalComfyUi() {
-  const state = readManagedState();
+  const config = getConfiguredComfyUi();
+  const state = readManagedState(config.stateFile);
 
   if (!state) {
     return {
@@ -261,7 +288,7 @@ export async function stopLocalComfyUi() {
   }
 
   if (!processLooksLikeManagedComfyUi(state)) {
-    clearManagedState();
+    clearManagedState(config.stateFile);
 
     return {
       success: true,
@@ -280,8 +307,12 @@ export async function stopLocalComfyUi() {
   }
 
   const exited = await waitForExit(state.pid, 5000);
-
-  clearManagedState();
+  if (exited) {
+    log.info(`Managed ComfyUI stopped at ${state.baseUrl} (pid=${state.pid})`);
+  } else {
+    log.error(`Managed ComfyUI did not stop cleanly at ${state.baseUrl} (pid=${state.pid})`);
+  }
+  clearManagedState(config.stateFile);
 
   return {
     success: exited,

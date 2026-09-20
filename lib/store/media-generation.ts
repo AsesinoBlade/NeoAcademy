@@ -86,6 +86,7 @@ export const useMediaGenerationStore = create<MediaGenerationState>()((set, get)
         params: {
           aspectRatio: req.aspectRatio,
           style: req.style,
+          duration: req.durationSeconds,
         },
         retryCount: 0,
         stageId,

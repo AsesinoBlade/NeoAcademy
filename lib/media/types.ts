@@ -283,6 +283,8 @@ export interface MediaGenerationRequest {
   type: 'image' | 'video';
   /** Text prompt describing the desired media */
   prompt: string;
+  /** Desired video duration in seconds; ignored for images */
+  durationSeconds?: number;
   /** Identifier for the target element on the canvas (e.g. "gen_img_1") */
   elementId: string;
   /** Desired aspect ratio */

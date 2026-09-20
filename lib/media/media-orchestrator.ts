@@ -13,6 +13,7 @@ import type { SceneOutline } from '@/lib/types/generation';
 import type { MediaGenerationRequest } from '@/lib/media/types';
 import { createLogger } from '@/lib/logger';
 import { logGenerationProgress } from '@/lib/generation/progress-log';
+import { getCurrentModelConfig } from '@/lib/utils/model-config';
 
 const log = createLogger('MediaOrchestrator');
 
@@ -121,6 +122,7 @@ export async function retryMediaTask(elementId: string): Promise<void> {
       type: task.type,
       prompt: task.prompt,
       elementId: task.elementId,
+      durationSeconds: task.params.duration,
       aspectRatio: task.params.aspectRatio as MediaGenerationRequest['aspectRatio'],
       style: task.params.style,
     },
@@ -171,6 +173,7 @@ async function generateSingleMedia(
       poster: posterBlob,
       prompt: req.prompt,
       params: JSON.stringify({
+        duration: req.durationSeconds,
         aspectRatio: req.aspectRatio,
         style: req.style,
       }),
@@ -200,6 +203,7 @@ async function generateSingleMedia(
           size: 0,
           prompt: req.prompt,
           params: JSON.stringify({
+            duration: req.durationSeconds,
             aspectRatio: req.aspectRatio,
             style: req.style,
           }),
@@ -252,12 +256,143 @@ async function callImageApi(
   return { url };
 }
 
+type LongVideoJobStatus =
+  | 'queued'
+  | 'planning'
+  | 'generating'
+  | 'assembling'
+  | 'completed'
+  | 'failed';
+
+interface LongVideoJobStatusResponse {
+  id: string;
+  status: LongVideoJobStatus;
+  outputUrl?: string;
+  error?: string;
+}
+
+function getClassroomVideoDuration(req: MediaGenerationRequest): number {
+  const duration = req.durationSeconds ?? 15;
+
+  if (!Number.isFinite(duration)) {
+    return 15;
+  }
+
+  const rounded = Math.round(duration / 5) * 5;
+
+  return Math.min(30, Math.max(5, rounded));
+}
+
+async function waitForLongVideoJob(
+  jobId: string,
+  abortSignal?: AbortSignal,
+): Promise<LongVideoJobStatusResponse> {
+  while (true) {
+    if (abortSignal?.aborted) {
+      throw new DOMException('Video generation aborted', 'AbortError');
+    }
+
+    const response = await fetch(`/api/generate/video/long/${jobId}`, {
+      cache: 'no-store',
+      signal: abortSignal,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+
+      throw new MediaApiError(
+        data.error || `Long video status API returned ${response.status}`,
+        data.errorCode,
+      );
+    }
+
+    const job = (await response.json()) as LongVideoJobStatusResponse;
+
+    if (job.status === 'completed') {
+      if (!job.outputUrl) {
+        throw new Error('Completed long video job has no output URL');
+      }
+
+      return job;
+    }
+
+    if (job.status === 'failed') {
+      throw new Error(job.error || 'Long video generation failed');
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(resolve, 2000);
+
+      if (abortSignal) {
+        abortSignal.addEventListener(
+          'abort',
+          () => {
+            window.clearTimeout(timer);
+            reject(new DOMException('Video generation aborted', 'AbortError'));
+          },
+          { once: true },
+        );
+      }
+    });
+  }
+}
+
+async function callLongVideoApi(
+  req: MediaGenerationRequest,
+  abortSignal?: AbortSignal,
+): Promise<{ url: string; poster?: string }> {
+  const modelConfig = getCurrentModelConfig();
+  const durationSeconds = getClassroomVideoDuration(req);
+
+  const response = await fetch('/api/generate/video/long', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-model': modelConfig.modelString,
+      'x-api-key': modelConfig.apiKey,
+      'x-base-url': modelConfig.baseUrl,
+      'x-provider-type': modelConfig.providerType || '',
+      'x-requires-api-key': modelConfig.requiresApiKey ? 'true' : 'false',
+    },
+    body: JSON.stringify({
+      prompt: req.prompt,
+      targetDurationSeconds: durationSeconds,
+    }),
+    signal: abortSignal,
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok || !result.success) {
+    throw new MediaApiError(
+      result.error || result.message || `Long video API returned ${response.status}`,
+      result.errorCode,
+    );
+  }
+
+  const jobId = result.jobId as string | undefined;
+
+  if (!jobId) {
+    throw new Error('Long video API did not return a job ID');
+  }
+
+  const completedJob = await waitForLongVideoJob(jobId, abortSignal);
+
+  return {
+    url: completedJob.outputUrl!,
+  };
+}
+
 async function callVideoApi(
   req: MediaGenerationRequest,
   abortSignal?: AbortSignal,
 ): Promise<{ url: string; poster?: string }> {
   const settings = useSettingsStore.getState();
   const providerConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
+
+  if (settings.videoProviderId === 'comfyui') {
+    return callLongVideoApi(req, abortSignal);
+  }
 
   const response = await fetch('/api/generate/video', {
     method: 'POST',
