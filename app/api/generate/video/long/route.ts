@@ -123,16 +123,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { model: languageModel, modelInfo, modelString } = resolveModelFromHeaders(req);
+    let plan: Awaited<ReturnType<typeof generateLongVideoPlan>>;
 
-    log.info(`Planning ${targetDurationSeconds}s long video [model=${modelString}]`);
+    if (targetDurationSeconds === 5) {
+      log.info('Creating single-segment 5s video plan without LLM planning');
 
-    const plan = await generateLongVideoPlan({
-      prompt: prompt.trim(),
-      targetDurationSeconds,
-      model: languageModel,
-      maxOutputTokens: modelInfo?.outputWindow,
-    });
+      plan = {
+        targetDurationSeconds: 5,
+        segmentDurationSeconds: 5,
+        segments: [
+          {
+            index: 0,
+            durationSeconds: 5,
+            prompt: prompt.trim(),
+            transition: 'cut',
+          },
+        ],
+      };
+    } else {
+      const { model: languageModel, modelInfo, modelString } = resolveModelFromHeaders(req);
+
+      log.info(`Planning ${targetDurationSeconds}s long video [model=${modelString}]`);
+
+      plan = await generateLongVideoPlan({
+        prompt: prompt.trim(),
+        targetDurationSeconds,
+        model: languageModel,
+        maxOutputTokens: modelInfo?.outputWindow,
+      });
+    }
 
     const now = new Date().toISOString();
     const jobId = randomUUID();
