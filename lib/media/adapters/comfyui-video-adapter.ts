@@ -185,7 +185,7 @@ export async function generateWithComfyUiVideo(
   }
 
   const promptId = submitData.prompt_id;
-  const deadline = Date.now() + 10 * 60 * 1000;
+  const deadline = Date.now() + 30 * 60 * 1000;
 
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -285,7 +285,7 @@ export async function generateWithComfyUiVideoContinuation(
   }
 
   const promptId = submitData.prompt_id;
-  const deadline = Date.now() + 10 * 60 * 1000;
+  const deadline = Date.now() + 30 * 60 * 1000;
 
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));

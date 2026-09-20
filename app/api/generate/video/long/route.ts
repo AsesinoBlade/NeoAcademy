@@ -1,89 +1,53 @@
 import { randomUUID } from 'node:crypto';
 
-import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
+import { callLLM } from '@/lib/ai/llm';
+import { generateLongVideoPlan } from '@/lib/media/long-video-planner';
 import type { LongVideoJob } from '@/lib/media/long-video-job';
-import type { LongVideoPlan } from '@/lib/media/long-video-plan';
-import { saveLongVideoJob } from '@/lib/media/long-video-job-store';
+import { ensureLongVideoJobDirectory, saveLongVideoJob } from '@/lib/media/long-video-job-store';
 import { startLongVideoProcess } from '@/lib/media/long-video-process';
+import { createLogger } from '@/lib/logger';
+import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
 
-interface LongVideoRequestBody {
-  prompt?: string;
-  targetDurationSeconds?: number;
-  plan?: LongVideoPlan;
-}
+const log = createLogger('Long Video API');
 
-export async function POST(request: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const body = (await request.json()) as LongVideoRequestBody;
+    const body = await req.json();
 
-    const prompt = body.prompt?.trim();
-    const targetDurationSeconds = body.targetDurationSeconds;
-    const plan = body.plan;
+    const { prompt, targetDurationSeconds } = body as {
+      prompt?: string;
+      targetDurationSeconds?: number;
+    };
 
-    if (!prompt) {
-      return NextResponse.json(
-        {
-          error: 'Prompt is required',
-        },
-        {
-          status: 400,
-        },
-      );
+    if (!prompt?.trim()) {
+      return apiError('MISSING_REQUIRED_FIELD', 400, 'prompt is required');
     }
 
     if (
-      !targetDurationSeconds ||
       !Number.isFinite(targetDurationSeconds) ||
+      !targetDurationSeconds ||
       targetDurationSeconds <= 0
     ) {
-      return NextResponse.json(
-        {
-          error: 'A valid target duration is required',
-        },
-        {
-          status: 400,
-        },
-      );
+      return apiError('INVALID_REQUEST', 400, 'targetDurationSeconds must be greater than zero');
     }
 
-    if (!plan || plan.segments.length === 0) {
-      return NextResponse.json(
-        {
-          error: 'A long video plan is required',
-        },
-        {
-          status: 400,
-        },
-      );
+    if (targetDurationSeconds % 5 !== 0) {
+      return apiError('INVALID_REQUEST', 400, 'targetDurationSeconds must be divisible by 5');
     }
 
-    if (plan.targetDurationSeconds !== targetDurationSeconds) {
-      return NextResponse.json(
-        {
-          error: 'Plan target duration does not match requested target duration',
-        },
-        {
-          status: 400,
-        },
-      );
-    }
+    const { model: languageModel, modelInfo, modelString } = resolveModelFromHeaders(req);
 
-    const plannedDurationSeconds = plan.segments.reduce(
-      (total, segment) => total + segment.durationSeconds,
-      0,
-    );
+    log.info(`Planning ${targetDurationSeconds}s long video [model=${modelString}]`);
 
-    if (plannedDurationSeconds !== targetDurationSeconds) {
-      return NextResponse.json(
-        {
-          error: 'Planned segment duration does not match requested target duration',
-        },
-        {
-          status: 400,
-        },
-      );
-    }
+    const plan = await generateLongVideoPlan({
+      prompt: prompt.trim(),
+      targetDurationSeconds,
+      model: languageModel,
+      maxOutputTokens: modelInfo?.outputWindow,
+    });
 
     const now = new Date().toISOString();
     const jobId = randomUUID();
@@ -91,7 +55,7 @@ export async function POST(request: Request) {
     const job: LongVideoJob = {
       id: jobId,
       status: 'queued',
-      prompt,
+      prompt: prompt.trim(),
       targetDurationSeconds,
       plan,
       segmentCount: plan.segments.length,
@@ -104,31 +68,26 @@ export async function POST(request: Request) {
       updatedAt: now,
     };
 
+    await ensureLongVideoJobDirectory(jobId);
+
     const savedJob = await saveLongVideoJob(job);
 
     startLongVideoProcess(savedJob.id);
 
-    return NextResponse.json(
+    log.info(`Queued long video job ${savedJob.id} with ${savedJob.segmentCount} segments`);
+
+    return apiSuccess(
       {
         jobId: savedJob.id,
         status: savedJob.status,
         targetDurationSeconds: savedJob.targetDurationSeconds,
         segmentCount: savedJob.segmentCount,
       },
-      {
-        status: 202,
-      },
+      202,
     );
   } catch (error) {
-    console.error('Failed to create long video job:', error);
+    log.error('Long video generation request failed:', error);
 
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Failed to create long video job',
-      },
-      {
-        status: 500,
-      },
-    );
+    return apiError('INTERNAL_ERROR', 500, error instanceof Error ? error.message : String(error));
   }
 }
