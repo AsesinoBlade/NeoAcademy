@@ -9,6 +9,10 @@ export function getLongVideoJobDirectory(jobId: string): string {
   return path.join(JOBS_ROOT, jobId);
 }
 
+export function getLongVideoJobStartingImagePath(jobId: string, extension: string): string {
+  return path.join(getLongVideoJobDirectory(jobId), `starting-image.${extension}`);
+}
+
 export function getLongVideoJobSegmentPath(jobId: string, segmentIndex: number): string {
   const filename = `segment-${String(segmentIndex + 1).padStart(3, '0')}.mp4`;
 
@@ -94,9 +98,7 @@ export function getLongVideoJobFinalOutputPath(jobId: string): string {
   return path.join(getLongVideoJobDirectory(jobId), 'final.mp4');
 }
 
-export async function cleanupCompletedLongVideoJob(
-  jobId: string,
-): Promise<void> {
+export async function cleanupCompletedLongVideoJob(jobId: string): Promise<void> {
   const directory = getLongVideoJobDirectory(jobId);
 
   const entries = await fs.readdir(directory, {
@@ -108,13 +110,8 @@ export async function cleanupCompletedLongVideoJob(
       .filter(
         (entry) =>
           entry.isFile() &&
-          (
-            /^segment-\d+\.mp4$/i.test(entry.name) ||
-            /^segment-\d+-last\.jpg$/i.test(entry.name)
-          ),
+          (/^segment-\d+\.mp4$/i.test(entry.name) || /^segment-\d+-last\.jpg$/i.test(entry.name)),
       )
-      .map((entry) =>
-        fs.unlink(path.join(directory, entry.name)),
-      ),
+      .map((entry) => fs.unlink(path.join(directory, entry.name))),
   );
 }

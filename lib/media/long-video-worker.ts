@@ -162,7 +162,16 @@ export async function runNextLongVideoJobSegment(
   const outputPath = getLongVideoJobSegmentPath(jobId, segmentIndex);
 
   try {
-    if (plannedSegment.transition === 'continue' && segmentIndex > 0) {
+    if (segmentIndex === 0 && claimedJob.startingImagePath) {
+      await generateWithComfyUiVideoContinuation(
+        config,
+        {
+          prompt: plannedSegment.prompt,
+        },
+        claimedJob.startingImagePath,
+        outputPath,
+      );
+    } else if (plannedSegment.transition === 'continue' && segmentIndex > 0) {
       const previousSegment = claimedJob.segments.find(
         (segment) => segment.index === segmentIndex - 1,
       );

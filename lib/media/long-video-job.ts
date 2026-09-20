@@ -31,6 +31,8 @@ export interface LongVideoJob {
 
   targetDurationSeconds: number;
 
+  startingImagePath?: string;
+
   plan?: LongVideoPlan;
 
   segmentCount: number;
