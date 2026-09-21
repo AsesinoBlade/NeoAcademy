@@ -49,6 +49,15 @@ interface RuntimeCapabilities {
   };
 }
 
+interface VideoHistoryItem {
+  id: string;
+  prompt: string;
+  targetDurationSeconds: number;
+  outputUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface LongVideoJobStatusResponse {
   id: string;
   status: LongVideoJobStatus;
@@ -140,6 +149,9 @@ export default function GenerateVideoPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [job, setJob] = useState<LongVideoJobStatusResponse | null>(null);
+  const [history, setHistory] = useState<VideoHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [pendingHistoryDeleteId, setPendingHistoryDeleteId] = useState<string | null>(null);
 
   const isActive =
     submitting ||
@@ -149,6 +161,74 @@ export default function GenerateVideoPage() {
     job?.status === 'assembling';
 
   const videoAvailable = capabilities?.video.available === true;
+
+  async function loadVideoHistory() {
+    try {
+      const response = await fetch('/api/generate/video/long/history', {
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load previous videos');
+      }
+
+      const data = (await response.json()) as {
+        jobs?: VideoHistoryItem[];
+      };
+
+      setHistory(data.jobs ?? []);
+    } catch (error) {
+      console.error(error);
+      toast.error('Could not load previous videos');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function formatHistoryDate(value: string): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    return date.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+
+  async function deleteHistoryVideo(jobId: string) {
+    try {
+      const response = await fetch(`/api/generate/video/long/history/${jobId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+
+        throw new Error(data?.error || 'Failed to delete video');
+      }
+
+      setHistory((current) => current.filter((item) => item.id !== jobId));
+      setPendingHistoryDeleteId(null);
+
+      if (job?.id === jobId) {
+        resetForm();
+      }
+
+      toast.success('Video deleted');
+    } catch (error) {
+      console.error(error);
+
+      toast.error(error instanceof Error ? error.message : 'Failed to delete video');
+    }
+  }
+
+  useEffect(() => {
+    loadVideoHistory();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -277,6 +357,7 @@ export default function GenerateVideoPage() {
           } else {
             toast.error(updated.error || 'Video generation failed');
           }
+          await loadVideoHistory();
         }
       } catch (error) {
         console.error(error);
@@ -683,6 +764,129 @@ export default function GenerateVideoPage() {
             )}
           </div>
         </div>
+        {(historyLoading || history.length > 0) && (
+          <section className="space-y-5 pt-4">
+            <div className="flex items-center gap-4">
+              <div className="h-px flex-1 bg-border/50" />
+
+              <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
+                <Film className="size-4" />
+                <span>Previous Videos</span>
+
+                {!historyLoading && (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">
+                    {history.length}
+                  </span>
+                )}
+              </div>
+
+              <div className="h-px flex-1 bg-border/50" />
+            </div>
+
+            {historyLoading ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Loading previous videos...
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
+                {history.map((item) => {
+                  const confirmingDelete = pendingHistoryDeleteId === item.id;
+
+                  return (
+                    <div key={item.id} className="group min-w-0">
+                      <div className="relative aspect-video overflow-hidden rounded-2xl bg-black">
+                        <video
+                          src={`${item.outputUrl}#t=0.1`}
+                          controls={!confirmingDelete}
+                          playsInline
+                          preload="metadata"
+                          className="size-full object-cover"
+                        />
+
+                        {!confirmingDelete && (
+                          <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                            <Button
+                              asChild
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 hover:text-white"
+                            >
+                              <a
+                                href={item.outputUrl}
+                                download={`neoacademy-video-${item.id}.mp4`}
+                                title="Download video"
+                              >
+                                <Download className="size-4" />
+                              </a>
+                            </Button>
+
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-destructive hover:text-white"
+                              onClick={() => setPendingHistoryDeleteId(item.id)}
+                              title="Delete video"
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
+                        )}
+
+                        {confirmingDelete && (
+                          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-[6px]">
+                            <span className="text-sm font-medium text-white">
+                              Delete this video?
+                            </span>
+
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="rounded-lg bg-white/15 px-3.5 py-1.5 text-xs font-medium text-white/90 transition-colors hover:bg-white/25"
+                                onClick={() => setPendingHistoryDeleteId(null)}
+                              >
+                                Cancel
+                              </button>
+
+                              <button
+                                type="button"
+                                className="rounded-lg bg-red-500/90 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500"
+                                onClick={() => deleteHistoryVideo(item.id)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-2.5 min-w-0 px-1">
+                        <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-400">
+                            {item.targetDurationSeconds < 60
+                              ? `${item.targetDurationSeconds} sec`
+                              : `${item.targetDurationSeconds / 60} min`}
+                          </span>
+
+                          <span>{formatHistoryDate(item.createdAt)}</span>
+                        </div>
+
+                        <p
+                          className="line-clamp-2 text-sm font-medium leading-snug text-foreground/90"
+                          title={item.prompt}
+                        >
+                          {item.prompt}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

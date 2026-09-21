@@ -189,6 +189,7 @@ export async function POST(req: NextRequest) {
       id: jobId,
       status: 'queued',
       prompt: prompt.trim(),
+      origin: stageId ? 'classroom' : 'standalone',
       stageId,
       elementId,
       targetDurationSeconds,

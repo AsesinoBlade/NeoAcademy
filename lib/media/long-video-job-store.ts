@@ -166,3 +166,35 @@ export async function deleteLongVideoJobsForStage(
     skippedActive,
   };
 }
+
+export async function listStandaloneCompletedLongVideoJobs(): Promise<LongVideoJob[]> {
+  let entries;
+
+  try {
+    entries = await fs.readdir(JOBS_ROOT, {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+
+  const jobs = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => loadLongVideoJob(entry.name).catch(() => null)),
+  );
+
+  return jobs
+    .filter(
+      (job): job is LongVideoJob =>
+        job !== null &&
+        job.origin === 'standalone' &&
+        job.status === 'completed' &&
+        Boolean(job.outputPath),
+    )
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}

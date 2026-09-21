@@ -33,6 +33,8 @@ export interface LongVideoJob {
 
   elementId?: string;
 
+  origin?: 'standalone' | 'classroom';
+
   targetDurationSeconds: number;
 
   startingImagePath?: string;
