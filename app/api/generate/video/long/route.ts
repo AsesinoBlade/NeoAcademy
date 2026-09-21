@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
     let prompt: string | undefined;
     let targetDurationSeconds: number | undefined;
     let startingImage: File | undefined;
+    let stageId: string | undefined;
+    let elementId: string | undefined;
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -49,6 +51,17 @@ export async function POST(req: NextRequest) {
       const promptValue = formData.get('prompt');
       const durationValue = formData.get('targetDurationSeconds');
       const startingImageValue = formData.get('startingImage');
+
+      const stageIdValue = formData.get('stageId');
+      const elementIdValue = formData.get('elementId');
+
+      if (typeof stageIdValue === 'string' && stageIdValue.trim()) {
+        stageId = stageIdValue.trim();
+      }
+
+      if (typeof elementIdValue === 'string' && elementIdValue.trim()) {
+        elementId = elementIdValue.trim();
+      }
 
       if (typeof promptValue === 'string') {
         prompt = promptValue;
@@ -67,10 +80,14 @@ export async function POST(req: NextRequest) {
       const parsed = body as {
         prompt?: string;
         targetDurationSeconds?: number;
+        stageId?: string;
+        elementId?: string;
       };
 
       prompt = parsed.prompt;
       targetDurationSeconds = parsed.targetDurationSeconds;
+      stageId = parsed.stageId?.trim() || undefined;
+      elementId = parsed.elementId?.trim() || undefined;
     }
 
     if (!prompt?.trim()) {
@@ -172,6 +189,8 @@ export async function POST(req: NextRequest) {
       id: jobId,
       status: 'queued',
       prompt: prompt.trim(),
+      stageId,
+      elementId,
       targetDurationSeconds,
       startingImagePath,
       plan,

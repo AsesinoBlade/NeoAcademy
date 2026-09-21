@@ -26,6 +26,8 @@ import type { ImageProviderId, ImageGenerationOptions } from '@/lib/media/types'
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import type { ComfyUiImageGenerationResult } from '@/lib/media/adapters/comfyui-adapter';
+import { deleteLocalComfyUiAsset } from '@/lib/server/local-comfyui-media';
 
 const log = createLogger('ImageGeneration API');
 
@@ -83,6 +85,29 @@ export async function POST(request: NextRequest) {
     );
 
     const result = await generateImage({ providerId, apiKey, baseUrl, model: clientModel }, body);
+
+    if (providerId === 'comfyui') {
+      const comfyResult = result as ComfyUiImageGenerationResult;
+
+      if (comfyResult.comfyUiAsset) {
+        await deleteLocalComfyUiAsset(
+          baseUrl || process.env.IMAGE_COMFYUI_BASE_URL || 'http://127.0.0.1:3100',
+          comfyResult.comfyUiAsset,
+        ).catch((error) => {
+          log.warn(
+            `Failed to clean ComfyUI image asset: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+      }
+
+      const { comfyUiAsset: _comfyUiAsset, ...publicResult } = comfyResult;
+
+      return apiSuccess({
+        result: publicResult,
+      });
+    }
 
     return apiSuccess({ result });
   } catch (error) {

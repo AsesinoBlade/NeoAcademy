@@ -29,6 +29,10 @@ export interface LongVideoJob {
 
   prompt: string;
 
+  stageId?: string;
+
+  elementId?: string;
+
   targetDurationSeconds: number;
 
   startingImagePath?: string;

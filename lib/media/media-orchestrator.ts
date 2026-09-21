@@ -150,7 +150,7 @@ async function generateSingleMedia(
       resultUrl = result.url;
       mimeType = 'image/png';
     } else {
-      const result = await callVideoApi(req, abortSignal);
+      const result = await callVideoApi(req, stageId, abortSignal);
       resultUrl = result.url;
       posterUrl = result.poster;
       mimeType = 'video/mp4';
@@ -339,6 +339,7 @@ async function waitForLongVideoJob(
 
 async function callLongVideoApi(
   req: MediaGenerationRequest,
+  stageId: string,
   abortSignal?: AbortSignal,
 ): Promise<{ url: string; poster?: string }> {
   const modelConfig = getCurrentModelConfig();
@@ -357,6 +358,8 @@ async function callLongVideoApi(
     body: JSON.stringify({
       prompt: req.prompt,
       targetDurationSeconds: durationSeconds,
+      stageId,
+      elementId: req.elementId,
     }),
     signal: abortSignal,
   });
@@ -385,13 +388,14 @@ async function callLongVideoApi(
 
 async function callVideoApi(
   req: MediaGenerationRequest,
+  stageId: string,
   abortSignal?: AbortSignal,
 ): Promise<{ url: string; poster?: string }> {
   const settings = useSettingsStore.getState();
   const providerConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
 
   if (settings.videoProviderId === 'comfyui') {
-    return callLongVideoApi(req, abortSignal);
+    return callLongVideoApi(req, stageId, abortSignal);
   }
 
   const response = await fetch('/api/generate/video', {

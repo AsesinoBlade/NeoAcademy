@@ -11,6 +11,7 @@ import {
   generateWithComfyUiVideo,
   generateWithComfyUiVideoContinuation,
 } from './adapters/comfyui-video-adapter';
+import { deleteLocalComfyUiAsset } from '../server/local-comfyui-media';
 import type { VideoGenerationConfig } from './types';
 import { extractLastFrame } from '../server/video-processing';
 import { concatenateVideos } from '../server/video-processing';
@@ -161,6 +162,29 @@ export async function runNextLongVideoJobSegment(
 
   const outputPath = getLongVideoJobSegmentPath(jobId, segmentIndex);
 
+  const baseUrl = config.baseUrl || process.env.VIDEO_COMFYUI_BASE_URL || 'http://127.0.0.1:3100';
+
+  const cleanupComfyUiAssets = async (assets: {
+    output: {
+      filename: string;
+      subfolder?: string;
+      type?: string;
+    };
+    input?: {
+      filename: string;
+      subfolder?: string;
+      type?: string;
+    };
+  }) => {
+    const cleanupTargets = [assets.output, assets.input].filter(
+      (asset): asset is NonNullable<typeof asset> => Boolean(asset),
+    );
+
+    await Promise.all(
+      cleanupTargets.map((asset) => deleteLocalComfyUiAsset(baseUrl, asset).catch(() => false)),
+    );
+  };
+
   try {
     if (segmentIndex === 0 && claimedJob.startingImagePath) {
       await generateWithComfyUiVideoContinuation(
@@ -170,6 +194,7 @@ export async function runNextLongVideoJobSegment(
         },
         claimedJob.startingImagePath,
         outputPath,
+        cleanupComfyUiAssets,
       );
     } else if (plannedSegment.transition === 'continue' && segmentIndex > 0) {
       const previousSegment = claimedJob.segments.find(
@@ -195,6 +220,7 @@ export async function runNextLongVideoJobSegment(
         },
         startImagePath,
         outputPath,
+        cleanupComfyUiAssets,
       );
     } else {
       await generateWithComfyUiVideo(
@@ -203,6 +229,7 @@ export async function runNextLongVideoJobSegment(
           prompt: plannedSegment.prompt,
         },
         outputPath,
+        cleanupComfyUiAssets,
       );
     }
 

@@ -115,3 +115,54 @@ export async function cleanupCompletedLongVideoJob(jobId: string): Promise<void>
       .map((entry) => fs.unlink(path.join(directory, entry.name))),
   );
 }
+
+export async function deleteLongVideoJobsForStage(
+  stageId: string,
+): Promise<{ deleted: number; skippedActive: number }> {
+  let entries;
+
+  try {
+    entries = await fs.readdir(JOBS_ROOT, {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return {
+        deleted: 0,
+        skippedActive: 0,
+      };
+    }
+
+    throw error;
+  }
+
+  let deleted = 0;
+  let skippedActive = 0;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const job = await loadLongVideoJob(entry.name).catch(() => null);
+
+    if (!job || job.stageId !== stageId) {
+      continue;
+    }
+
+    if (job.status !== 'completed' && job.status !== 'failed') {
+      skippedActive += 1;
+      continue;
+    }
+
+    await fs.rm(getLongVideoJobDirectory(job.id), {
+      recursive: true,
+      force: true,
+    });
+
+    deleted += 1;
+  }
+
+  return {
+    deleted,
+    skippedActive,
+  };
+}

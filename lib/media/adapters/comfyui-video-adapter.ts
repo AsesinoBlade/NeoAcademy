@@ -13,6 +13,17 @@ type WorkflowNode = {
   _meta?: { title?: string };
 };
 
+type ComfyUiAsset = {
+  filename: string;
+  subfolder?: string;
+  type?: string;
+};
+
+export type ComfyUiVideoAssetCleanup = (assets: {
+  output: ComfyUiAsset;
+  input?: ComfyUiAsset;
+}) => Promise<void>;
+
 type Workflow = Record<string, WorkflowNode>;
 
 type ComfyUiUploadedImage = {
@@ -151,6 +162,7 @@ export async function generateWithComfyUiVideo(
   config: VideoGenerationConfig,
   options: VideoGenerationOptions,
   outputPath?: string,
+  cleanupAssets?: ComfyUiVideoAssetCleanup,
 ): Promise<VideoGenerationResult> {
   const baseUrl = getBaseUrl(config);
   const workflow = cloneWorkflow();
@@ -219,6 +231,12 @@ export async function generateWithComfyUiVideo(
     if (asset) {
       if (outputPath) {
         await downloadComfyUiAssetToFile(baseUrl, asset, outputPath);
+
+        if (cleanupAssets) {
+          await cleanupAssets({
+            output: asset,
+          });
+        }
       }
 
       return {
@@ -244,6 +262,7 @@ export async function generateWithComfyUiVideoContinuation(
   options: VideoGenerationOptions,
   startImagePath: string,
   outputPath?: string,
+  cleanupAssets?: ComfyUiVideoAssetCleanup,
 ): Promise<VideoGenerationResult> {
   const baseUrl = getBaseUrl(config);
   const uploadedImage = await uploadImageToComfyUi(baseUrl, startImagePath);
@@ -331,6 +350,17 @@ export async function generateWithComfyUiVideoContinuation(
     if (asset) {
       if (outputPath) {
         await downloadComfyUiAssetToFile(baseUrl, asset, outputPath);
+
+        if (cleanupAssets) {
+          await cleanupAssets({
+            output: asset,
+            input: {
+              filename: uploadedImage.name,
+              subfolder: uploadedImage.subfolder,
+              type: uploadedImage.type,
+            },
+          });
+        }
       }
 
       return {

@@ -164,8 +164,26 @@ function HomePage() {
 
   const confirmDelete = async (id: string) => {
     setPendingDeleteId(null);
+
     try {
+      const cleanupResponse = await fetch('/api/generate/video/long/cleanup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          stageId: id,
+        }),
+      });
+
+      if (!cleanupResponse.ok) {
+        throw new Error(`Failed to clean long-video files (${cleanupResponse.status})`);
+      }
+
       await deleteStageData(id);
+
+      useMediaGenerationStore.getState().clearStage(id);
+
       await loadClassrooms();
     } catch (err) {
       log.error('Failed to delete classroom:', err);

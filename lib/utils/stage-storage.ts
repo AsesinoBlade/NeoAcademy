@@ -7,9 +7,8 @@
 
 import { Stage, Scene } from '../types/stage';
 import { ChatSession } from '../types/chat';
-import { db } from './database';
-import { saveChatSessions, loadChatSessions, deleteChatSessions } from './chat-storage';
-import { clearPlaybackState } from './playback-storage';
+import { db, deleteStageWithRelatedData } from './database';
+import { saveChatSessions, loadChatSessions } from './chat-storage';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('StageStorage');
@@ -114,17 +113,8 @@ export async function loadStageData(stageId: string): Promise<StageStoreData | n
  */
 export async function deleteStageData(stageId: string): Promise<void> {
   try {
-    // Delete stage
-    await db.stages.delete(stageId);
-
-    // Delete scenes
-    await db.scenes.where('stageId').equals(stageId).delete();
-
-    // Delete chat sessions and playback state
-    await deleteChatSessions(stageId);
-    await clearPlaybackState(stageId);
-
-    log.info(`Deleted stage: ${stageId}`);
+    await deleteStageWithRelatedData(stageId);
+    log.info(`Deleted stage and related data: ${stageId}`);
   } catch (error) {
     log.error('Failed to delete stage:', error);
     throw error;

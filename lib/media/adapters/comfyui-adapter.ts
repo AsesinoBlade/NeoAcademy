@@ -6,6 +6,16 @@ import type {
 
 import workflowTemplate from '../../../config/comfyui/text2img-sdxl-api.json';
 
+export interface ComfyUiImageAsset {
+  filename: string;
+  subfolder: string;
+  type: string;
+}
+
+export interface ComfyUiImageGenerationResult extends ImageGenerationResult {
+  comfyUiAsset: ComfyUiImageAsset;
+}
+
 type WorkflowNode = {
   inputs: Record<string, unknown>;
   class_type: string;
@@ -62,7 +72,7 @@ export async function testComfyUiConnectivity(
 export async function generateWithComfyUi(
   config: ImageGenerationConfig,
   options: ImageGenerationOptions,
-): Promise<ImageGenerationResult> {
+): Promise<ComfyUiImageGenerationResult> {
   const baseUrl = config.baseUrl || 'http://127.0.0.1:8188';
   const workflow = cloneWorkflow();
 
@@ -175,6 +185,11 @@ export async function generateWithComfyUi(
       base64,
       width,
       height,
+      comfyUiAsset: {
+        filename: image.filename,
+        subfolder: image.subfolder || '',
+        type: image.type || 'output',
+      },
     };
   }
 
