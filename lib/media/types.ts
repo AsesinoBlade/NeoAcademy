@@ -245,8 +245,12 @@ export interface VideoGenerationOptions {
   duration?: number;
   /** Desired aspect ratio */
   aspectRatio?: '16:9' | '4:3' | '1:1' | '9:16' | '3:4' | '21:9';
-  /** Desired output resolution */
+  /** Desired output resolution for providers that use symbolic presets */
   resolution?: '480p' | '720p' | '1080p';
+  /** Exact output width for providers that support pixel dimensions */
+  width?: number;
+  /** Exact output height for providers that support pixel dimensions */
+  height?: number;
 }
 
 /**

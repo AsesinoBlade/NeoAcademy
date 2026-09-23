@@ -8,8 +8,6 @@ import {
   cleanupCompletedLongVideoJob,
 } from './long-video-job-store';
 import {
-  generateWithComfyUiVideo,
-  generateWithComfyUiVideoContinuation,
   generateWithComfyUiLtxTextToVideo,
   generateWithComfyUiLtxImageToVideo,
 } from './adapters/comfyui-video-adapter';
@@ -21,6 +19,7 @@ import { getLongVideoJobFinalOutputPath } from './long-video-job-store';
 import { enhanceLtxVideoPrompt } from './ltx-prompt-enhancer';
 import { appendFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { DEFAULT_LTX_VIDEO_RESOLUTION } from './ltx-video-resolution';
 
 async function logLtxPrompts(
   jobId: string,
@@ -231,59 +230,41 @@ export async function runNextLongVideoJobSegment(
   };
 
   try {
+    let generationPrompt = plannedSegment.prompt;
+
     if (claimedJob.origin === 'standalone') {
       const originalPrompt = plannedSegment.prompt;
 
-      const enhancedPrompt = await enhanceLtxVideoPrompt(originalPrompt, {
+      generationPrompt = await enhanceLtxVideoPrompt(originalPrompt, {
         durationSeconds: plannedSegment.durationSeconds,
         hasStartingImage: Boolean(claimedJob.startingImagePath),
       });
 
       await saveLongVideoJob({
         ...claimedJob,
-        enhancedPrompt,
+        enhancedPrompt: generationPrompt,
       });
 
       await logLtxPrompts(
         jobId,
         segmentIndex,
         originalPrompt,
-        enhancedPrompt,
+        generationPrompt,
       );
+    }
 
-      const ltxOptions = {
-        prompt: enhancedPrompt,
-        duration: plannedSegment.durationSeconds,
-        resolution: '720p' as const,
-        aspectRatio: '16:9' as const,
-      };
+    const ltxOptions = {
+      prompt: generationPrompt,
+      duration: plannedSegment.durationSeconds,
+      width: claimedJob.width ?? DEFAULT_LTX_VIDEO_RESOLUTION.width,
+      height: claimedJob.height ?? DEFAULT_LTX_VIDEO_RESOLUTION.height,
+      aspectRatio: '16:9' as const,
+    };
 
-      if (claimedJob.startingImagePath) {
-        await generateWithComfyUiLtxImageToVideo(
-          config,
-          ltxOptions,
-          claimedJob.startingImagePath,
-          outputPath,
-          cleanupComfyUiAssets,
-        );
-      } else {
-        await generateWithComfyUiLtxTextToVideo(
-          config,
-          ltxOptions,
-          outputPath,
-          cleanupComfyUiAssets,
-        );
-      }
-    } else if (segmentIndex === 0 && claimedJob.startingImagePath) {
-      await generateWithComfyUiVideoContinuation(
-        config,
-        {
-          prompt: plannedSegment.prompt,
-        },
-        claimedJob.startingImagePath,
-        outputPath,
-        cleanupComfyUiAssets,
-      );
+    let startImagePath: string | undefined;
+
+    if (segmentIndex === 0 && claimedJob.startingImagePath) {
+      startImagePath = claimedJob.startingImagePath;
     } else if (plannedSegment.transition === 'continue' && segmentIndex > 0) {
       const previousSegment = claimedJob.segments.find(
         (segment) => segment.index === segmentIndex - 1,
@@ -294,33 +275,35 @@ export async function runNextLongVideoJobSegment(
         previousSegment.status !== 'completed' ||
         !previousSegment.outputPath
       ) {
-        throw new Error(`Previous segment ${segmentIndex - 1} is not available for continuation`);
+        throw new Error(
+          `Previous segment ${segmentIndex - 1} is not available for continuation`,
+        );
       }
 
-      const startImagePath = getLongVideoJobSegmentLastFramePath(jobId, segmentIndex - 1);
+      startImagePath = getLongVideoJobSegmentLastFramePath(
+        jobId,
+        segmentIndex - 1,
+      );
 
       await extractLastFrame(previousSegment.outputPath, startImagePath);
+    }
 
-      await generateWithComfyUiVideoContinuation(
+    if (startImagePath) {
+      await generateWithComfyUiLtxImageToVideo(
         config,
-        {
-          prompt: plannedSegment.prompt,
-        },
+        ltxOptions,
         startImagePath,
         outputPath,
         cleanupComfyUiAssets,
       );
     } else {
-      await generateWithComfyUiVideo(
+      await generateWithComfyUiLtxTextToVideo(
         config,
-        {
-          prompt: plannedSegment.prompt,
-        },
+        ltxOptions,
         outputPath,
         cleanupComfyUiAssets,
       );
     }
-
     const latestJob = await loadLongVideoJob(jobId);
 
     if (latestJob?.status === 'cancelled') {

@@ -45,6 +45,11 @@ export interface LongVideoJob {
 
   targetDurationSeconds: number;
 
+  /** Exact LTX output dimensions. Older jobs may omit these fields. */
+  width?: number;
+
+  height?: number;
+
   startingImagePath?: string;
 
   plan?: LongVideoPlan;

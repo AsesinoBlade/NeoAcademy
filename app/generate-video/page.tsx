@@ -28,9 +28,16 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
+import {
+  DEFAULT_LTX_VIDEO_RESOLUTION,
+  getLtxVideoResolutionPreset,
+  LTX_VIDEO_RESOLUTION_PRESETS,
+} from '@/lib/media/ltx-video-resolution';
 
 const ACTIVE_JOB_STORAGE_KEY = 'neoacademy-active-long-video-job';
 const MAX_STARTING_IMAGE_BYTES = 20 * 1024 * 1024;
+const DEFAULT_RESOLUTION_KEY =
+  `${DEFAULT_LTX_VIDEO_RESOLUTION.width}x${DEFAULT_LTX_VIDEO_RESOLUTION.height}`;
 
 type LongVideoJobStatus =
   | 'queued'
@@ -150,6 +157,7 @@ export default function GenerateVideoPage() {
   const router = useRouter();
   const [prompt, setPrompt] = useState('');
   const [durationSeconds, setDurationSeconds] = useState('30');
+  const [resolutionKey, setResolutionKey] = useState(DEFAULT_RESOLUTION_KEY);
   const [startingImage, setStartingImage] = useState<File | null>(null);
   const [startingImagePreview, setStartingImagePreview] = useState<string | null>(null);
 
@@ -464,6 +472,15 @@ export default function GenerateVideoPage() {
       formData.append('prompt', prompt.trim());
       formData.append('targetDurationSeconds', durationSeconds);
 
+      const resolution = getLtxVideoResolutionPreset(resolutionKey);
+
+      if (!resolution) {
+        throw new Error('Invalid video resolution');
+      }
+
+      formData.append('width', String(resolution.width));
+      formData.append('height', String(resolution.height));
+
       if (startingImage) {
         formData.append('startingImage', startingImage);
       }
@@ -611,6 +628,7 @@ export default function GenerateVideoPage() {
     setJob(null);
     setPrompt('');
     setDurationSeconds('30');
+    setResolutionKey(DEFAULT_RESOLUTION_KEY);
     setStartingImage(null);
 
     try {
@@ -729,6 +747,32 @@ export default function GenerateVideoPage() {
                     <SelectItem value="240">4 minutes</SelectItem>
 
                     <SelectItem value="300">5 minutes</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Resolution</Label>
+
+                <Select
+                  value={resolutionKey}
+                  onValueChange={setResolutionKey}
+                  disabled={isActive || !videoAvailable}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+
+                  <SelectContent>
+                    {LTX_VIDEO_RESOLUTION_PRESETS.map((preset) => {
+                      const key = `${preset.width}x${preset.height}`;
+
+                      return (
+                        <SelectItem key={key} value={key}>
+                          {preset.width} × {preset.height} ({preset.megapixels.toFixed(1)} MP)
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>

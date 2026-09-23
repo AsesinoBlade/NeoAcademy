@@ -3,6 +3,10 @@ import continuationWorkflowTemplate from '../../../config/comfyui/neoacademy-vid
 import ltxTextToVideoWorkflowTemplate from '../../../config/comfyui/neoacademy-video-ltx-t2v-api.json';
 import ltxImageToVideoWorkflowTemplate from '../../../config/comfyui/neoacademy-video-ltx-i2v-api.json';
 import crypto from 'node:crypto';
+import {
+  DEFAULT_LTX_VIDEO_RESOLUTION,
+  isLtxVideoResolutionPreset,
+} from '../ltx-video-resolution';
 
 import type {
   VideoGenerationConfig,
@@ -222,6 +226,19 @@ function configureLtxWorkflowModels(workflow: Workflow): void {
   workflow[promptEnhanceSwitchId].inputs!.value =
     process.env.VIDEO_LTX_ENABLE_PROMPT_ENHANCE !== 'false';
 }
+function resolveLtxVideoDimensions(
+  options: VideoGenerationOptions,
+): { width: number; height: number } {
+  const width = options.width ?? DEFAULT_LTX_VIDEO_RESOLUTION.width;
+  const height = options.height ?? DEFAULT_LTX_VIDEO_RESOLUTION.height;
+
+  if (!isLtxVideoResolutionPreset(width, height)) {
+    throw new Error(`Unsupported LTX video resolution: ${width}x${height}`);
+  }
+
+  return { width, height };
+}
+
 function buildLocalVideoUrl(asset: { filename: string; subfolder?: string; type?: string }) {
   const params = new URLSearchParams({
     filename: asset.filename,
@@ -311,16 +328,7 @@ export async function generateWithComfyUiLtxImageToVideo(
 
   const duration = options.duration ?? 30;
 
-  let width = 1280;
-  let height = 704;
-
-  if (options.resolution === '1080p') {
-    width = 1920;
-    height = 1080;
-  } else if (options.resolution === '480p') {
-    width = 608;
-    height = 352;
-  }
+  const { width, height } = resolveLtxVideoDimensions(options);
 
   workflow[promptNodeId].inputs!.value = options.prompt;
   workflow[durationNodeId].inputs!.value = duration;
@@ -454,16 +462,7 @@ export async function generateWithComfyUiLtxTextToVideo(
 
   const duration = options.duration ?? 30;
 
-  let width = 1280;
-  let height = 704;
-
-  if (options.resolution === '1080p') {
-    width = 1920;
-    height = 1080;
-  } else if (options.resolution === '480p') {
-    width = 608;
-    height = 352;
-  }
+  const { width, height } = resolveLtxVideoDimensions(options);
 
   workflow[promptNodeId].inputs!.value = options.prompt;
   workflow[durationNodeId].inputs!.value = duration;

@@ -14,6 +14,10 @@ import { startLongVideoProcess } from '@/lib/media/long-video-process';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
+import {
+  DEFAULT_LTX_VIDEO_RESOLUTION,
+  isLtxVideoResolutionPreset,
+} from '@/lib/media/ltx-video-resolution';
 
 const log = createLogger('Long Video API');
 
@@ -44,6 +48,8 @@ export async function POST(req: NextRequest) {
     let startingImage: File | undefined;
     let stageId: string | undefined;
     let elementId: string | undefined;
+    let requestedWidth: number | undefined;
+    let requestedHeight: number | undefined;
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -54,6 +60,8 @@ export async function POST(req: NextRequest) {
 
       const stageIdValue = formData.get('stageId');
       const elementIdValue = formData.get('elementId');
+      const widthValue = formData.get('width');
+      const heightValue = formData.get('height');
 
       if (typeof stageIdValue === 'string' && stageIdValue.trim()) {
         stageId = stageIdValue.trim();
@@ -61,6 +69,14 @@ export async function POST(req: NextRequest) {
 
       if (typeof elementIdValue === 'string' && elementIdValue.trim()) {
         elementId = elementIdValue.trim();
+      }
+
+      if (typeof widthValue === 'string' && widthValue.trim()) {
+        requestedWidth = Number(widthValue);
+      }
+
+      if (typeof heightValue === 'string' && heightValue.trim()) {
+        requestedHeight = Number(heightValue);
       }
 
       if (typeof promptValue === 'string') {
@@ -82,12 +98,16 @@ export async function POST(req: NextRequest) {
         targetDurationSeconds?: number;
         stageId?: string;
         elementId?: string;
+        width?: number;
+        height?: number;
       };
 
       prompt = parsed.prompt;
       targetDurationSeconds = parsed.targetDurationSeconds;
       stageId = parsed.stageId?.trim() || undefined;
       elementId = parsed.elementId?.trim() || undefined;
+      requestedWidth = parsed.width;
+      requestedHeight = parsed.height;
     }
 
     if (!prompt?.trim()) {
@@ -104,6 +124,23 @@ export async function POST(req: NextRequest) {
 
     if (targetDurationSeconds % 5 !== 0) {
       return apiError('INVALID_REQUEST', 400, 'targetDurationSeconds must be divisible by 5');
+    }
+
+    const width =
+      requestedWidth ?? DEFAULT_LTX_VIDEO_RESOLUTION.width;
+    const height =
+      requestedHeight ?? DEFAULT_LTX_VIDEO_RESOLUTION.height;
+
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      !isLtxVideoResolutionPreset(width, height)
+    ) {
+      return apiError(
+        'INVALID_REQUEST',
+        400,
+        `Unsupported LTX video resolution: ${width}x${height}`,
+      );
     }
 
     let startingImageExtension: string | undefined;
@@ -208,6 +245,8 @@ export async function POST(req: NextRequest) {
       stageId,
       elementId,
       targetDurationSeconds,
+      width,
+      height,
       startingImagePath,
       plan,
       segmentCount: plan.segments.length,

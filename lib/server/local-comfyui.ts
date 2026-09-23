@@ -229,7 +229,6 @@ export async function startLocalComfyUi(options: { logPath?: string } = {}) {
       '-s',
       config.mainPath,
       '--windows-standalone-build',
-      '--disable-dynamic-vram',
       '--disable-auto-launch',
       '--listen',
       config.host,
