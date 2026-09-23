@@ -28,7 +28,12 @@ async function logLtxPrompts(
   originalPrompt: string,
   enhancedPrompt: string,
 ): Promise<void> {
-  const logDirectory = path.join(process.cwd(), 'logs');
+  const logDirectory = path.join(
+    process.cwd(),
+    'data',
+    'video-jobs',
+    jobId,
+  );
   const logPath = path.join(logDirectory, 'comfyui.log');
 
   await mkdir(logDirectory, { recursive: true });

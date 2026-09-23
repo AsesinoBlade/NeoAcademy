@@ -44,7 +44,9 @@ async function main() {
 
   console.log('Ensuring ComfyUI is running...');
 
-  const comfyStartResult = await startLocalComfyUi();
+  const comfyStartResult = await startLocalComfyUi({
+    logPath: `data/video-jobs/${jobId}/comfyui.log`,
+  });
 
   const comfyUiStartedByThisJob =
     comfyStartResult.managed === true && comfyStartResult.alreadyRunning === false;

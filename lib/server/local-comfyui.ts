@@ -174,7 +174,7 @@ export async function getLocalComfyUiStatus() {
   };
 }
 
-export async function startLocalComfyUi() {
+export async function startLocalComfyUi(options: { logPath?: string } = {}) {
   const config = getConfiguredComfyUi();
   log.info(`Preparing managed ComfyUI at ${config.baseUrl}`);
   const existingState = readManagedState(config.stateFile);
@@ -213,8 +213,11 @@ export async function startLocalComfyUi() {
 
   log.info(`Starting managed ComfyUI at ${config.baseUrl}`);
 
-  const logDirectory = path.join(process.cwd(), 'logs');
-  const logPath = path.join(logDirectory, 'comfyui.log');
+  const logPath = options.logPath
+    ? path.resolve(options.logPath)
+    : path.join(process.cwd(), 'logs', 'comfyui.log');
+
+  const logDirectory = path.dirname(logPath);
 
   fs.mkdirSync(logDirectory, { recursive: true });
 

@@ -561,6 +561,52 @@ export default function GenerateVideoPage() {
     }
   }
 
+  async function handleDeleteFailedJob() {
+    if (!job || job.status !== 'failed') {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Delete this failed video job? This will permanently remove its job data, log file, and any generated files.',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/api/generate/video/long/history/${job.id}`,
+        {
+          method: 'DELETE',
+        },
+      );
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.error || 'Failed to delete video job');
+      }
+
+      try {
+        localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+      } catch {
+        // Ignore unavailable localStorage.
+      }
+
+      setJob(null);
+      await loadVideoHistory();
+
+      toast.success('Failed video job deleted');
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to delete video job';
+
+      toast.error(message);
+    }
+  }
   function resetForm() {
     setJob(null);
     setPrompt('');
@@ -830,17 +876,29 @@ export default function GenerateVideoPage() {
                             Job failed
                           </p>
 
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={!job.error}
-                            onClick={copyJobError}
-                            className="shrink-0"
-                          >
-                            <Copy className="mr-2 size-4" />
-                            Copy error details
-                          </Button>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={!job.error}
+                              onClick={copyJobError}
+                            >
+                              <Copy className="mr-2 size-4" />
+                              Copy error details
+                            </Button>
+
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="icon"
+                              onClick={handleDeleteFailedJob}
+                              title="Delete failed job"
+                              aria-label="Delete failed job"
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
                         </div>
 
                       </div>
