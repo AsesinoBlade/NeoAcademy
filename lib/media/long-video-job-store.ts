@@ -167,7 +167,7 @@ export async function deleteLongVideoJobsForStage(
   };
 }
 
-export async function listStandaloneCompletedLongVideoJobs(): Promise<LongVideoJob[]> {
+export async function listStandaloneLongVideoHistoryJobs(): Promise<LongVideoJob[]> {
   let entries;
 
   try {
@@ -193,8 +193,10 @@ export async function listStandaloneCompletedLongVideoJobs(): Promise<LongVideoJ
       (job): job is LongVideoJob =>
         job !== null &&
         job.origin === 'standalone' &&
-        job.status === 'completed' &&
-        Boolean(job.outputPath),
+        (
+          (job.status === 'completed' && Boolean(job.outputPath)) ||
+          job.status === 'failed'
+        ),
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }

@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 
-import { listStandaloneCompletedLongVideoJobs } from '@/lib/media/long-video-job-store';
+import { listStandaloneLongVideoHistoryJobs } from '@/lib/media/long-video-job-store';
 
 export async function GET() {
   try {
-    const jobs = await listStandaloneCompletedLongVideoJobs();
+    const jobs = await listStandaloneLongVideoHistoryJobs();
 
     return NextResponse.json({
       jobs: jobs.map((job) => ({
@@ -12,7 +12,13 @@ export async function GET() {
         prompt: job.prompt,
         enhancedPrompt: job.enhancedPrompt,
         targetDurationSeconds: job.targetDurationSeconds,
-        outputUrl: `/api/generate/video/long/${job.id}/output`,
+        status: job.status,
+        error: job.error,
+        outputUrl:
+          job.status === 'completed'
+            ? `/api/generate/video/long/${job.id}/output`
+            : undefined,
+        logUrl: `/api/generate/video/long/history/${job.id}/log`,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
       })),

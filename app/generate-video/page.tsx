@@ -63,7 +63,10 @@ interface VideoHistoryItem {
   prompt: string;
   enhancedPrompt?: string;
   targetDurationSeconds: number;
-  outputUrl: string;
+  status: 'completed' | 'failed';
+  outputUrl?: string;
+  error?: string;
+  logUrl: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -999,7 +1002,7 @@ export default function GenerateVideoPage() {
 
               <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
                 <Film className="size-4" />
-                <span>Previous Videos</span>
+                <span>Video History</span>
 
                 {!historyLoading && (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">
@@ -1024,13 +1027,29 @@ export default function GenerateVideoPage() {
                   return (
                     <div key={item.id} className="group min-w-0">
                       <div className="relative aspect-video overflow-hidden rounded-2xl bg-black">
-                        <video
-                          src={`${item.outputUrl}#t=0.1`}
-                          controls={!confirmingDelete}
-                          playsInline
-                          preload="metadata"
-                          className="size-full object-cover"
-                        />
+                        {item.status === 'completed' && item.outputUrl ? (
+                          <video
+                            src={`${item.outputUrl}#t=0.1`}
+                            controls={!confirmingDelete}
+                            playsInline
+                            preload="metadata"
+                            className="size-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex size-full flex-col items-center justify-center gap-3 bg-destructive/10 px-6 text-center">
+                            <AlertCircle className="size-10 text-destructive" />
+
+                            <div>
+                              <p className="font-medium text-destructive">
+                                Video generation failed
+                              </p>
+
+                              <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+                                {item.error || 'No error details are available.'}
+                              </p>
+                            </div>
+                          </div>
+                        )}
 
                         {!confirmingDelete && (
                           <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -1065,21 +1084,57 @@ export default function GenerateVideoPage() {
                               </Button>
                             )}
 
-                            <Button
-                              asChild
-                              type="button"
-                              size="icon"
-                              variant="secondary"
-                              className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 hover:text-white"
-                            >
-                              <a
-                                href={item.outputUrl}
-                                download={`neoacademy-video-${item.id}.mp4`}
-                                title="Download video"
+                            {item.status === 'failed' && item.error && (
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="secondary"
+                                className="size-8 rounded-full bg-red-600/80 text-white backdrop-blur-sm hover:bg-red-600 hover:text-white"
+                                onClick={() =>
+                                  copyHistoryPrompt(item.error!, 'Error details')
+                                }
+                                title="Copy error details"
                               >
-                                <Download className="size-4" />
-                              </a>
-                            </Button>
+                                <AlertCircle className="size-4" />
+                              </Button>
+                            )}
+
+                            {item.status === 'failed' && (
+                              <Button
+                                asChild
+                                type="button"
+                                size="icon"
+                                variant="secondary"
+                                className="size-8 rounded-full bg-amber-600/80 text-white backdrop-blur-sm hover:bg-amber-600 hover:text-white"
+                              >
+                                <a
+                                  href={item.logUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="View ComfyUI log"
+                                >
+                                  <Film className="size-4" />
+                                </a>
+                              </Button>
+                            )}
+
+                            {item.status === 'completed' && item.outputUrl && (
+                              <Button
+                                asChild
+                                type="button"
+                                size="icon"
+                                variant="secondary"
+                                className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 hover:text-white"
+                              >
+                                <a
+                                  href={item.outputUrl}
+                                  download={`neoacademy-video-${item.id}.mp4`}
+                                  title="Download video"
+                                >
+                                  <Download className="size-4" />
+                                </a>
+                              </Button>
+                            )}
 
                             <Button
                               type="button"
@@ -1087,7 +1142,7 @@ export default function GenerateVideoPage() {
                               variant="secondary"
                               className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-destructive hover:text-white"
                               onClick={() => setPendingHistoryDeleteId(item.id)}
-                              title="Delete video"
+                              title="Delete video job"
                             >
                               <Trash2 className="size-4" />
                             </Button>
@@ -1123,11 +1178,27 @@ export default function GenerateVideoPage() {
 
                       <div className="mt-2.5 min-w-0 px-1">
                         <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-400">
-                            {item.targetDurationSeconds < 60
+                          <span
+                            className={
+                              item.status === 'failed'
+                                ? 'rounded-full bg-red-100 px-2 py-0.5 font-medium text-red-600 dark:bg-red-900/30 dark:text-red-400'
+                                : 'rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-400'
+                            }
+                          >
+                            {item.status === 'failed'
+                              ? 'Failed'
+                              : item.targetDurationSeconds < 60
                               ? `${item.targetDurationSeconds} sec`
                               : `${item.targetDurationSeconds / 60} min`}
                           </span>
+
+                          {item.status === 'failed' && (
+                            <span className="text-xs">
+                              {item.targetDurationSeconds < 60
+                                ? `${item.targetDurationSeconds} sec`
+                                : `${item.targetDurationSeconds / 60} min`}
+                            </span>
+                          )}
 
                           <span>{formatHistoryDate(item.createdAt)}</span>
                         </div>
