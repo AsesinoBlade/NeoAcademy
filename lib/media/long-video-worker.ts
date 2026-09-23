@@ -18,7 +18,37 @@ import type { VideoGenerationConfig } from './types';
 import { extractLastFrame } from '../server/video-processing';
 import { concatenateVideos } from '../server/video-processing';
 import { getLongVideoJobFinalOutputPath } from './long-video-job-store';
+import { enhanceLtxVideoPrompt } from './ltx-prompt-enhancer';
+import { appendFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
+async function logLtxPrompts(
+  jobId: string,
+  segmentIndex: number,
+  originalPrompt: string,
+  enhancedPrompt: string,
+): Promise<void> {
+  const logDirectory = path.join(process.cwd(), 'logs');
+  const logPath = path.join(logDirectory, 'comfyui.log');
+
+  await mkdir(logDirectory, { recursive: true });
+
+  const entry = [
+    '',
+    '[NeoAcademy LTX Prompt]',
+    `Job: ${jobId}`,
+    `Segment: ${segmentIndex}`,
+    'ORIGINAL PROMPT:',
+    originalPrompt,
+    '',
+    'ENHANCED PROMPT:',
+    enhancedPrompt,
+    '[End NeoAcademy LTX Prompt]',
+    '',
+  ].join('\n');
+
+  await appendFile(logPath, entry, 'utf8');
+}
 const MAX_SEGMENT_ATTEMPTS = 3;
 
 export async function claimNextLongVideoJobSegment(jobId: string): Promise<LongVideoJob | null> {
@@ -189,8 +219,22 @@ export async function runNextLongVideoJobSegment(
 
   try {
     if (claimedJob.origin === 'standalone') {
+      const originalPrompt = plannedSegment.prompt;
+
+      const enhancedPrompt = await enhanceLtxVideoPrompt(originalPrompt, {
+        durationSeconds: plannedSegment.durationSeconds,
+        hasStartingImage: Boolean(claimedJob.startingImagePath),
+      });
+
+      await logLtxPrompts(
+        jobId,
+        segmentIndex,
+        originalPrompt,
+        enhancedPrompt,
+      );
+
       const ltxOptions = {
-        prompt: plannedSegment.prompt,
+        prompt: enhancedPrompt,
         duration: plannedSegment.durationSeconds,
         resolution: '720p' as const,
         aspectRatio: '16:9' as const,
