@@ -6,6 +6,7 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   Download,
   Film,
   ImagePlus,
@@ -197,6 +198,16 @@ export default function GenerateVideoPage() {
       month: 'short',
       day: 'numeric',
     });
+  }
+
+  async function copyHistoryPrompt(prompt: string) {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      toast.success('Prompt copied');
+    } catch (error) {
+      console.error(error);
+      toast.error('Could not copy prompt');
+    }
   }
 
   async function deleteHistoryVideo(jobId: string) {
@@ -806,6 +817,17 @@ export default function GenerateVideoPage() {
 
                         {!confirmingDelete && (
                           <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 hover:text-white"
+                              onClick={() => copyHistoryPrompt(item.prompt)}
+                              title="Copy prompt"
+                            >
+                              <Copy className="size-4" />
+                            </Button>
+
                             <Button
                               asChild
                               type="button"

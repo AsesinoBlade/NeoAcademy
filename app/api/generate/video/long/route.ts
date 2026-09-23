@@ -142,8 +142,23 @@ export async function POST(req: NextRequest) {
 
     let plan: Awaited<ReturnType<typeof generateLongVideoPlan>>;
 
-    if (targetDurationSeconds === 5) {
-      log.info('Creating single-segment 5s video plan without LLM planning');
+    if (!stageId) {
+      log.info(`Creating single-segment ${targetDurationSeconds}s standalone LTX video plan`);
+
+      plan = {
+        targetDurationSeconds,
+        segmentDurationSeconds: targetDurationSeconds,
+        segments: [
+          {
+            index: 0,
+            durationSeconds: targetDurationSeconds,
+            prompt: prompt.trim(),
+            transition: 'cut',
+          },
+        ],
+      };
+    } else if (targetDurationSeconds === 5) {
+      log.info('Creating single-segment 5s classroom video plan without LLM planning');
 
       plan = {
         targetDurationSeconds: 5,
@@ -160,7 +175,7 @@ export async function POST(req: NextRequest) {
     } else {
       const { model: languageModel, modelInfo, modelString } = resolveModelFromHeaders(req);
 
-      log.info(`Planning ${targetDurationSeconds}s long video [model=${modelString}]`);
+      log.info(`Planning ${targetDurationSeconds}s classroom video [model=${modelString}]`);
 
       plan = await generateLongVideoPlan({
         prompt: prompt.trim(),

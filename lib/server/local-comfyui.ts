@@ -213,6 +213,13 @@ export async function startLocalComfyUi() {
 
   log.info(`Starting managed ComfyUI at ${config.baseUrl}`);
 
+  const logDirectory = path.join(process.cwd(), 'logs');
+  const logPath = path.join(logDirectory, 'comfyui.log');
+
+  fs.mkdirSync(logDirectory, { recursive: true });
+
+  const logFd = fs.openSync(logPath, 'a');
+
   const child = spawn(
     config.pythonPath,
     [
@@ -229,11 +236,13 @@ export async function startLocalComfyUi() {
     {
       cwd: config.root,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', logFd, logFd],
       windowsHide: true,
       env: process.env,
     },
   );
+
+  fs.closeSync(logFd);
 
   if (!child.pid) {
     throw new Error('Failed to start ComfyUI process');

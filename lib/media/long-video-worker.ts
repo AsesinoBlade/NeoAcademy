@@ -10,6 +10,8 @@ import {
 import {
   generateWithComfyUiVideo,
   generateWithComfyUiVideoContinuation,
+  generateWithComfyUiLtxTextToVideo,
+  generateWithComfyUiLtxImageToVideo,
 } from './adapters/comfyui-video-adapter';
 import { deleteLocalComfyUiAsset } from '../server/local-comfyui-media';
 import type { VideoGenerationConfig } from './types';
@@ -186,7 +188,31 @@ export async function runNextLongVideoJobSegment(
   };
 
   try {
-    if (segmentIndex === 0 && claimedJob.startingImagePath) {
+    if (claimedJob.origin === 'standalone') {
+      const ltxOptions = {
+        prompt: plannedSegment.prompt,
+        duration: plannedSegment.durationSeconds,
+        resolution: '720p' as const,
+        aspectRatio: '16:9' as const,
+      };
+
+      if (claimedJob.startingImagePath) {
+        await generateWithComfyUiLtxImageToVideo(
+          config,
+          ltxOptions,
+          claimedJob.startingImagePath,
+          outputPath,
+          cleanupComfyUiAssets,
+        );
+      } else {
+        await generateWithComfyUiLtxTextToVideo(
+          config,
+          ltxOptions,
+          outputPath,
+          cleanupComfyUiAssets,
+        );
+      }
+    } else if (segmentIndex === 0 && claimedJob.startingImagePath) {
       await generateWithComfyUiVideoContinuation(
         config,
         {
@@ -269,12 +295,17 @@ export async function finalizeLongVideoJob(jobId: string): Promise<LongVideoJob>
   const outputPath = getLongVideoJobFinalOutputPath(jobId);
 
   try {
-    await concatenateVideos(
-      assemblingJob.segments
-        .sort((a, b) => a.index - b.index)
-        .map((segment) => segment.outputPath!),
-      outputPath,
-    );
+    const completedSegmentPaths = assemblingJob.segments
+      .sort((a, b) => a.index - b.index)
+      .map((segment) => segment.outputPath!);
+
+    if (completedSegmentPaths.length === 1) {
+      const fs = await import('node:fs/promises');
+
+      await fs.copyFile(completedSegmentPaths[0], outputPath);
+    } else {
+      await concatenateVideos(completedSegmentPaths, outputPath);
+    }
 
     const completedJob = await saveLongVideoJob({
       ...assemblingJob,
