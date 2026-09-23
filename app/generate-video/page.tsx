@@ -53,6 +53,7 @@ interface RuntimeCapabilities {
 interface VideoHistoryItem {
   id: string;
   prompt: string;
+  enhancedPrompt?: string;
   targetDurationSeconds: number;
   outputUrl: string;
   createdAt: string;
@@ -200,13 +201,13 @@ export default function GenerateVideoPage() {
     });
   }
 
-  async function copyHistoryPrompt(prompt: string) {
+  async function copyHistoryPrompt(prompt: string, label: string) {
     try {
       await navigator.clipboard.writeText(prompt);
-      toast.success('Prompt copied');
+      toast.success(`${label} copied`);
     } catch (error) {
       console.error(error);
-      toast.error('Could not copy prompt');
+      toast.error(`Could not copy ${label.toLowerCase()}`);
     }
   }
 
@@ -822,11 +823,31 @@ export default function GenerateVideoPage() {
                               size="icon"
                               variant="secondary"
                               className="size-8 rounded-full bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 hover:text-white"
-                              onClick={() => copyHistoryPrompt(item.prompt)}
-                              title="Copy prompt"
+                              onClick={() =>
+                                copyHistoryPrompt(item.prompt, 'Original prompt')
+                              }
+                              title="Copy original prompt"
                             >
                               <Copy className="size-4" />
                             </Button>
+
+                            {item.enhancedPrompt && (
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="secondary"
+                                className="size-8 rounded-full bg-violet-600/80 text-white backdrop-blur-sm hover:bg-violet-600 hover:text-white"
+                                onClick={() =>
+                                  copyHistoryPrompt(
+                                    item.enhancedPrompt!,
+                                    'Enhanced prompt',
+                                  )
+                                }
+                                title="Copy enhanced prompt"
+                              >
+                                <Copy className="size-4" />
+                              </Button>
+                            )}
 
                             <Button
                               asChild

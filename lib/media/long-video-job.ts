@@ -29,6 +29,8 @@ export interface LongVideoJob {
 
   prompt: string;
 
+  enhancedPrompt?: string;
+
   stageId?: string;
 
   elementId?: string;

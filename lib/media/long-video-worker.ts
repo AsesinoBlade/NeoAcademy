@@ -226,6 +226,11 @@ export async function runNextLongVideoJobSegment(
         hasStartingImage: Boolean(claimedJob.startingImagePath),
       });
 
+      await saveLongVideoJob({
+        ...claimedJob,
+        enhancedPrompt,
+      });
+
       await logLtxPrompts(
         jobId,
         segmentIndex,

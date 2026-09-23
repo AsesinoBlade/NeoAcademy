@@ -10,6 +10,7 @@ export async function GET() {
       jobs: jobs.map((job) => ({
         id: job.id,
         prompt: job.prompt,
+        enhancedPrompt: job.enhancedPrompt,
         targetDurationSeconds: job.targetDurationSeconds,
         outputUrl: `/api/generate/video/long/${job.id}/output`,
         createdAt: job.createdAt,
