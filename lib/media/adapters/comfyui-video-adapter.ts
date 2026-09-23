@@ -29,6 +29,45 @@ export type ComfyUiVideoAssetCleanup = (assets: {
 
 type Workflow = Record<string, WorkflowNode>;
 
+type ComfyUiHistoryStatus = {
+  completed?: boolean;
+  status_str?: string;
+  messages?: Array<[string, unknown]>;
+};
+
+function getComfyUiExecutionError(status?: ComfyUiHistoryStatus): string | null {
+  if (!status) {
+    return null;
+  }
+
+  if (status.status_str !== 'error') {
+    return null;
+  }
+
+  const executionError = status.messages?.find(
+    ([eventName]) => eventName === 'execution_error',
+  );
+
+  if (executionError) {
+    const payload = executionError[1];
+
+    if (payload && typeof payload === 'object') {
+      const details = payload as Record<string, unknown>;
+
+      const message =
+        (typeof details.exception_message === 'string' && details.exception_message) ||
+        (typeof details.exception_type === 'string' && details.exception_type) ||
+        (typeof details.node_type === 'string' && `Node ${details.node_type} failed`);
+
+      if (message) {
+        return message;
+      }
+    }
+  }
+
+  return 'ComfyUI execution failed';
+}
+
 type ComfyUiUploadedImage = {
   name: string;
   subfolder: string;
@@ -341,14 +380,18 @@ export async function generateWithComfyUiLtxImageToVideo(
             images?: ComfyUiAsset[];
           }
         >;
-        status?: {
-          completed?: boolean;
-          status_str?: string;
-        };
+        status?: ComfyUiHistoryStatus;
       }
     >;
 
     const run = history[promptId];
+
+    const executionError = getComfyUiExecutionError(run?.status);
+
+    if (executionError) {
+      throw new Error(`ComfyUI execution failed: ${executionError}`);
+    }
+
     const saveOutput = run?.outputs?.[saveVideoNodeId];
 
     const asset =
@@ -478,14 +521,18 @@ export async function generateWithComfyUiLtxTextToVideo(
             images?: ComfyUiAsset[];
           }
         >;
-        status?: {
-          completed?: boolean;
-          status_str?: string;
-        };
+        status?: ComfyUiHistoryStatus;
       }
     >;
 
     const run = history[promptId];
+
+    const executionError = getComfyUiExecutionError(run?.status);
+
+    if (executionError) {
+      throw new Error(`ComfyUI execution failed: ${executionError}`);
+    }
+
     const saveOutput = run?.outputs?.[saveVideoNodeId];
 
     const asset =
@@ -581,14 +628,18 @@ export async function generateWithComfyUiVideo(
             images?: Array<{ filename: string; subfolder?: string; type?: string }>;
           }
         >;
-        status?: {
-          completed?: boolean;
-          status_str?: string;
-        };
+        status?: ComfyUiHistoryStatus;
       }
     >;
 
     const run = history[promptId];
+
+    const executionError = getComfyUiExecutionError(run?.status);
+
+    if (executionError) {
+      throw new Error(`ComfyUI execution failed: ${executionError}`);
+    }
+
     const saveOutput = run?.outputs?.[saveVideoNodeId];
 
     const asset = saveOutput?.videos?.[0] || saveOutput?.gifs?.[0] || saveOutput?.images?.[0];
@@ -700,14 +751,18 @@ export async function generateWithComfyUiVideoContinuation(
             }>;
           }
         >;
-        status?: {
-          completed?: boolean;
-          status_str?: string;
-        };
+        status?: ComfyUiHistoryStatus;
       }
     >;
 
     const run = history[promptId];
+
+    const executionError = getComfyUiExecutionError(run?.status);
+
+    if (executionError) {
+      throw new Error(`ComfyUI execution failed: ${executionError}`);
+    }
+
     const saveOutput = run?.outputs?.[saveVideoNodeId];
 
     const asset = saveOutput?.videos?.[0] || saveOutput?.gifs?.[0] || saveOutput?.images?.[0];
