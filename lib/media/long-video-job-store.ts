@@ -148,7 +148,7 @@ export async function deleteLongVideoJobsForStage(
       continue;
     }
 
-    if (job.status !== 'completed' && job.status !== 'failed') {
+    if (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled') {
       skippedActive += 1;
       continue;
     }

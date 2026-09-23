@@ -6,9 +6,15 @@ export type LongVideoJobStatus =
   | 'generating'
   | 'assembling'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
-export type LongVideoSegmentStatus = 'pending' | 'generating' | 'completed' | 'failed';
+export type LongVideoSegmentStatus =
+  | 'pending'
+  | 'generating'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export interface LongVideoJobSegment {
   index: number;

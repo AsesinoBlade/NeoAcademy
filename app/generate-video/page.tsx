@@ -38,7 +38,8 @@ type LongVideoJobStatus =
   | 'generating'
   | 'assembling'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
 interface RuntimeCapabilities {
   profile: 'mac-mlx' | 'windows-cuda' | 'generic';
@@ -97,6 +98,9 @@ function getProgress(job: LongVideoJobStatusResponse | null): number {
     case 'failed':
       return 0;
 
+    case 'cancelled':
+      return 0;
+
     default:
       return 0;
   }
@@ -131,7 +135,10 @@ function getStatusMessage(job: LongVideoJobStatusResponse | null, submitting: bo
       return 'Video complete';
 
     case 'failed':
-      return job.error || 'Video generation failed';
+      return 'Job failed';
+
+    case 'cancelled':
+      return 'Video generation cancelled';
 
     default:
       return '';
@@ -150,6 +157,7 @@ export default function GenerateVideoPage() {
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(true);
 
   const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [job, setJob] = useState<LongVideoJobStatusResponse | null>(null);
   const [history, setHistory] = useState<VideoHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -157,6 +165,7 @@ export default function GenerateVideoPage() {
 
   const isActive =
     submitting ||
+    cancelling ||
     job?.status === 'queued' ||
     job?.status === 'planning' ||
     job?.status === 'generating' ||
@@ -211,6 +220,22 @@ export default function GenerateVideoPage() {
     }
   }
 
+  async function copyJobError() {
+    const message = job?.error?.trim();
+
+    if (!message) {
+      toast.error('No error details are available');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(message);
+      toast.success('Error details copied');
+    } catch (error) {
+      console.error(error);
+      toast.error('Could not copy error details');
+    }
+  }
   async function deleteHistoryVideo(jobId: string) {
     try {
       const response = await fetch(`/api/generate/video/long/history/${jobId}`, {
@@ -316,7 +341,7 @@ export default function GenerateVideoPage() {
           setDurationSeconds(String(restoredJob.targetDurationSeconds));
         }
 
-        if (restoredJob.status === 'completed' || restoredJob.status === 'failed') {
+        if (restoredJob.status === 'completed' || restoredJob.status === 'failed' || restoredJob.status === 'cancelled') {
           localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
         }
       } catch (error) {
@@ -334,7 +359,7 @@ export default function GenerateVideoPage() {
   useEffect(() => {
     if (!job) return;
 
-    if (job.status === 'completed' || job.status === 'failed') {
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
       return;
     }
 
@@ -357,18 +382,20 @@ export default function GenerateVideoPage() {
 
         setJob(updated);
 
-        if (updated.status === 'completed' || updated.status === 'failed') {
+        if (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled') {
           try {
             localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
           } catch {
             // Ignore unavailable localStorage.
           }
 
-          if (updated.status === 'completed') {
-            toast.success('Video generation complete');
-          } else {
-            toast.error(updated.error || 'Video generation failed');
-          }
+        if (updated.status === 'completed') {
+          toast.success('Video generation complete');
+        } else if (updated.status === 'cancelled') {
+          toast.info('Video generation cancelled');
+        } else {
+          toast.error('Video generation failed');
+        }
           await loadVideoHistory();
         }
       } catch (error) {
@@ -482,6 +509,55 @@ export default function GenerateVideoPage() {
       toast.error(message);
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!job || !isActive) {
+      return;
+    }
+
+    setCancelling(true);
+
+    try {
+      const response = await fetch(
+        `/api/generate/video/long/${job.id}/cancel`,
+        {
+          method: 'POST',
+        },
+      );
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.error || 'Failed to cancel video generation');
+      }
+
+      try {
+        localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+      } catch {
+        // Ignore unavailable localStorage.
+      }
+
+      setJob((current) =>
+        current
+          ? {
+              ...current,
+              status: 'cancelled',
+              error: undefined,
+              updatedAt: new Date().toISOString(),
+            }
+          : current,
+      );
+
+      toast.info('Video generation cancelled');
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to cancel video generation';
+
+      toast.error(message);
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -687,6 +763,29 @@ export default function GenerateVideoPage() {
                   </>
                 )}
               </Button>
+              {job &&
+                (job.status === 'queued' ||
+                  job.status === 'planning' ||
+                  job.status === 'generating' ||
+                  job.status === 'assembling') && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="w-full"
+                    size="lg"
+                    disabled={cancelling}
+                    onClick={handleCancel}
+                  >
+                    {cancelling ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        Cancelling...
+                      </>
+                    ) : (
+                      'Cancel Video'
+                    )}
+                  </Button>
+                )}
             </CardContent>
           </Card>
 
@@ -726,9 +825,24 @@ export default function GenerateVideoPage() {
 
                     {job?.status === 'failed' && (
                       <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3">
-                        <p className="text-sm text-destructive">
-                          {job.error || 'Video generation failed'}
-                        </p>
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-destructive">
+                            Job failed
+                          </p>
+
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={!job.error}
+                            onClick={copyJobError}
+                            className="shrink-0"
+                          >
+                            <Copy className="mr-2 size-4" />
+                            Copy error details
+                          </Button>
+                        </div>
+
                       </div>
                     )}
                   </>

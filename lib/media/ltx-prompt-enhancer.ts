@@ -129,6 +129,7 @@ export async function enhanceLtxVideoPrompt(
         prompt: originalPrompt,
         stream: false,
         think: false,
+        keep_alive: 0,
         options: {
           num_predict: maxTokens,
           temperature: 0.7,

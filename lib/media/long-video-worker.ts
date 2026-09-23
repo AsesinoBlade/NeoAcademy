@@ -58,6 +58,10 @@ export async function claimNextLongVideoJobSegment(jobId: string): Promise<LongV
     throw new Error(`Long video job not found: ${jobId}`);
   }
 
+  if (job.status === 'cancelled') {
+    return null;
+  }
+
   const resumedJob = prepareLongVideoJobForResume(job);
 
   const nextSegment = getNextLongVideoJobSegment(resumedJob);
@@ -143,6 +147,10 @@ export async function failLongVideoJobSegment(
     throw new Error(`Long video job not found: ${jobId}`);
   }
 
+  if (job.status === 'cancelled') {
+    return job;
+  }
+
   const segments = job.segments.map((segment) =>
     segment.index === segmentIndex
       ? {
@@ -155,10 +163,10 @@ export async function failLongVideoJobSegment(
 
   const updatedJob: LongVideoJob = {
     ...job,
-    status: 'generating',
+    status: 'failed',
     segments,
     currentSegmentIndex: undefined,
-    error: undefined,
+    error: errorMessage,
   };
 
   return saveLongVideoJob(updatedJob);
@@ -308,6 +316,12 @@ export async function runNextLongVideoJobSegment(
       );
     }
 
+    const latestJob = await loadLongVideoJob(jobId);
+
+    if (latestJob?.status === 'cancelled') {
+      return latestJob;
+    }
+
     return completeLongVideoJobSegment(jobId, segmentIndex, outputPath);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -317,6 +331,7 @@ export async function runNextLongVideoJobSegment(
     throw error;
   }
 }
+
 export async function finalizeLongVideoJob(jobId: string): Promise<LongVideoJob> {
   const job = await loadLongVideoJob(jobId);
 

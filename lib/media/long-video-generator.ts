@@ -18,6 +18,10 @@ export async function generateLongVideoJob(
       return job;
     }
 
+    if (job.status === 'cancelled') {
+      return job;
+    }
+
     if (job.status === 'failed') {
       throw new Error(job.error || `Long video job failed: ${jobId}`);
     }
@@ -39,6 +43,10 @@ export async function generateLongVideoJob(
 
       if (latestJob.status === 'failed') {
         throw new Error(latestJob.error || `Long video job failed: ${jobId}`);
+      }
+
+      if (latestJob.status === 'cancelled') {
+        return latestJob;
       }
 
       throw new Error(`Long video generator stopped before job ${jobId} completed`);

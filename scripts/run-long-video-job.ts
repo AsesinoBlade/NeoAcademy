@@ -74,6 +74,30 @@ async function main() {
     } else {
       console.log('Leaving pre-existing ComfyUI instance running');
     }
+
+    console.log('Unloading local LLM after video generation...');
+
+    try {
+      const finalUnloadResult = await unloadLocalLlm();
+
+      if (!finalUnloadResult.success) {
+        console.warn(
+          `Local LLM could not be unloaded after video generation: ${
+            finalUnloadResult.message || 'unknown error'
+          }`,
+        );
+      } else if (finalUnloadResult.skipped) {
+        console.log('Final local LLM unload skipped');
+      } else {
+        console.log(
+          `Local LLM unloaded after video generation: ${
+            finalUnloadResult.model || 'unknown model'
+          }`,
+        );
+      }
+    } catch (error) {
+      console.warn('Failed to unload local LLM after video generation:', error);
+    }
   }
 }
 
