@@ -26,6 +26,7 @@ export interface MediaTask {
     aspectRatio?: string;
     style?: string;
     duration?: number;
+    enhancePrompt?: boolean;
   };
   objectUrl?: string; // URL.createObjectURL() for rendering
   poster?: string; // Video poster objectUrl
@@ -87,6 +88,7 @@ export const useMediaGenerationStore = create<MediaGenerationState>()((set, get)
           aspectRatio: req.aspectRatio,
           style: req.style,
           duration: req.durationSeconds,
+          enhancePrompt: req.enhancePrompt === true,
         },
         retryCount: 0,
         stageId,

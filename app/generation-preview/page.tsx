@@ -1020,6 +1020,32 @@ function GenerationPreviewContent() {
 
       router.push(`/classroom/${stage.id}`);
     } catch (err) {
+      // Generation may fail before the normal post-LLM cleanup point.
+      // Always make a best-effort attempt to release the local Ollama
+      // model so a failed or cancelled classroom does not leave VRAM occupied.
+      //
+      // Do NOT pass the generation AbortSignal here: if generation was
+      // cancelled, that signal may already be aborted and would prevent cleanup.
+      try {
+        const unloadResponse = await fetch('/api/unload-local-llm', {
+          method: 'POST',
+        });
+
+        if (!unloadResponse.ok) {
+          log.warn(
+            '[Generation] Local LLM cleanup after failure returned status',
+            unloadResponse.status,
+          );
+        } else {
+          log.info('[Generation] Local LLM released after generation failure');
+        }
+      } catch (cleanupError) {
+        log.warn(
+          '[Generation] Failed to release local LLM after generation failure:',
+          cleanupError,
+        );
+      }
+
       // AbortError is expected when navigating away — don't show as error
       if (err instanceof DOMException && err.name === 'AbortError') {
         log.info('[GenerationPreview] Generation aborted');

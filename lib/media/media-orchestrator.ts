@@ -125,6 +125,7 @@ export async function retryMediaTask(elementId: string): Promise<void> {
       durationSeconds: task.params.duration,
       aspectRatio: task.params.aspectRatio as MediaGenerationRequest['aspectRatio'],
       style: task.params.style,
+      enhancePrompt: task.params.enhancePrompt === true,
     },
     task.stageId,
   );
@@ -146,7 +147,7 @@ async function generateSingleMedia(
     let mimeType: string;
 
     if (req.type === 'image') {
-      const result = await callImageApi(req, abortSignal);
+      const result = await callImageApi(req, stageId, abortSignal);
       resultUrl = result.url;
       mimeType = 'image/png';
     } else {
@@ -176,6 +177,7 @@ async function generateSingleMedia(
         duration: req.durationSeconds,
         aspectRatio: req.aspectRatio,
         style: req.style,
+        enhancePrompt: req.enhancePrompt === true,
       }),
       createdAt: Date.now(),
     });
@@ -216,43 +218,290 @@ async function generateSingleMedia(
   }
 }
 
-async function callImageApi(
+type LongImageJobStatus =
+  | 'queued'
+  | 'generating'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+interface LongImageJobStatusResponse {
+  id: string;
+  status: LongImageJobStatus;
+  outputUrl?: string;
+  error?: string;
+}
+
+function getClassroomImageDimensions(
+  aspectRatio: MediaGenerationRequest['aspectRatio'],
+): { width: number; height: number } {
+  switch (aspectRatio) {
+    case '4:3':
+      return { width: 1024, height: 768 };
+
+    case '1:1':
+      return { width: 1024, height: 1024 };
+
+    case '9:16':
+      return { width: 720, height: 1280 };
+
+    case '16:9':
+    default:
+      return { width: 1280, height: 720 };
+  }
+}
+
+async function waitForLongImageJob(
+  jobId: string,
+  abortSignal?: AbortSignal,
+): Promise<LongImageJobStatusResponse> {
+  while (true) {
+    if (abortSignal?.aborted) {
+      throw new DOMException(
+        'Image generation aborted',
+        'AbortError',
+      );
+    }
+
+    const response = await fetch(
+      `/api/generate/image/long/${jobId}`,
+      {
+        cache: 'no-store',
+        signal: abortSignal,
+      },
+    );
+
+    if (!response.ok) {
+      const data =
+        await response.json().catch(() => ({}));
+
+      throw new MediaApiError(
+        data.error ||
+          `Long image status API returned ${response.status}`,
+        data.errorCode,
+      );
+    }
+
+    const job =
+      (await response.json()) as LongImageJobStatusResponse;
+
+    if (job.status === 'completed') {
+      if (!job.outputUrl) {
+        throw new Error(
+          'Completed image job has no output URL',
+        );
+      }
+
+      return job;
+    }
+
+    if (job.status === 'failed') {
+      throw new Error(
+        job.error || 'Image generation failed',
+      );
+    }
+
+    if (job.status === 'cancelled') {
+      throw new Error(
+        job.error || 'Image generation cancelled',
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const timer =
+        window.setTimeout(resolve, 2000);
+
+      if (abortSignal) {
+        abortSignal.addEventListener(
+          'abort',
+          () => {
+            window.clearTimeout(timer);
+
+            reject(
+              new DOMException(
+                'Image generation aborted',
+                'AbortError',
+              ),
+            );
+          },
+          { once: true },
+        );
+      }
+    });
+  }
+}
+
+async function callLongImageApi(
   req: MediaGenerationRequest,
+  stageId: string,
   abortSignal?: AbortSignal,
 ): Promise<{ url: string }> {
-  const settings = useSettingsStore.getState();
-  const providerConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
+  const dimensions =
+    getClassroomImageDimensions(
+      req.aspectRatio,
+    );
 
-  const response = await fetch('/api/generate/image', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-image-provider': settings.imageProviderId || '',
-      'x-image-model': settings.imageModelId || '',
-      'x-api-key': providerConfig?.apiKey || '',
-      'x-base-url': providerConfig?.baseUrl || '',
+  const formData =
+    new FormData();
+
+  formData.append(
+    'prompt',
+    req.prompt,
+  );
+
+  formData.append(
+    'width',
+    String(dimensions.width),
+  );
+
+  formData.append(
+    'height',
+    String(dimensions.height),
+  );
+
+  formData.append(
+    'stageId',
+    stageId,
+  );
+
+  formData.append(
+    'elementId',
+    req.elementId,
+  );
+
+  formData.append(
+    'enhancePrompt',
+    req.enhancePrompt === true
+      ? 'true'
+      : 'false',
+  );
+
+  const response = await fetch(
+    '/api/generate/image/long',
+    {
+      method: 'POST',
+      body: formData,
+      signal: abortSignal,
     },
-    body: JSON.stringify({
-      prompt: req.prompt,
-      aspectRatio: req.aspectRatio,
-      style: req.style,
-    }),
-    signal: abortSignal,
-  });
+  );
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new MediaApiError(data.error || `Image API returned ${response.status}`, data.errorCode);
+  const result =
+    await response
+      .json()
+      .catch(() => ({}));
+
+  if (
+    !response.ok ||
+    !result.success
+  ) {
+    throw new MediaApiError(
+      result.error ||
+        result.message ||
+        `Long image API returned ${response.status}`,
+      result.errorCode,
+    );
   }
 
-  const data = await response.json();
-  if (!data.success)
-    throw new MediaApiError(data.error || 'Image generation failed', data.errorCode);
+  const jobId =
+    result.jobId as string | undefined;
 
-  // Result may have url or base64
+  if (!jobId) {
+    throw new Error(
+      'Long image API did not return a job ID',
+    );
+  }
+
+  const completed =
+    await waitForLongImageJob(
+      jobId,
+      abortSignal,
+    );
+
+  return {
+    url: completed.outputUrl!,
+  };
+}
+
+async function callImageApi(
+  req: MediaGenerationRequest,
+  stageId: string,
+  abortSignal?: AbortSignal,
+): Promise<{ url: string }> {
+  const settings =
+    useSettingsStore.getState();
+
+  if (settings.imageProviderId === 'comfyui') {
+    return callLongImageApi(
+      req,
+      stageId,
+      abortSignal,
+    );
+  }
+
+  const providerConfig =
+    settings.imageProvidersConfig?.[
+      settings.imageProviderId
+    ];
+
+  const response = await fetch(
+    '/api/generate/image',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-image-provider':
+          settings.imageProviderId || '',
+        'x-image-model':
+          settings.imageModelId || '',
+        'x-api-key':
+          providerConfig?.apiKey || '',
+        'x-base-url':
+          providerConfig?.baseUrl || '',
+      },
+      body: JSON.stringify({
+        prompt: req.prompt,
+        aspectRatio: req.aspectRatio,
+        style: req.style,
+      }),
+      signal: abortSignal,
+    },
+  );
+
+  if (!response.ok) {
+    const data =
+      await response.json().catch(() => ({}));
+
+    throw new MediaApiError(
+      data.error ||
+        `Image API returned ${response.status}`,
+      data.errorCode,
+    );
+  }
+
+  const data =
+    await response.json();
+
+  if (!data.success) {
+    throw new MediaApiError(
+      data.error || 'Image generation failed',
+      data.errorCode,
+    );
+  }
+
   const url =
-    data.result?.url || (data.result?.base64 ? `data:image/png;base64,${data.result.base64}` : '');
-  if (!url) throw new Error('No image URL in response');
+    data.result?.url ||
+    (
+      data.result?.base64
+        ? `data:image/png;base64,${data.result.base64}`
+        : ''
+    );
+
+  if (!url) {
+    throw new Error(
+      'No image URL in response',
+    );
+  }
+
   return { url };
 }
 

@@ -133,6 +133,69 @@ export async function updateImageJob(
   });
 }
 
+export async function deleteImageJobsForStage(
+  stageId: string,
+): Promise<{ deleted: number; skippedActive: number }> {
+  let entries;
+
+  try {
+    entries = await fs.readdir(JOBS_ROOT, {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    ) {
+      return {
+        deleted: 0,
+        skippedActive: 0,
+      };
+    }
+
+    throw error;
+  }
+
+  let deleted = 0;
+  let skippedActive = 0;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const job =
+      await loadImageJob(entry.name).catch(() => null);
+
+    if (
+      !job ||
+      job.origin !== 'classroom' ||
+      job.stageId !== stageId
+    ) {
+      continue;
+    }
+
+    if (
+      job.status !== 'completed' &&
+      job.status !== 'failed' &&
+      job.status !== 'cancelled'
+    ) {
+      skippedActive += 1;
+      continue;
+    }
+
+    await fs.rm(getImageJobDirectory(job.id), {
+      recursive: true,
+      force: true,
+    });
+
+    deleted += 1;
+  }
+
+  return {
+    deleted,
+    skippedActive,
+  };
+}
 export async function listStandaloneImageHistoryJobs():
 Promise<ImageJob[]> {
   let entries;

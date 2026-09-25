@@ -51,11 +51,79 @@ function patchHtmlForIframe(html: string): string {
   body { min-height: 100vh; }
 </style>`;
 
+  // Generated interactive HTML is model-authored JavaScript. Be defensive about
+  // a common CanvasGradient mistake where the model emits
+  // addColorStop(color, offset) instead of addColorStop(offset, color).
+  //
+  // The native API throws on NaN/Infinity offsets, which otherwise aborts the
+  // entire animation frame and can leave an interactive canvas completely blank.
+  const canvasSafetyPatch = `<script data-canvas-safety-patch>
+(function () {
+  if (
+    typeof CanvasGradient === 'undefined' ||
+    !CanvasGradient.prototype ||
+    typeof CanvasGradient.prototype.addColorStop !== 'function'
+  ) {
+    return;
+  }
+
+  const originalAddColorStop =
+    CanvasGradient.prototype.addColorStop;
+
+  CanvasGradient.prototype.addColorStop =
+    function patchedAddColorStop(offset, color) {
+      let safeOffset = offset;
+      let safeColor = color;
+
+      // Repair reversed arguments: addColorStop(color, offset).
+      if (
+        typeof safeOffset === 'string' &&
+        typeof safeColor === 'number'
+      ) {
+        const swappedColor = safeOffset;
+        safeOffset = safeColor;
+        safeColor = swappedColor;
+      }
+
+      const numericOffset = Number(safeOffset);
+
+      if (!Number.isFinite(numericOffset)) {
+        console.warn(
+          '[NeoAcademy] Ignoring invalid CanvasGradient color stop:',
+          safeOffset,
+          safeColor,
+        );
+        return;
+      }
+
+      const clampedOffset =
+        Math.min(1, Math.max(0, numericOffset));
+
+      try {
+        return originalAddColorStop.call(
+          this,
+          clampedOffset,
+          String(safeColor),
+        );
+      } catch (error) {
+        console.warn(
+          '[NeoAcademy] Ignoring invalid CanvasGradient color stop:',
+          clampedOffset,
+          safeColor,
+          error,
+        );
+      }
+    };
+})();
+</script>`;
+
+  const iframePatch =
+    iframeCss + '\n' + canvasSafetyPatch;
   // Insert right after <head> or at the start of the document
   const headIdx = html.indexOf('<head>');
   if (headIdx !== -1) {
     const insertPos = headIdx + 6; // after <head>
-    return html.substring(0, insertPos) + '\n' + iframeCss + html.substring(insertPos);
+    return html.substring(0, insertPos) + '\n' + iframePatch + html.substring(insertPos);
   }
 
   const headWithAttrs = html.indexOf('<head ');
@@ -63,10 +131,10 @@ function patchHtmlForIframe(html: string): string {
     const closeAngle = html.indexOf('>', headWithAttrs);
     if (closeAngle !== -1) {
       const insertPos = closeAngle + 1;
-      return html.substring(0, insertPos) + '\n' + iframeCss + html.substring(insertPos);
+      return html.substring(0, insertPos) + '\n' + iframePatch + html.substring(insertPos);
     }
   }
 
   // Fallback: prepend
-  return iframeCss + html;
+  return iframePatch + html;
 }

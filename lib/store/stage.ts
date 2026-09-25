@@ -117,6 +117,11 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
       scenes: [],
       currentSceneId: null,
       chats: [],
+      generatingOutlines: [],
+      outlines: [],
+      generationStatus: 'idle' as const,
+      currentGeneratingOrder: -1,
+      failedOutlines: [],
       generationEpoch: s.generationEpoch + 1,
     }));
     debouncedSave();

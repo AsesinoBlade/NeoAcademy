@@ -166,18 +166,38 @@ function HomePage() {
     setPendingDeleteId(null);
 
     try {
-      const cleanupResponse = await fetch('/api/generate/video/long/cleanup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          stageId: id,
-        }),
-      });
+      const [videoCleanupResponse, imageCleanupResponse] =
+        await Promise.all([
+          fetch('/api/generate/video/long/cleanup', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              stageId: id,
+            }),
+          }),
+          fetch('/api/generate/image/long/cleanup', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              stageId: id,
+            }),
+          }),
+        ]);
 
-      if (!cleanupResponse.ok) {
-        throw new Error(`Failed to clean long-video files (${cleanupResponse.status})`);
+      if (!videoCleanupResponse.ok) {
+        throw new Error(
+          `Failed to clean long-video files (${videoCleanupResponse.status})`,
+        );
+      }
+
+      if (!imageCleanupResponse.ok) {
+        throw new Error(
+          `Failed to clean image files (${imageCleanupResponse.status})`,
+        );
       }
 
       await deleteStageData(id);

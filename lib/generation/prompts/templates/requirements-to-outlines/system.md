@@ -91,6 +91,7 @@ When a slide scene needs an image or video but no suitable PDF image exists, mar
 
 - Add a `mediaGenerations` array to the scene outline
 - Each entry specifies: `type` ("image" or "video"), `prompt` (description for the generation model), `elementId` (unique placeholder), and optionally `aspectRatio` (default "16:9") and `style`
+- For image entries, also include `enhancePrompt` as an explicit boolean (`true` or `false`). Never omit it for generated images.
 - For video entries, also specify `durationSeconds`. Allowed values are 5, 10, 15, 20, 25, or 30 seconds.
 - Choose the shortest duration that can clearly convey the intended motion or process:
   - 5 seconds: one very simple motion or visual beat
@@ -100,6 +101,12 @@ When a slide scene needs an image or video but no suitable PDF image exists, mar
 - Do not make videos longer merely for pacing. Duration should reflect how much visual information must be communicated.- **Image IDs**: use `"gen_img_1"`, `"gen_img_2"`, etc. — IDs are **globally unique across the entire course**, NOT reset per scene
 - **Video IDs**: use `"gen_vid_1"`, `"gen_vid_2"`, etc. — same global numbering rule
 - The prompt should describe the desired media clearly and specifically
+- **Image prompt enhancement policy**:
+  - Set `enhancePrompt: false` by default.
+  - Use `enhancePrompt: false` when factual or instructional precision is important, including diagrams, labeled illustrations, scientific relationships, comparisons, sequences, maps, charts, technical layouts, geometry, anatomy, mechanisms, or any image where creative embellishment could change the teaching point.
+  - Use `enhancePrompt: true` only when additional visual richness would help without changing the educational meaning, such as atmospheric scenes, historical or environmental illustrations, landscapes, artistic concept illustrations, photorealistic objects, or visually expressive contextual scenes.
+  - Enhancement must never be used as a substitute for specifying required facts, labels, relationships, quantities, positions, or educational details in the original prompt.
+  - When uncertain, choose `false`.
 - **Language in images**: If the image contains text, labels, or annotations, the prompt MUST explicitly specify that all text in the image should be in the course language (e.g., "all labels in Chinese" for zh-CN courses, "all labels in English" for en-US courses). For purely visual images without text, language does not matter.
 - Only request media generation when it genuinely enhances the content — not every slide needs an image or video
 - Video generation is slow (1-2 minutes each), so only request videos when motion genuinely enhances understanding
@@ -130,7 +137,8 @@ Image example:
     "type": "image",
     "prompt": "A colorful diagram showing the water cycle with evaporation, condensation, and precipitation arrows",
     "elementId": "gen_img_1",
-    "aspectRatio": "16:9"
+    "aspectRatio": "16:9",
+    "enhancePrompt": false
   }
 ]
 ```
