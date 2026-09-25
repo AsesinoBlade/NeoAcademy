@@ -296,22 +296,40 @@ export function MediaPopover({ onSettingsOpen }: MediaPopoverProps) {
         {/* ── Tab content ── */}
         <div className="p-3 pt-2.5">
           {activeTab === 'image' && (
-            <TabPanel
-              icon={ImageIcon}
-              label={t('media.imageCapability')}
-              enabled={imageGenerationEnabled}
-              onToggle={setImageGenerationEnabled}
-            >
-              <GroupedSelect
-                groups={imageGroups}
-                selectedGroupId={imageProviderId}
-                selectedItemId={imageModelId}
-                onSelect={(gid, iid) => {
-                  setImageProvider(gid as ImageProviderId);
-                  setImageModelId(iid);
+            <div className="space-y-3">
+              <TabPanel
+                icon={ImageIcon}
+                label={t('media.imageCapability')}
+                enabled={imageGenerationEnabled}
+                onToggle={setImageGenerationEnabled}
+              >
+                <GroupedSelect
+                  groups={imageGroups}
+                  selectedGroupId={imageProviderId}
+                  selectedItemId={imageModelId}
+                  onSelect={(gid, iid) => {
+                    setImageProvider(gid as ImageProviderId);
+                    setImageModelId(iid);
+                  }}
+                />
+              </TabPanel>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  router.push('/generate-image');
                 }}
-              />
-            </TabPanel>
+                className="w-full flex items-center justify-between rounded-lg border border-border/40 bg-background/80 px-3 py-2 text-xs font-medium text-foreground/80 hover:bg-muted/60 hover:text-foreground transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <ImageIcon className="size-3.5 text-violet-600 dark:text-violet-400" />
+                  Generate Image
+                </span>
+
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </button>
+            </div>
           )}
 
           {activeTab === 'video' && (

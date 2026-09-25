@@ -149,6 +149,21 @@ export interface ImageGenerationOptions {
   aspectRatio?: '16:9' | '4:3' | '1:1' | '9:16';
   /** Optional artistic style (must be supported by the chosen provider) */
   style?: string;
+
+  /**
+   * Optional first reference image for providers that support image editing.
+   * May be raw base64 or a data:image/...;base64,... URL.
+   */
+  inputImageBase64?: string;
+
+  /** Optional second prompt used for two-image composition/editing. */
+  secondPrompt?: string;
+
+  /**
+   * Optional second reference image for providers that support two-image editing.
+   * May be raw base64 or a data:image/...;base64,... URL.
+   */
+  secondImageBase64?: string;
 }
 
 /**
@@ -287,6 +302,24 @@ export interface MediaGenerationRequest {
   type: 'image' | 'video';
   /** Text prompt describing the desired media */
   prompt: string;
+
+  /**
+   * For image generation, explicitly request prompt enhancement.
+   * If omitted, classroom image prompts remain unenhanced.
+   */
+  enhancePrompt?: boolean;
+
+  /**
+   * Optional second image-composition prompt.
+   * Used only when a classroom image request later references two images.
+   */
+  secondPrompt?: string;
+
+  /**
+   * Independently control enhancement of the optional second prompt.
+   */
+  enhanceSecondPrompt?: boolean;
+
   /** Desired video duration in seconds; ignored for images */
   durationSeconds?: number;
   /** Identifier for the target element on the canvas (e.g. "gen_img_1") */
