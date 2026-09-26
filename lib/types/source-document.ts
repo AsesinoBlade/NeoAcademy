@@ -121,3 +121,14 @@ export interface SourceDocument {
 
   digest?: DocumentDigest;
 }
+/**
+ * Lightweight reference suitable for sessionStorage.
+ *
+ * The complete SourceDocument lives in IndexedDB.
+ */
+export interface SourceDocumentRef {
+  id: string;
+  storageKey: string;
+  fileName: string;
+  sourceType: SourceDocumentType;
+}

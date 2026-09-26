@@ -9,6 +9,7 @@ import type {
   ToolCallRequest,
 } from '@/lib/types/chat';
 import type { SceneOutline } from '@/lib/types/generation';
+import type { SourceDocument } from '@/lib/types/source-document';
 import type { UIMessage } from 'ai';
 import { createLogger } from '@/lib/logger';
 
@@ -169,6 +170,20 @@ export interface GeneratedAgentRecord {
   createdAt: number;
 }
 
+/**
+ * SourceDocument table - normalized source material used during generation.
+ *
+ * Complete extracted text is stored here rather than sessionStorage so large
+ * source documents are not constrained by browser sessionStorage limits.
+ */
+export interface SourceDocumentRecord {
+  id: string;
+  sessionId: string;
+  fileName: string;
+  sourceType: string;
+  document: SourceDocument;
+  createdAt: number;
+}
 /** Build the compound primary key for mediaFiles: `${stageId}:${elementId}` */
 export function mediaFileKey(stageId: string, elementId: string): string {
   return `${stageId}:${elementId}`;
@@ -177,7 +192,7 @@ export function mediaFileKey(stageId: string, elementId: string): string {
 // ==================== Database Definition ====================
 
 const DATABASE_NAME = 'MAIC-Database';
-const _DATABASE_VERSION = 8;
+const _DATABASE_VERSION = 9;
 
 /**
  * MAIC Database Instance
@@ -194,6 +209,7 @@ class MAICDatabase extends Dexie {
   stageOutlines!: EntityTable<StageOutlinesRecord, 'stageId'>;
   mediaFiles!: EntityTable<MediaFileRecord, 'id'>;
   generatedAgents!: EntityTable<GeneratedAgentRecord, 'id'>;
+  sourceDocuments!: EntityTable<SourceDocumentRecord, 'id'>;
 
   constructor() {
     super(DATABASE_NAME);
@@ -311,7 +327,21 @@ class MAICDatabase extends Dexie {
       mediaFiles: 'id, stageId, [stageId+type]',
       generatedAgents: 'id, stageId',
     });
-  }
+
+    // Version 9: Add sourceDocuments table for normalized generation sources
+    this.version(9).stores({
+      stages: 'id, updatedAt',
+      scenes: 'id, stageId, order, [stageId+order]',
+      audioFiles: 'id, createdAt',
+      imageFiles: 'id, createdAt',
+      snapshots: '++id',
+      chatSessions: 'id, stageId, [stageId+createdAt]',
+      playbackState: 'stageId',
+      stageOutlines: 'stageId',
+      mediaFiles: 'id, stageId, [stageId+type]',
+      generatedAgents: 'id, stageId',
+      sourceDocuments: 'id, sessionId, createdAt',
+    });  }
 }
 
 // Create database instance

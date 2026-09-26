@@ -1,6 +1,6 @@
 import { ScanLine, Search, Bot, FileText, LayoutPanelLeft, Clapperboard } from 'lucide-react';
 import { useSettingsStore } from '@/lib/store/settings';
-import type { SourceDocument } from '@/lib/types/source-document';
+import type { SourceDocumentRef } from '@/lib/types/source-document';
 import type {
   SceneOutline,
   UserRequirements,
@@ -22,7 +22,7 @@ export interface GenerationSessionState {
   /**
    * Generalized normalized source documents.
    */
-  sourceDocuments?: SourceDocument[];
+  sourceDocumentRefs?: SourceDocumentRef[];
   // PDF deferred parsing fields
   pdfDocuments?: Array<{
     storageKey: string;
@@ -94,7 +94,6 @@ export const getActiveSteps = (session: GenerationSessionState | null) => {
   return ALL_STEPS.filter((step) => {
     if (step.id === 'pdf-analysis') {
       return Boolean(
-        session?.sourceDocuments?.length ||
 
         session?.pdfDocuments?.length ||
           session?.pdfStorageKey,
