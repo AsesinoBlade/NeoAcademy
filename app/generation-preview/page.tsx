@@ -24,6 +24,12 @@ import {
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { db } from '@/lib/utils/database';
 import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import { sourceDocumentFromParsedPdf } from '@/lib/source/source-document';
+import {
+  cleanupOldSourceDocuments,
+  storeSourceDocument,
+} from '@/lib/utils/source-document-storage';
+import type { ParsedPdfContent } from '@/lib/types/pdf';
 import { nanoid } from 'nanoid';
 import type { Stage } from '@/lib/types/stage';
 import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
@@ -73,6 +79,7 @@ function GenerationPreviewContent() {
   // Load session from sessionStorage
   useEffect(() => {
     cleanupOldImages(24).catch((e) => log.error(e));
+    cleanupOldSourceDocuments(24).catch((e) => log.error(e));
 
     const saved = sessionStorage.getItem('generationSession');
     if (saved) {
@@ -215,6 +222,13 @@ function GenerationPreviewContent() {
           text: string;
         }> = [];
 
+        const parsedDocuments: Array<{
+          fileName: string;
+          fileSize: number;
+          parsed: ParsedPdfContent;
+          imageStartIndex: number;
+          imageCount: number;
+        }> = [];
         const images: Array<{
           id: string;
           src: string;
@@ -372,6 +386,8 @@ function GenerationPreviewContent() {
                   pageNumber: 1,
                 }));
 
+          const documentImageStartIndex = images.length;
+
           for (const image of documentImages) {
             images.push({
               id: `img_${images.length + 1}`,
@@ -385,6 +401,14 @@ function GenerationPreviewContent() {
               height: image.height,
             });
           }
+
+          parsedDocuments.push({
+            fileName: document.fileName,
+            fileSize: pdfBlob.size,
+            parsed: parseResult.data as ParsedPdfContent,
+            imageStartIndex: documentImageStartIndex,
+            imageCount: documentImages.length,
+          });
 
           log.info(
             `[Generation] Parsed PDF ${documentIndex + 1}/${pdfDocuments.length}: ` +
@@ -455,6 +479,46 @@ function GenerationPreviewContent() {
         const imageStorageIds =
           await storeImages(images);
 
+        const imageStorageIdByImageId = new Map<string, string>();
+
+        for (const storageId of imageStorageIds) {
+          const imageId = storageId.replace(/^session_[^_]+_/, '');
+          imageStorageIdByImageId.set(imageId, storageId);
+        }
+
+        const sourceDocumentRefs = await Promise.all(
+          parsedDocuments.map(async (parsedDocument) => {
+            const documentImageStorageIds = Array.from(
+              { length: parsedDocument.imageCount },
+              (_, imageOffset) => {
+                const globalImageId =
+                  `img_${parsedDocument.imageStartIndex + imageOffset + 1}`;
+
+                return imageStorageIdByImageId.get(globalImageId);
+              },
+            );
+
+            const sourceDocument = sourceDocumentFromParsedPdf(
+              parsedDocument.parsed,
+              {
+                id: `source_${nanoid(10)}`,
+                fileName: parsedDocument.fileName,
+                mimeType: 'application/pdf',
+                fileSize: parsedDocument.fileSize,
+                imageStorageIds: documentImageStorageIds,
+              },
+            );
+
+            return storeSourceDocument(
+              currentSession.sessionId,
+              sourceDocument,
+            );
+          }),
+        );
+
+        log.info(
+          `[Generation] Stored ${sourceDocumentRefs.length} complete source document(s) in IndexedDB`,
+        );
         const pdfImages: PdfImage[] =
           images.map(
             (img, i) => ({
@@ -471,6 +535,7 @@ function GenerationPreviewContent() {
 
         const updatedSession = {
           ...currentSession,
+          sourceDocumentRefs,
           pdfText,
           pdfImages,
           imageStorageIds,

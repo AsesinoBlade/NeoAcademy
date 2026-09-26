@@ -19,7 +19,7 @@ export interface SourceDocumentFromPdfOptions {
    * The normalized document deliberately does not copy base64 image
    * payloads into SourceDocument.
    */
-  imageStorageIds?: string[];
+  imageStorageIds?: Array<string | undefined>;
 }
 
 /**
