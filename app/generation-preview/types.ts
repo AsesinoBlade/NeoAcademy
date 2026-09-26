@@ -18,6 +18,10 @@ export interface GenerationSessionState {
   sceneOutlines?: SceneOutline[] | null;
   currentStep: 'generating' | 'complete';
   // PDF deferred parsing fields
+  pdfDocuments?: Array<{
+    storageKey: string;
+    fileName: string;
+  }>;
   pdfStorageKey?: string;
   pdfFileName?: string;
   pdfProviderId?: string;
@@ -82,7 +86,12 @@ export const ALL_STEPS: GenerationStep[] = [
 
 export const getActiveSteps = (session: GenerationSessionState | null) => {
   return ALL_STEPS.filter((step) => {
-    if (step.id === 'pdf-analysis') return !!session?.pdfStorageKey;
+    if (step.id === 'pdf-analysis') {
+      return Boolean(
+        session?.pdfDocuments?.length ||
+          session?.pdfStorageKey,
+      );
+    }
     if (step.id === 'web-search') return !!session?.requirements?.webSearch;
     if (step.id === 'agent-generation') return useSettingsStore.getState().agentMode === 'auto';
     return true;

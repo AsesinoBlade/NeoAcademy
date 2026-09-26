@@ -53,14 +53,14 @@ const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
 interface FormState {
-  pdfFile: File | null;
+  pdfFiles: File[];
   requirement: string;
   language: 'en-US';
   webSearch: boolean;
 }
 
 const initialFormState: FormState = {
-  pdfFile: null,
+  pdfFiles: [],
   requirement: '',
   language: 'en-US',
   webSearch: false,
@@ -245,18 +245,31 @@ function HomePage() {
         webSearch: form.webSearch || undefined,
       };
 
-      let pdfStorageKey: string | undefined;
-      let pdfFileName: string | undefined;
+      let pdfDocuments:
+        | Array<{
+            storageKey: string;
+            fileName: string;
+          }>
+        | undefined;
       let pdfProviderId: string | undefined;
-      let pdfProviderConfig: { apiKey?: string; baseUrl?: string } | undefined;
+      let pdfProviderConfig:
+        | { apiKey?: string; baseUrl?: string }
+        | undefined;
 
-      if (form.pdfFile) {
-        pdfStorageKey = await storePdfBlob(form.pdfFile);
-        pdfFileName = form.pdfFile.name;
+      if (form.pdfFiles.length > 0) {
+        pdfDocuments = await Promise.all(
+          form.pdfFiles.map(async (file) => ({
+            storageKey: await storePdfBlob(file),
+            fileName: file.name,
+          })),
+        );
 
         const settings = useSettingsStore.getState();
         pdfProviderId = settings.pdfProviderId;
-        const providerCfg = settings.pdfProvidersConfig?.[settings.pdfProviderId];
+
+        const providerCfg =
+          settings.pdfProvidersConfig?.[settings.pdfProviderId];
+
         if (providerCfg) {
           pdfProviderConfig = {
             apiKey: providerCfg.apiKey,
@@ -271,8 +284,7 @@ function HomePage() {
         pdfText: '',
         pdfImages: [],
         imageStorageIds: [],
-        pdfStorageKey,
-        pdfFileName,
+        pdfDocuments,
         pdfProviderId,
         pdfProviderConfig,
         sceneOutlines: null,
@@ -470,8 +482,8 @@ function HomePage() {
                   webSearch={form.webSearch}
                   onWebSearchChange={(v) => updateForm('webSearch', v)}
                   onSettingsOpen={() => {}}
-                  pdfFile={form.pdfFile}
-                  onPdfFileChange={(f) => updateForm('pdfFile', f)}
+                  pdfFiles={form.pdfFiles}
+                  onPdfFilesChange={(files) => updateForm('pdfFiles', files)}
                   onPdfError={setError}
                 />
               </div>

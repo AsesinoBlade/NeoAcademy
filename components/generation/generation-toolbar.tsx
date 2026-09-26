@@ -34,8 +34,8 @@ export interface GenerationToolbarProps {
   onWebSearchChange: (v: boolean) => void;
   onSettingsOpen: (section?: SettingsSection) => void;
   // PDF
-  pdfFile: File | null;
-  onPdfFileChange: (file: File | null) => void;
+  pdfFiles: File[];
+  onPdfFilesChange: (files: File[]) => void;
   onPdfError: (error: string | null) => void;
 }
 
@@ -46,8 +46,8 @@ export function GenerationToolbar({
   webSearch,
   onWebSearchChange,
   onSettingsOpen,
-  pdfFile,
-  onPdfFileChange,
+  pdfFiles,
+  onPdfFilesChange,
   onPdfError,
 }: GenerationToolbarProps) {
   const { t } = useI18n();
@@ -97,14 +97,47 @@ export function GenerationToolbar({
   const currentProviderConfig = providersConfig?.[currentProviderId];
 
   // PDF handler
-  const handleFileSelect = (file: File) => {
-    if (file.type !== 'application/pdf') return;
-    if (file.size > MAX_PDF_SIZE_BYTES) {
-      onPdfError(t('upload.fileTooLarge'));
+  const handleFilesSelect = (incomingFiles: File[]) => {
+    const validFiles: File[] = [];
+
+    for (const file of incomingFiles) {
+      const isPdf =
+        file.type === 'application/pdf' ||
+        file.name.toLowerCase().endsWith('.pdf');
+
+      if (!isPdf) {
+        continue;
+      }
+
+      if (file.size > MAX_PDF_SIZE_BYTES) {
+        onPdfError(t('upload.fileTooLarge'));
+        return;
+      }
+
+      validFiles.push(file);
+    }
+
+    if (validFiles.length === 0) {
       return;
     }
+
+    const combined = [...pdfFiles];
+
+    for (const file of validFiles) {
+      const duplicate = combined.some(
+        (existing) =>
+          existing.name === file.name &&
+          existing.size === file.size &&
+          existing.lastModified === file.lastModified,
+      );
+
+      if (!duplicate) {
+        combined.push(file);
+      }
+    }
+
     onPdfError(null);
-    onPdfFileChange(file);
+    onPdfFilesChange(combined);
   };
 
   // ─── Pill button helper ─────────────────────────────
@@ -150,16 +183,20 @@ export function GenerationToolbar({
       {/* ── PDF (parser + upload) combined Popover ── */}
       <Popover>
         <PopoverTrigger asChild>
-          {pdfFile ? (
+          {pdfFiles.length > 0 ? (
             <button className={pillActive}>
               <Paperclip className="size-3.5" />
-              <span className="max-w-[100px] truncate">{pdfFile.name}</span>
+              <span className="max-w-[120px] truncate">
+                {pdfFiles.length === 1
+                  ? pdfFiles[0].name
+                  : `${pdfFiles.length} PDFs`}
+              </span>
               <span
                 role="button"
                 className="size-4 rounded-full inline-flex items-center justify-center hover:bg-violet-200 dark:hover:bg-violet-800 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onPdfFileChange(null);
+                  onPdfFilesChange([]);
                 }}
               >
                 <X className="size-2.5" />
@@ -171,28 +208,55 @@ export function GenerationToolbar({
             </button>
           )}
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-72 p-0">
-          {/* Parser selector */}
+
+        <PopoverContent align="start" className="w-80 p-0">
           <div className="flex items-center gap-2 px-3 pt-3 pb-2">
             <span className="text-xs font-medium text-muted-foreground shrink-0">
               {t('toolbar.pdfParser')}
             </span>
-            <Select value={pdfProviderId} onValueChange={(v) => setPDFProvider(v as PDFProviderId)}>
+
+            <Select
+              value={pdfProviderId}
+              onValueChange={(v) =>
+                setPDFProvider(v as PDFProviderId)
+              }
+            >
               <SelectTrigger className="h-7 text-xs flex-1 min-w-0">
                 <SelectValue />
               </SelectTrigger>
+
               <SelectContent>
                 {Object.values(PDF_PROVIDERS).map((provider) => {
-                  const cfg = pdfProvidersConfig[provider.id];
+                  const cfg =
+                    pdfProvidersConfig[provider.id];
+
                   const available =
-                    !provider.requiresApiKey || !!cfg?.apiKey || !!cfg?.isServerConfigured;
+                    !provider.requiresApiKey ||
+                    !!cfg?.apiKey ||
+                    !!cfg?.isServerConfigured;
+
                   return (
-                    <SelectItem key={provider.id} value={provider.id} disabled={!available}>
-                      <div className={cn('flex items-center gap-1.5', !available && 'opacity-50')}>
-                        {provider.icon && (
-                          <img src={provider.icon} alt={provider.name} className="w-3.5 h-3.5" />
+                    <SelectItem
+                      key={provider.id}
+                      value={provider.id}
+                      disabled={!available}
+                    >
+                      <div
+                        className={cn(
+                          'flex items-center gap-1.5',
+                          !available && 'opacity-50',
                         )}
+                      >
+                        {provider.icon && (
+                          <img
+                            src={provider.icon}
+                            alt={provider.name}
+                            className="w-3.5 h-3.5"
+                          />
+                        )}
+
                         {provider.name}
+
                         {cfg?.isServerConfigured && (
                           <span className="text-[9px] px-1 py-0 rounded border text-muted-foreground">
                             {t('settings.serverConfigured')}
@@ -206,67 +270,99 @@ export function GenerationToolbar({
             </Select>
           </div>
 
-          {/* Upload area / file info */}
-          <div className="px-3 pb-3">
+          <div className="px-3 pb-3 space-y-2">
             <input
               type="file"
               ref={fileInputRef}
               className="hidden"
               accept=".pdf"
+              multiple
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFileSelect(f);
+                handleFilesSelect(
+                  Array.from(e.target.files ?? []),
+                );
                 e.target.value = '';
               }}
             />
-            {pdfFile ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="size-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center shrink-0">
-                    <FileText className="size-4 text-violet-600 dark:text-violet-400" />
+
+            {pdfFiles.length > 0 && (
+              <div className="space-y-1">
+                {pdfFiles.map((file, index) => (
+                  <div
+                    key={`${file.name}-${file.size}-${file.lastModified}`}
+                    className="flex items-center gap-2 rounded-lg border px-2 py-2"
+                  >
+                    <div className="size-7 rounded-md bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center shrink-0">
+                      <FileText className="size-3.5 text-violet-600 dark:text-violet-400" />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium truncate">
+                        {file.name}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(file.size / 1024 / 1024).toFixed(2)} MB
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="size-7 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-muted"
+                      onClick={() => {
+                        onPdfFilesChange(
+                          pdfFiles.filter(
+                            (_, fileIndex) =>
+                              fileIndex !== index,
+                          ),
+                        );
+                      }}
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      <X className="size-3.5" />
+                    </button>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{pdfFile.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {(pdfFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => onPdfFileChange(null)}
-                  className="w-full text-xs text-destructive hover:underline text-left"
-                >
-                  {t('toolbar.removePdf')}
-                </button>
-              </div>
-            ) : (
-              <div
-                className={cn(
-                  'flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 transition-colors cursor-pointer',
-                  isDragging
-                    ? 'border-violet-400 bg-violet-50 dark:bg-violet-950/20'
-                    : 'border-muted-foreground/20 hover:border-violet-300',
-                )}
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setIsDragging(true);
-                }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setIsDragging(false);
-                  const f = e.dataTransfer.files?.[0];
-                  if (f) handleFileSelect(f);
-                }}
-              >
-                <Paperclip className="size-5 text-muted-foreground/50 mb-1.5" />
-                <p className="text-xs font-medium">{t('toolbar.pdfUpload')}</p>
-                <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                  {t('upload.pdfSizeLimit')}
-                </p>
+                ))}
               </div>
             )}
+
+            <div
+              className={cn(
+                'flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 transition-colors cursor-pointer',
+                isDragging
+                  ? 'border-violet-400 bg-violet-50 dark:bg-violet-950/20'
+                  : 'border-muted-foreground/20 hover:border-violet-300',
+              )}
+              onClick={() =>
+                fileInputRef.current?.click()
+              }
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() =>
+                setIsDragging(false)
+              }
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+
+                handleFilesSelect(
+                  Array.from(e.dataTransfer.files ?? []),
+                );
+              }}
+            >
+              <Paperclip className="size-5 text-muted-foreground/50 mb-1.5" />
+
+              <p className="text-xs font-medium">
+                {pdfFiles.length > 0
+                  ? 'Add more PDFs'
+                  : t('toolbar.pdfUpload')}
+              </p>
+
+              <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                {t('upload.pdfSizeLimit')}
+              </p>
+            </div>
           </div>
         </PopoverContent>
       </Popover>

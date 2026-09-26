@@ -191,6 +191,9 @@ export async function parsePDF(
 /**
  * Parse PDF using unpdf (existing implementation)
  */
+const MAX_UNPDF_IMAGES = 20;
+const MAX_UNPDF_IMAGE_DIMENSION = 1280;
+const UNPDF_WEBP_QUALITY = 75;
 async function parseWithUnpdf(pdfBuffer: Buffer): Promise<ParsedPdfContent> {
   const uint8Array = new Uint8Array(pdfBuffer);
   const pdf = await getDocumentProxy(uint8Array);
@@ -202,7 +205,6 @@ async function parseWithUnpdf(pdfBuffer: Buffer): Promise<ParsedPdfContent> {
   });
 
   // Extract images using the same document proxy
-  const images: string[] = [];
   const pdfImagesMeta: Array<{
     id: string;
     src: string;
@@ -212,51 +214,94 @@ async function parseWithUnpdf(pdfBuffer: Buffer): Promise<ParsedPdfContent> {
   }> = [];
   let imageCounter = 0;
 
-  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+  outer: for (let pageNum = 1; pageNum <= numPages; pageNum++) {
     try {
       const pageImages = await extractImages(pdf, pageNum);
+
       for (let i = 0; i < pageImages.length; i++) {
+        if (imageCounter >= MAX_UNPDF_IMAGES) {
+          log.info(
+            `[unpdf] Reached PDF image limit of ${MAX_UNPDF_IMAGES}; ` +
+              `remaining embedded images will not be returned`,
+          );
+          break outer;
+        }
+
         const imgData = pageImages[i];
+
         try {
-          // Use sharp to convert raw image data to PNG base64
-          const pngBuffer = await sharp(Buffer.from(imgData.data), {
+          const sourceImage = sharp(Buffer.from(imgData.data), {
             raw: {
               width: imgData.width,
               height: imgData.height,
               channels: imgData.channels,
             },
-          })
-            .png()
+          });
+
+          const needsResize =
+            imgData.width > MAX_UNPDF_IMAGE_DIMENSION ||
+            imgData.height > MAX_UNPDF_IMAGE_DIMENSION;
+
+          const outputImage = needsResize
+            ? sourceImage.resize({
+                width: MAX_UNPDF_IMAGE_DIMENSION,
+                height: MAX_UNPDF_IMAGE_DIMENSION,
+                fit: 'inside',
+                withoutEnlargement: true,
+              })
+            : sourceImage;
+
+          const webpBuffer = await outputImage
+            .webp({
+              quality: UNPDF_WEBP_QUALITY,
+              effort: 4,
+            })
             .toBuffer();
 
-          // Convert to base64
-          const base64 = `data:image/png;base64,${pngBuffer.toString('base64')}`;
+          const metadata = await sharp(webpBuffer).metadata();
+
+          const base64 =
+            `data:image/webp;base64,${webpBuffer.toString('base64')}`;
+
           imageCounter++;
-          const imgId = `img_${imageCounter}`;
-          images.push(base64);
+
           pdfImagesMeta.push({
-            id: imgId,
+            id: `img_${imageCounter}`,
             src: base64,
             pageNumber: pageNum,
-            width: imgData.width,
-            height: imgData.height,
+            width: metadata.width || imgData.width,
+            height: metadata.height || imgData.height,
           });
         } catch (sharpError) {
-          log.error(`Failed to convert image ${i + 1} from page ${pageNum}:`, sharpError);
+          log.error(
+            `Failed to convert image ${i + 1} from page ${pageNum}:`,
+            sharpError,
+          );
         }
       }
     } catch (pageError) {
-      log.error(`Failed to extract images from page ${pageNum}:`, pageError);
+      log.error(
+        `Failed to extract images from page ${pageNum}:`,
+        pageError,
+      );
     }
   }
 
+  log.info(
+    `[unpdf] Returning ${pdfImagesMeta.length} image(s) ` +
+      `(max=${MAX_UNPDF_IMAGES}, WebP quality=${UNPDF_WEBP_QUALITY})`,
+  );
+
   return {
     text: pdfText,
-    images,
+
+    // Carry image data only once. Previously the same base64 data was
+    // duplicated in images[], imageMapping, and pdfImages.
+    images: [],
+
     metadata: {
       pageCount: numPages,
       parser: 'unpdf',
-      imageMapping: Object.fromEntries(pdfImagesMeta.map((m) => [m.id, m.src])),
       pdfImages: pdfImagesMeta,
     },
   };

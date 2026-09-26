@@ -52,6 +52,12 @@ export async function POST(req: NextRequest) {
     };
 
     // Convert PDF to buffer
+    log.info(
+      `[PDF] Parsing "${pdfFile.name}" ` +
+        `with provider=${effectiveProviderId}, ` +
+        `size=${pdfFile.size} bytes`,
+    );
+
     const arrayBuffer = await pdfFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
@@ -68,6 +74,14 @@ export async function POST(req: NextRequest) {
         fileSize: pdfFile.size,
       },
     };
+
+    log.info(
+      `[PDF] Parsed "${pdfFile.name}": ` +
+        `pages=${resultWithMetadata.metadata?.pageCount ?? 0}, ` +
+        `text=${resultWithMetadata.text?.length ?? 0} chars, ` +
+        `images=${resultWithMetadata.images?.length ?? 0}, ` +
+        `processingTime=${resultWithMetadata.metadata?.processingTime ?? 0}ms`,
+    );
 
     return apiSuccess({ data: resultWithMetadata });
   } catch (error) {

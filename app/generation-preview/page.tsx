@@ -173,155 +173,366 @@ function GenerationPreviewContent() {
       log.info('[Generation] Local speech services stopped; LLM generation starting');
       let activeSteps = getActiveSteps(currentSession);
 
-      // Determine if we need the PDF analysis step
-      const hasPdfToAnalyze = !!currentSession.pdfStorageKey && !currentSession.pdfText;
-      // If no PDF to analyze, skip to the next available step
+      // Determine whether one or more PDFs still need analysis.
+      // Legacy singular fields are retained for sessions created before
+      // multi-PDF support.
+      const pdfDocuments =
+        currentSession.pdfDocuments?.length
+          ? currentSession.pdfDocuments
+          : currentSession.pdfStorageKey
+            ? [
+                {
+                  storageKey: currentSession.pdfStorageKey,
+                  fileName:
+                    currentSession.pdfFileName ||
+                    'document.pdf',
+                },
+              ]
+            : [];
+
+      const hasPdfToAnalyze =
+        pdfDocuments.length > 0 &&
+        !currentSession.pdfText;
+
       if (!hasPdfToAnalyze) {
-        const firstNonPdfIdx = activeSteps.findIndex((s) => s.id !== 'pdf-analysis');
-        setCurrentStepIndex(Math.max(0, firstNonPdfIdx));
+        const firstNonPdfIdx =
+          activeSteps.findIndex(
+            (s) => s.id !== 'pdf-analysis',
+          );
+
+        setCurrentStepIndex(
+          Math.max(0, firstNonPdfIdx),
+        );
       }
 
-      // Step 0: Parse PDF if needed
       if (hasPdfToAnalyze) {
-        log.debug('=== Generation Preview: Parsing PDF ===');
-        const pdfBlob = await loadPdfBlob(currentSession.pdfStorageKey!);
-        if (!pdfBlob) {
-          throw new Error(t('generation.pdfLoadFailed'));
-        }
-
-        // Ensure pdfBlob is a valid Blob with content
-        if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
-          log.error('Invalid PDF blob:', {
-            type: typeof pdfBlob,
-            size: pdfBlob instanceof Blob ? pdfBlob.size : 'N/A',
-          });
-          throw new Error(t('generation.pdfLoadFailed'));
-        }
-
-        // Wrap as a File to guarantee multipart/form-data with correct content-type
-        const pdfFile = new File([pdfBlob], currentSession.pdfFileName || 'document.pdf', {
-          type: 'application/pdf',
-        });
-
-        const parseFormData = new FormData();
-        parseFormData.append('pdf', pdfFile);
-
-        if (currentSession.pdfProviderId) {
-          parseFormData.append('providerId', currentSession.pdfProviderId);
-        }
-        if (currentSession.pdfProviderConfig?.apiKey?.trim()) {
-          parseFormData.append('apiKey', currentSession.pdfProviderConfig.apiKey);
-        }
-        if (currentSession.pdfProviderConfig?.baseUrl?.trim()) {
-          parseFormData.append('baseUrl', currentSession.pdfProviderConfig.baseUrl);
-        }
-
-        const parseResponse = await fetch('/api/parse-pdf', {
-          method: 'POST',
-          body: parseFormData,
-          signal,
-        });
-
-        if (!parseResponse.ok) {
-          const errorData = await parseResponse.json();
-          throw new Error(errorData.error || t('generation.pdfParseFailed'));
-        }
-
-        const parseResult = await parseResponse.json();
-        if (!parseResult.success || !parseResult.data) {
-          throw new Error(t('generation.pdfParseFailed'));
-        }
-
-        let pdfText = parseResult.data.text as string;
-
-        // Truncate if needed
-        if (pdfText.length > MAX_PDF_CONTENT_CHARS) {
-          pdfText = pdfText.substring(0, MAX_PDF_CONTENT_CHARS);
-        }
-
-        // Create image metadata and store images
-        // Prefer metadata.pdfImages (both parsers now return this)
-        const rawPdfImages = parseResult.data.metadata?.pdfImages;
-        const images = rawPdfImages
-          ? rawPdfImages.map(
-              (img: {
-                id: string;
-                src?: string;
-                pageNumber?: number;
-                description?: string;
-                width?: number;
-                height?: number;
-              }) => ({
-                id: img.id,
-                src: img.src || '',
-                pageNumber: img.pageNumber || 1,
-                description: img.description,
-                width: img.width,
-                height: img.height,
-              }),
-            )
-          : (parseResult.data.images as string[]).map((src: string, i: number) => ({
-              id: `img_${i + 1}`,
-              src,
-              pageNumber: 1,
-            }));
-
-        const imageStorageIds = await storeImages(images);
-
-        const pdfImages: PdfImage[] = images.map(
-          (
-            img: {
-              id: string;
-              src: string;
-              pageNumber: number;
-              description?: string;
-              width?: number;
-              height?: number;
-            },
-            i: number,
-          ) => ({
-            id: img.id,
-            src: '',
-            pageNumber: img.pageNumber,
-            description: img.description,
-            width: img.width,
-            height: img.height,
-            storageId: imageStorageIds[i],
-          }),
+        log.info(
+          `[Generation] Parsing ${pdfDocuments.length} PDF document(s)`,
         );
 
-        // Update session with parsed PDF data
+        const documentTexts: Array<{
+          fileName: string;
+          text: string;
+        }> = [];
+
+        const images: Array<{
+          id: string;
+          src: string;
+          pageNumber: number;
+          description?: string;
+          width?: number;
+          height?: number;
+        }> = [];
+
+        let totalRawTextLength = 0;
+
+        for (
+          let documentIndex = 0;
+          documentIndex < pdfDocuments.length;
+          documentIndex++
+        ) {
+          const document =
+            pdfDocuments[documentIndex];
+
+          log.info(
+            `[Generation] Parsing PDF ${documentIndex + 1}/${pdfDocuments.length}: ${document.fileName}`,
+          );
+
+          const pdfBlob =
+            await loadPdfBlob(document.storageKey);
+
+          if (!pdfBlob) {
+            throw new Error(
+              `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+            );
+          }
+
+          if (
+            !(pdfBlob instanceof Blob) ||
+            pdfBlob.size === 0
+          ) {
+            throw new Error(
+              `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+            );
+          }
+
+          const pdfFile =
+            new File(
+              [pdfBlob],
+              document.fileName,
+              {
+                type: 'application/pdf',
+              },
+            );
+
+          const parseFormData =
+            new FormData();
+
+          parseFormData.append(
+            'pdf',
+            pdfFile,
+          );
+
+          if (currentSession.pdfProviderId) {
+            parseFormData.append(
+              'providerId',
+              currentSession.pdfProviderId,
+            );
+          }
+
+          if (
+            currentSession.pdfProviderConfig?.apiKey?.trim()
+          ) {
+            parseFormData.append(
+              'apiKey',
+              currentSession.pdfProviderConfig.apiKey,
+            );
+          }
+
+          if (
+            currentSession.pdfProviderConfig?.baseUrl?.trim()
+          ) {
+            parseFormData.append(
+              'baseUrl',
+              currentSession.pdfProviderConfig.baseUrl,
+            );
+          }
+
+          const parseResponse =
+            await fetch('/api/parse-pdf', {
+              method: 'POST',
+              body: parseFormData,
+              signal,
+            });
+
+          if (!parseResponse.ok) {
+            const errorData =
+              await parseResponse.json();
+
+            throw new Error(
+              `${document.fileName}: ` +
+                (errorData.error ||
+                  t('generation.pdfParseFailed')),
+            );
+          }
+
+          const parseResult =
+            await parseResponse.json();
+
+          if (
+            !parseResult.success ||
+            !parseResult.data
+          ) {
+            throw new Error(
+              `${document.fileName}: ${t(
+                'generation.pdfParseFailed',
+              )}`,
+            );
+          }
+
+          const documentText =
+            (parseResult.data.text as string) || '';
+
+          totalRawTextLength +=
+            documentText.length;
+
+          documentTexts.push({
+            fileName: document.fileName,
+            text: documentText,
+          });
+
+          const rawPdfImages =
+            parseResult.data.metadata?.pdfImages;
+
+          const documentImages =
+            rawPdfImages
+              ? rawPdfImages.map(
+                  (img: {
+                    id: string;
+                    src?: string;
+                    pageNumber?: number;
+                    description?: string;
+                    width?: number;
+                    height?: number;
+                  }) => ({
+                    src: img.src || '',
+                    pageNumber:
+                      img.pageNumber || 1,
+                    description:
+                      img.description,
+                    width: img.width,
+                    height: img.height,
+                  }),
+                )
+              : (
+                  (parseResult.data.images as string[]) ||
+                  []
+                ).map((src: string) => ({
+                  src,
+                  pageNumber: 1,
+                }));
+
+          for (const image of documentImages) {
+            images.push({
+              id: `img_${images.length + 1}`,
+              src: image.src,
+              pageNumber: image.pageNumber,
+              description:
+                image.description
+                  ? `${image.description} [Source PDF: ${document.fileName}]`
+                  : `Source PDF: ${document.fileName}`,
+              width: image.width,
+              height: image.height,
+            });
+          }
+
+          log.info(
+            `[Generation] Parsed PDF ${documentIndex + 1}/${pdfDocuments.length}: ` +
+              `${document.fileName} ` +
+              `(${documentText.length} chars, ${documentImages.length} images)`,
+          );
+        }
+
+        const fullPdfText =
+          documentTexts
+            .map(
+              ({ fileName, text }) =>
+                `===== SOURCE PDF: ${fileName} =====\n${text}`,
+            )
+            .join('\n\n');
+
+        let pdfText = fullPdfText;
+        let textWasTruncated = false;
+
+        if (
+          pdfText.length >
+          MAX_PDF_CONTENT_CHARS
+        ) {
+          textWasTruncated = true;
+
+          const headerBudget =
+            documentTexts.reduce(
+              (total, document) =>
+                total +
+                `===== SOURCE PDF: ${document.fileName} =====\n\n`
+                  .length,
+              0,
+            );
+
+          const bodyBudget =
+            Math.max(
+              0,
+              MAX_PDF_CONTENT_CHARS -
+                headerBudget,
+            );
+
+          const perDocumentBudget =
+            Math.floor(
+              bodyBudget /
+                Math.max(
+                  1,
+                  documentTexts.length,
+                ),
+            );
+
+          pdfText =
+            documentTexts
+              .map(
+                ({ fileName, text }) =>
+                  `===== SOURCE PDF: ${fileName} =====\n` +
+                  text.substring(
+                    0,
+                    perDocumentBudget,
+                  ),
+              )
+              .join('\n\n')
+              .substring(
+                0,
+                MAX_PDF_CONTENT_CHARS,
+              );
+        }
+
+        const imageStorageIds =
+          await storeImages(images);
+
+        const pdfImages: PdfImage[] =
+          images.map(
+            (img, i) => ({
+              id: img.id,
+              src: '',
+              pageNumber: img.pageNumber,
+              description: img.description,
+              width: img.width,
+              height: img.height,
+              storageId:
+                imageStorageIds[i],
+            }),
+          );
+
         const updatedSession = {
           ...currentSession,
           pdfText,
           pdfImages,
           imageStorageIds,
-          pdfStorageKey: undefined, // Clear so we don't re-parse
-        };
-        setSession(updatedSession);
-        sessionStorage.setItem('generationSession', JSON.stringify(updatedSession));
 
-        // Truncation warnings
+          pdfDocuments: undefined,
+
+          // Legacy singular fields are cleared as well.
+          pdfStorageKey: undefined,
+          pdfFileName: undefined,
+        };
+
+        setSession(updatedSession);
+
+        sessionStorage.setItem(
+          'generationSession',
+          JSON.stringify(updatedSession),
+        );
+
         const warnings: string[] = [];
-        if ((parseResult.data.text as string).length > MAX_PDF_CONTENT_CHARS) {
+
+        if (textWasTruncated) {
           warnings.push(
-            t('generation.textTruncated').replace('{n}', String(MAX_PDF_CONTENT_CHARS)),
+            t('generation.textTruncated').replace(
+              '{n}',
+              String(MAX_PDF_CONTENT_CHARS),
+            ),
           );
         }
-        if (images.length > MAX_VISION_IMAGES) {
+
+        if (
+          images.length >
+          MAX_VISION_IMAGES
+        ) {
           warnings.push(
             t('generation.imageTruncated')
-              .replace('{total}', String(images.length))
-              .replace('{max}', String(MAX_VISION_IMAGES)),
+              .replace(
+                '{total}',
+                String(images.length),
+              )
+              .replace(
+                '{max}',
+                String(MAX_VISION_IMAGES),
+              ),
           );
         }
+
         if (warnings.length > 0) {
           setTruncationWarnings(warnings);
         }
 
-        // Reassign local reference for subsequent steps
-        currentSession = updatedSession;
-        activeSteps = getActiveSteps(currentSession);
+        log.info(
+          `[Generation] PDF analysis complete: ` +
+            `${pdfDocuments.length} documents, ` +
+            `${totalRawTextLength} raw text chars, ` +
+            `${images.length} images`,
+        );
+
+        currentSession =
+          updatedSession;
+
+        activeSteps =
+          getActiveSteps(currentSession);
       }
 
       // Step: Web Search (if enabled)
