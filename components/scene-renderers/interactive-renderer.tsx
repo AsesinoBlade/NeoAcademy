@@ -37,6 +37,18 @@ export function InteractiveRenderer({ content, mode: _mode, sceneId }: Interacti
  * - Canvas elements use container sizing instead of viewport
  */
 function patchHtmlForIframe(html: string): string {
+  // Generated interactive HTML occasionally contains a mismatched quote on
+  // Tailwind arbitrary-color classes inside JavaScript strings, for example:
+  //
+  //   class='text-[#e8b25a]"
+  //
+  // The stray double quote terminates the surrounding JavaScript string and
+  // prevents the generated script from parsing. Repair this narrowly before
+  // supplying the HTML to the iframe.
+  const repairedHtml = html.replace(
+    /class='text-\[#([0-9a-fA-F]{3,8})\]"/g,
+    "class='text-[#$1]'",
+  );
   const iframeCss = `<style data-iframe-patch>
   html, body {
     width: 100%;
@@ -120,21 +132,21 @@ function patchHtmlForIframe(html: string): string {
   const iframePatch =
     iframeCss + '\n' + canvasSafetyPatch;
   // Insert right after <head> or at the start of the document
-  const headIdx = html.indexOf('<head>');
+  const headIdx = repairedHtml.indexOf('<head>');
   if (headIdx !== -1) {
     const insertPos = headIdx + 6; // after <head>
-    return html.substring(0, insertPos) + '\n' + iframePatch + html.substring(insertPos);
+    return repairedHtml.substring(0, insertPos) + '\n' + iframePatch + repairedHtml.substring(insertPos);
   }
 
-  const headWithAttrs = html.indexOf('<head ');
+  const headWithAttrs = repairedHtml.indexOf('<head ');
   if (headWithAttrs !== -1) {
-    const closeAngle = html.indexOf('>', headWithAttrs);
+    const closeAngle = repairedHtml.indexOf('>', headWithAttrs);
     if (closeAngle !== -1) {
       const insertPos = closeAngle + 1;
-      return html.substring(0, insertPos) + '\n' + iframePatch + html.substring(insertPos);
+      return repairedHtml.substring(0, insertPos) + '\n' + iframePatch + repairedHtml.substring(insertPos);
     }
   }
 
   // Fallback: prepend
-  return iframePatch + html;
+  return iframePatch + repairedHtml;
 }

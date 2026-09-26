@@ -23,7 +23,10 @@ import type { StageStore } from '@/lib/api/stage-api';
 import { createStageAPI } from '@/lib/api/stage-api';
 import { generatePBLContent } from '@/lib/pbl/generate-pbl';
 import { buildPrompt, PROMPT_IDS } from './prompts';
-import { postProcessInteractiveHtml } from './interactive-post-processor';
+import {
+  postProcessInteractiveHtml,
+  validateInteractiveHtmlJavaScript,
+} from './interactive-post-processor';
 import { parseActionsFromStructuredOutput } from './action-parser';
 import { parseJsonResponse } from './json-repair';
 import {
@@ -1261,8 +1264,90 @@ async function generateInteractiveContent(
   }
 
   // Step 3: Post-process HTML (LaTeX delimiter conversion + KaTeX injection)
-  const processedHtml = postProcessInteractiveHtml(rawHtml);
-  log.info(`Post-processed HTML (${processedHtml.length} chars) for: ${outline.title}`);
+  let processedHtml = postProcessInteractiveHtml(rawHtml);
+
+  log.info(
+    `Post-processed HTML (${processedHtml.length} chars) for: ${outline.title}`,
+  );
+
+  // Step 4: Syntax-check every executable inline <script> before accepting
+  // the interactive. This compiles the JavaScript but never executes it.
+  let validation =
+    validateInteractiveHtmlJavaScript(processedHtml);
+
+  if (!validation.valid) {
+    log.warn(
+      `Interactive JavaScript validation failed for "${outline.title}" ` +
+        `(script ${validation.scriptIndex ?? 'unknown'}): ` +
+        `${validation.error ?? 'Unknown syntax error'}`,
+    );
+
+    log.info(
+      `Step 4: Attempting one JavaScript repair for: ${outline.title}`,
+    );
+
+    const repairSystem = [
+      'You repair generated interactive HTML.',
+      'Return ONLY the complete corrected HTML document.',
+      'Do not use Markdown fences.',
+      'Preserve the content, appearance, behavior, wording, and structure.',
+      'Fix JavaScript/HTML syntax errors only.',
+      'Do not remove working functionality.',
+      'Do not add external dependencies.',
+      'The result must contain valid classic browser JavaScript.',
+    ].join('\n');
+
+    const repairUser = [
+      `Interactive title: ${outline.title}`,
+      '',
+      'JavaScript validation error:',
+      validation.error ?? 'Unknown JavaScript syntax error',
+      '',
+      'Repair this complete HTML document:',
+      '',
+      rawHtml,
+    ].join('\n');
+
+    const repairResponse =
+      await aiCall(repairSystem, repairUser);
+
+    const repairedRawHtml =
+      extractHtml(repairResponse);
+
+    if (!repairedRawHtml) {
+      throw new Error(
+        `Interactive repair failed: no HTML returned for "${outline.title}"`,
+      );
+    }
+
+    processedHtml =
+      postProcessInteractiveHtml(repairedRawHtml);
+
+    validation =
+      validateInteractiveHtmlJavaScript(processedHtml);
+
+    if (!validation.valid) {
+      log.error(
+        `Interactive JavaScript remained invalid after repair for ` +
+          `"${outline.title}" (script ${validation.scriptIndex ?? 'unknown'}): ` +
+          `${validation.error ?? 'Unknown syntax error'}`,
+      );
+
+      throw new Error(
+        `Interactive JavaScript validation failed after one repair attempt ` +
+          `for "${outline.title}": ` +
+          `${validation.error ?? 'Unknown syntax error'}`,
+      );
+    }
+
+    log.info(
+      `Interactive JavaScript repaired and validated successfully: "${outline.title}"`,
+    );
+  } else {
+    log.info(
+      `Interactive JavaScript validated successfully: "${outline.title}"`,
+    );
+  }
 
   return {
     html: processedHtml,

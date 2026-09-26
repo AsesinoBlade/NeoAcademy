@@ -158,3 +158,91 @@ document.addEventListener("DOMContentLoaded", function() {
   // Last resort: append at end
   return html + katexInjection;
 }
+export interface InteractiveJavaScriptValidationResult {
+  valid: boolean;
+  scriptIndex?: number;
+  error?: string;
+}
+
+/**
+ * Validate executable inline JavaScript without running it.
+ *
+ * External <script src="..."> elements are ignored because their JavaScript is
+ * not present in the generated HTML. Non-JavaScript script types such as JSON
+ * are also ignored.
+ */
+export function validateInteractiveHtmlJavaScript(
+  html: string,
+): InteractiveJavaScriptValidationResult {
+  const scriptPattern =
+    /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+
+  let match: RegExpExecArray | null;
+  let scriptIndex = 0;
+
+  while ((match = scriptPattern.exec(html)) !== null) {
+    const attributes = match[1] ?? '';
+    const script = match[2] ?? '';
+
+    // External scripts have no generated inline JavaScript to validate.
+    if (/\bsrc\s*=/i.test(attributes)) {
+      continue;
+    }
+
+    // Ignore non-JavaScript data blocks.
+    const typeMatch =
+      attributes.match(
+        /\btype\s*=\s*["']([^"']+)["']/i,
+      );
+
+    if (typeMatch) {
+      const type =
+        typeMatch[1].trim().toLowerCase();
+
+      if (
+        type !== 'text/javascript' &&
+        type !== 'application/javascript' &&
+        type !== 'module'
+      ) {
+        continue;
+      }
+
+      // Function() parses classic scripts, not ES modules.
+      // Generated NeoAcademy interactives should use classic inline scripts.
+      if (type === 'module') {
+        return {
+          valid: false,
+          scriptIndex,
+          error:
+            'Generated interactive contains an inline module script; ' +
+            'NeoAcademy interactives require classic inline JavaScript.',
+        };
+      }
+    }
+
+    if (!script.trim()) {
+      scriptIndex += 1;
+      continue;
+    }
+
+    try {
+      // Compile only. The function body is never invoked.
+      new Function(script);
+    } catch (error) {
+      return {
+        valid: false,
+        scriptIndex,
+        error:
+          error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : String(error),
+      };
+    }
+
+    scriptIndex += 1;
+  }
+
+  return {
+    valid: true,
+  };
+}
