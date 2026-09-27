@@ -21,7 +21,7 @@ import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
 
 const log = createLogger('Scene Content API');
 
-export const maxDuration = 1800;
+export const maxDuration = 3600;
 
 export async function POST(req: NextRequest) {
   try {

@@ -1019,7 +1019,26 @@ export function getModel(config: ModelConfig): ModelWithInfo {
               }
             }
 
-            return globalThis.fetch(url, init);
+            const {
+              Agent,
+              fetch: undiciFetch,
+            } = require('undici');
+
+            const dispatcher = new Agent({
+              headersTimeout: 60 * 60 * 1000,
+              bodyTimeout: 60 * 60 * 1000,
+            });
+
+            return undiciFetch(
+              url as string | URL,
+              {
+                ...(init as Record<string, unknown>),
+                dispatcher,
+              },
+            ).then(
+              (response: unknown) =>
+                response as Response,
+            );
           },
         });
 
