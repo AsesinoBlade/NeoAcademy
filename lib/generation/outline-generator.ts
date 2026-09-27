@@ -4,7 +4,7 @@
  */
 
 import { nanoid } from 'nanoid';
-import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import { MAX_SOURCE_TEXT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
 import type {
   UserRequirements,
   SceneOutline,
@@ -98,7 +98,7 @@ export async function generateSceneOutlinesFromRequirements(
     requirement: requirements.requirement,
     language: requirements.language,
     pdfContent: pdfText
-      ? pdfText.substring(0, MAX_PDF_CONTENT_CHARS)
+      ? pdfText.substring(0, MAX_SOURCE_TEXT_CHARS)
       : requirements.language === 'zh-CN'
         ? '无'
         : 'None',

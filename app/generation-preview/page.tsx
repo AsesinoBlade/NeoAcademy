@@ -23,7 +23,7 @@ import {
 } from '@/lib/utils/image-storage';
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { db } from '@/lib/utils/database';
-import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import { MAX_SOURCE_TEXT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
 import { sourceDocumentFromParsedPdf } from '@/lib/source/source-document';
 import {
   cleanupOldSourceDocuments,
@@ -619,7 +619,7 @@ function GenerationPreviewContent() {
 
         if (
           pdfText.length >
-          MAX_PDF_CONTENT_CHARS
+          MAX_SOURCE_TEXT_CHARS
         ) {
           textWasTruncated = true;
 
@@ -635,7 +635,7 @@ function GenerationPreviewContent() {
           const bodyBudget =
             Math.max(
               0,
-              MAX_PDF_CONTENT_CHARS -
+              MAX_SOURCE_TEXT_CHARS -
                 headerBudget,
             );
 
@@ -661,7 +661,7 @@ function GenerationPreviewContent() {
               .join('\n\n')
               .substring(
                 0,
-                MAX_PDF_CONTENT_CHARS,
+                MAX_SOURCE_TEXT_CHARS,
               );
         }
 
@@ -749,7 +749,7 @@ function GenerationPreviewContent() {
           warnings.push(
             t('generation.textTruncated').replace(
               '{n}',
-              String(MAX_PDF_CONTENT_CHARS),
+              String(MAX_SOURCE_TEXT_CHARS),
             ),
           );
         }

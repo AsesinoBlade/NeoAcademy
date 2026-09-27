@@ -4,7 +4,18 @@
  */
 
 // PDF content truncation limit (characters)
-export const MAX_PDF_CONTENT_CHARS = 50000;
+const configuredMaxSourceTextChars =
+  Number.parseInt(
+    process.env.NEXT_PUBLIC_MAX_SOURCE_TEXT_CHARS ??
+      '',
+    10,
+  );
+
+export const MAX_SOURCE_TEXT_CHARS =
+  Number.isFinite(configuredMaxSourceTextChars) &&
+  configuredMaxSourceTextChars > 0
+    ? configuredMaxSourceTextChars
+    : 50000;
 
 // Maximum number of images to send as vision content parts
 export const MAX_VISION_IMAGES = 20;
