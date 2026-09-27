@@ -240,135 +240,36 @@ function GenerationPreviewContent() {
 
         let totalRawTextLength = 0;
 
-        for (
-          let documentIndex = 0;
-          documentIndex < pdfDocuments.length;
-          documentIndex++
-        ) {
-          const document =
-            pdfDocuments[documentIndex];
-
-          log.info(
-            `[Generation] Parsing PDF ${documentIndex + 1}/${pdfDocuments.length}: ${document.fileName}`,
-          );
-
-          const pdfBlob =
-            await loadPdfBlob(document.storageKey);
-
-          if (!pdfBlob) {
-            throw new Error(
-              `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
-            );
-          }
-
-          if (
-            !(pdfBlob instanceof Blob) ||
-            pdfBlob.size === 0
-          ) {
-            throw new Error(
-              `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
-            );
-          }
-
-          const pdfFile =
-            new File(
-              [pdfBlob],
-              document.fileName,
-              {
-                type: 'application/pdf',
-              },
-            );
-
-          const parseFormData =
-            new FormData();
-
-          parseFormData.append(
-            'pdf',
-            pdfFile,
-          );
-
-          if (currentSession.pdfProviderId) {
-            parseFormData.append(
-              'providerId',
-              currentSession.pdfProviderId,
-            );
-          }
-
-          if (
-            currentSession.pdfProviderConfig?.apiKey?.trim()
-          ) {
-            parseFormData.append(
-              'apiKey',
-              currentSession.pdfProviderConfig.apiKey,
-            );
-          }
-
-          if (
-            currentSession.pdfProviderConfig?.baseUrl?.trim()
-          ) {
-            parseFormData.append(
-              'baseUrl',
-              currentSession.pdfProviderConfig.baseUrl,
-            );
-          }
-
-          const parseResponse =
-            await fetch('/api/parse-pdf', {
-              method: 'POST',
-              body: parseFormData,
-              signal,
-            });
-
-          if (!parseResponse.ok) {
-            const errorData =
-              await parseResponse.json();
-
-            throw new Error(
-              `${document.fileName}: ` +
-                (errorData.error ||
-                  t('generation.pdfParseFailed')),
-            );
-          }
-
-          const parseResult =
-            await parseResponse.json();
-
-          if (
-            !parseResult.success ||
-            !parseResult.data
-          ) {
-            throw new Error(
-              `${document.fileName}: ${t(
-                'generation.pdfParseFailed',
-              )}`,
-            );
-          }
-
+        const recordParsedDocument = (
+          fileName: string,
+          fileSize: number,
+          parsed: ParsedPdfContent,
+          documentIndex: number,
+        ) => {
           const documentText =
-            (parseResult.data.text as string) || '';
+            parsed.text || '';
 
           totalRawTextLength +=
             documentText.length;
 
           documentTexts.push({
-            fileName: document.fileName,
+            fileName,
             text: documentText,
           });
 
           const rawPdfImages =
-            parseResult.data.metadata?.pdfImages;
+            parsed.metadata?.pdfImages;
 
-          const documentImages =
+          const documentImages: Array<{
+            src: string;
+            pageNumber: number;
+            description?: string;
+            width?: number;
+            height?: number;
+          }> =
             rawPdfImages
               ? rawPdfImages.map(
-                  (img: {
-                    id: string;
-                    src?: string;
-                    pageNumber?: number;
-                    description?: string;
-                    width?: number;
-                    height?: number;
-                  }) => ({
+                  (img) => ({
                     src: img.src || '',
                     pageNumber:
                       img.pageNumber || 1,
@@ -378,43 +279,331 @@ function GenerationPreviewContent() {
                     height: img.height,
                   }),
                 )
-              : (
-                  (parseResult.data.images as string[]) ||
-                  []
-                ).map((src: string) => ({
-                  src,
-                  pageNumber: 1,
-                }));
+              : (parsed.images || []).map(
+                  (src) => ({
+                    src,
+                    pageNumber: 1,
+                  }),
+                );
 
-          const documentImageStartIndex = images.length;
+          const documentImageStartIndex =
+            images.length;
 
           for (const image of documentImages) {
             images.push({
               id: `img_${images.length + 1}`,
               src: image.src,
-              pageNumber: image.pageNumber,
+              pageNumber:
+                image.pageNumber,
               description:
                 image.description
-                  ? `${image.description} [Source PDF: ${document.fileName}]`
-                  : `Source PDF: ${document.fileName}`,
+                  ? `${image.description} [Source PDF: ${fileName}]`
+                  : `Source PDF: ${fileName}`,
               width: image.width,
               height: image.height,
             });
           }
 
           parsedDocuments.push({
-            fileName: document.fileName,
-            fileSize: pdfBlob.size,
-            parsed: parseResult.data as ParsedPdfContent,
-            imageStartIndex: documentImageStartIndex,
-            imageCount: documentImages.length,
+            fileName,
+            fileSize,
+            parsed,
+            imageStartIndex:
+              documentImageStartIndex,
+            imageCount:
+              documentImages.length,
           });
 
           log.info(
             `[Generation] Parsed PDF ${documentIndex + 1}/${pdfDocuments.length}: ` +
-              `${document.fileName} ` +
+              `${fileName} ` +
               `(${documentText.length} chars, ${documentImages.length} images)`,
           );
+        };
+
+        if (
+          currentSession.pdfProviderId ===
+          'mineru'
+        ) {
+          log.info(
+            `[Generation] Using one local MinerU batch for ${pdfDocuments.length} PDF document(s)`,
+          );
+
+          const mineruFormData =
+            new FormData();
+
+          const mineruFileSizes:
+            number[] = [];
+
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            pdfDocuments.length;
+            documentIndex++
+          ) {
+            const document =
+              pdfDocuments[
+                documentIndex
+              ];
+
+            const pdfBlob =
+              await loadPdfBlob(
+                document.storageKey,
+              );
+
+            if (!pdfBlob) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            if (
+              !(pdfBlob instanceof Blob) ||
+              pdfBlob.size === 0
+            ) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            mineruFileSizes.push(
+              pdfBlob.size,
+            );
+
+            const pdfFile =
+              new File(
+                [pdfBlob],
+                document.fileName,
+                {
+                  type:
+                    'application/pdf',
+                },
+              );
+
+            mineruFormData.append(
+              'pdfs',
+              pdfFile,
+              document.fileName,
+            );
+          }
+
+          const parseResponse =
+            await fetch(
+              '/api/parse-pdf/mineru-batch',
+              {
+                method: 'POST',
+                body: mineruFormData,
+                signal,
+              },
+            );
+
+          if (!parseResponse.ok) {
+            const errorData =
+              await parseResponse.json();
+
+            throw new Error(
+              errorData.error ||
+                t(
+                  'generation.pdfParseFailed',
+                ),
+            );
+          }
+
+          const parseResult =
+            await parseResponse.json();
+
+          const batchResults =
+            Array.isArray(
+              parseResult?.data?.data,
+            )
+              ? parseResult.data.data
+              : Array.isArray(
+                    parseResult?.data,
+                  )
+                ? parseResult.data
+                : [];
+
+          if (
+            batchResults.length !==
+            pdfDocuments.length
+          ) {
+            throw new Error(
+              `MinerU returned ${batchResults.length} document(s), ` +
+                `but ${pdfDocuments.length} were submitted`,
+            );
+          }
+
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            batchResults.length;
+            documentIndex++
+          ) {
+            const result =
+              batchResults[
+                documentIndex
+              ];
+
+            const parsed =
+              result?.data as
+                | ParsedPdfContent
+                | undefined;
+
+            if (!parsed) {
+              throw new Error(
+                `${pdfDocuments[documentIndex].fileName}: ` +
+                  t(
+                    'generation.pdfParseFailed',
+                  ),
+              );
+            }
+
+            recordParsedDocument(
+              pdfDocuments[
+                documentIndex
+              ].fileName,
+              mineruFileSizes[
+                documentIndex
+              ],
+              parsed,
+              documentIndex,
+            );
+          }
+        } else {
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            pdfDocuments.length;
+            documentIndex++
+          ) {
+            const document =
+              pdfDocuments[
+                documentIndex
+              ];
+
+            log.info(
+              `[Generation] Parsing PDF ${documentIndex + 1}/${pdfDocuments.length}: ${document.fileName}`,
+            );
+
+            const pdfBlob =
+              await loadPdfBlob(
+                document.storageKey,
+              );
+
+            if (!pdfBlob) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            if (
+              !(pdfBlob instanceof Blob) ||
+              pdfBlob.size === 0
+            ) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            const pdfFile =
+              new File(
+                [pdfBlob],
+                document.fileName,
+                {
+                  type:
+                    'application/pdf',
+                },
+              );
+
+            const parseFormData =
+              new FormData();
+
+            parseFormData.append(
+              'pdf',
+              pdfFile,
+              document.fileName,
+            );
+
+            if (
+              currentSession.pdfProviderId
+            ) {
+              parseFormData.append(
+                'providerId',
+                currentSession.pdfProviderId,
+              );
+            }
+
+            if (
+              currentSession
+                .pdfProviderConfig
+                ?.apiKey?.trim()
+            ) {
+              parseFormData.append(
+                'apiKey',
+                currentSession
+                  .pdfProviderConfig
+                  .apiKey,
+              );
+            }
+
+            if (
+              currentSession
+                .pdfProviderConfig
+                ?.baseUrl?.trim()
+            ) {
+              parseFormData.append(
+                'baseUrl',
+                currentSession
+                  .pdfProviderConfig
+                  .baseUrl,
+              );
+            }
+
+            const parseResponse =
+              await fetch(
+                '/api/parse-pdf',
+                {
+                  method: 'POST',
+                  body: parseFormData,
+                  signal,
+                },
+              );
+
+            if (!parseResponse.ok) {
+              const errorData =
+                await parseResponse.json();
+
+              throw new Error(
+                `${document.fileName}: ` +
+                  (errorData.error ||
+                    t(
+                      'generation.pdfParseFailed',
+                    )),
+              );
+            }
+
+            const parseResult =
+              await parseResponse.json();
+
+            if (
+              !parseResult.success ||
+              !parseResult.data
+            ) {
+              throw new Error(
+                `${document.fileName}: ${t(
+                  'generation.pdfParseFailed',
+                )}`,
+              );
+            }
+
+            recordParsedDocument(
+              document.fileName,
+              pdfBlob.size,
+              parseResult.data as
+                ParsedPdfContent,
+              documentIndex,
+            );
+          }
         }
 
         const fullPdfText =

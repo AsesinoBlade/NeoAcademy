@@ -491,6 +491,61 @@ async function parseMinerUZip(
   const usedVisualPaths =
     new Set<string>();
 
+  /*
+   * Reserve every filename that has an exact middle_json match
+   * before permitting fallback matching. This prevents a missing
+   * low-numbered asset (for example table_0) from stealing
+   * table_2 and shifting all later mappings.
+   */
+  const reservedExactVisualPaths =
+    new Set<string>();
+
+  for (const page of pages) {
+    const pageIndex =
+      Number.isFinite(page.page_idx)
+        ? Number(page.page_idx)
+        : 0;
+
+    for (const block of page.blocks ?? []) {
+      const blockType =
+        (block.type ?? '').toLowerCase();
+
+      for (const item of block.content ?? []) {
+        const visualKind =
+          visualKindForItem(
+            blockType,
+            item,
+          );
+
+        if (!visualKind) {
+          continue;
+        }
+
+        const itemIndex =
+          Number.isFinite(item.index)
+            ? Number(item.index)
+            : 0;
+
+        const exactPath =
+          expectedVisualPath(
+            pageIndex,
+            visualKind,
+            itemIndex,
+          ).toLowerCase();
+
+        if (
+          zipEntryByLowerPath.has(
+            exactPath,
+          )
+        ) {
+          reservedExactVisualPaths.add(
+            exactPath,
+          );
+        }
+      }
+    }
+  }
+
   const findVisualEntry = (
     pageIndex: number,
     kind: 'image' | 'table' | 'chart',
@@ -503,19 +558,22 @@ async function parseMinerUZip(
         itemIndex,
       );
 
+    const exactLowerPath =
+      exactPath.toLowerCase();
+
     const exactEntry =
       zipEntryByLowerPath.get(
-        exactPath.toLowerCase(),
+        exactLowerPath,
       );
 
     if (
       exactEntry &&
       !usedVisualPaths.has(
-        exactEntry.name.toLowerCase(),
+        exactLowerPath,
       )
     ) {
       usedVisualPaths.add(
-        exactEntry.name.toLowerCase(),
+        exactLowerPath,
       );
 
       return {
@@ -531,19 +589,26 @@ async function parseMinerUZip(
 
     const fallbackEntry =
       Object.values(zip.files)
-        .filter(
-          (entry) =>
+        .filter((entry) => {
+          const lowerName =
+            entry.name.toLowerCase();
+
+          return (
             !entry.dir &&
-            entry.name
-              .toLowerCase()
-              .startsWith(prefix) &&
-            entry.name
-              .toLowerCase()
-              .endsWith('.jpg') &&
+            lowerName.startsWith(
+              prefix,
+            ) &&
+            lowerName.endsWith(
+              '.jpg',
+            ) &&
             !usedVisualPaths.has(
-              entry.name.toLowerCase(),
-            ),
-        )
+              lowerName,
+            ) &&
+            !reservedExactVisualPaths.has(
+              lowerName,
+            )
+          );
+        })
         .sort(
           (a, b) =>
             a.name.localeCompare(
