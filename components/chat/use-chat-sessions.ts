@@ -142,6 +142,49 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
 
   const actionEnginesRef = useRef<Map<string, ActionEngine>>(new Map());
 
+  /*
+   * Hard teardown when the classroom/chat tree unmounts.
+   *
+   * This is intentionally different from endActiveSession(): unmount is not a
+   * conversational transition. Nothing from the old classroom may continue
+   * streaming, ticking, invoking callbacks, or advancing the agent loop after
+   * navigation has removed the classroom.
+   */
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      streamingSessionIdRef.current = null;
+
+      for (const buffer of buffersRef.current.values()) {
+        buffer.shutdown();
+      }
+      buffersRef.current.clear();
+
+      for (const engine of actionEnginesRef.current.values()) {
+        engine.dispose();
+      }
+      actionEnginesRef.current.clear();
+
+      pendingUserMessagesRef.current = [];
+      loopDoneDataRef.current = null;
+
+      liveTtsQueuedLengthRef.current.clear();
+      liveTtsChunkIndexRef.current.clear();
+      liveTtsLastPromiseRef.current.clear();
+
+      // Prevent any already-scheduled async completion from calling back into
+      // the Stage after the classroom has unmounted.
+      onLiveSpeechRef.current = undefined;
+      onLiveSpeechCompleteRef.current = undefined;
+      onSpeechProgressRef.current = undefined;
+      onThinkingRef.current = undefined;
+      onCueUserRef.current = undefined;
+      onActiveBubbleRef.current = undefined;
+      onStopSessionRef.current = undefined;
+    };
+  }, []);
+
   // Tracks the single message ID per lecture session
   const lectureMessageIds = useRef<Map<string, string>>(new Map());
 

@@ -73,6 +73,32 @@ function HomePage() {
   const [form, setForm] = useState<FormState>(initialFormState);
   const [loggingOut, setLoggingOut] = useState(false);
 
+  /*
+   * The home page is NeoAcademy's idle state.
+   *
+   * Returning here should release heavyweight local services left over
+   * from classroom or generation work. The endpoint is intentionally
+   * idempotent so this is also safe during React development remounts.
+   */
+  useEffect(() => {
+    void fetch('/api/local-idle-cleanup', {
+      method: 'POST',
+    })
+      .then(async (response) => {
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          log.warn('[Home] Local idle cleanup completed with warnings:', data);
+          return;
+        }
+
+        log.info('[Home] Local idle cleanup complete');
+      })
+      .catch((error) => {
+        log.warn('[Home] Local idle cleanup failed:', error);
+      });
+  }, []);
+
   // Draft cache for requirement text
   const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
     useDraftCache<string>({ key: 'requirementDraft' });

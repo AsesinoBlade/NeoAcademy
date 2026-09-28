@@ -526,16 +526,27 @@ export function Stage({
     const liveTtsAudioPlayer = liveTtsAudioPlayerRef.current;
 
     return () => {
+      // Invalidate all classroom callbacks before releasing their resources.
+      // Any queued live-TTS or stale scene callback must become a no-op.
+      sceneEpochRef.current++;
+      liveTtsEpochRef.current++;
+
       if (engineRef.current) {
         engineRef.current.stop();
+        engineRef.current = null;
       }
-
-      audioPlayer.destroy();
-      liveTtsAudioPlayer.destroy();
 
       if (discussionAbortRef.current) {
         discussionAbortRef.current.abort();
+        discussionAbortRef.current = null;
       }
+
+      liveTtsAudioPlayer.stop();
+      audioPlayer.destroy();
+      liveTtsAudioPlayer.destroy();
+
+      liveTtsPlaybackTailRef.current = Promise.resolve();
+      speechServicesReadyRef.current = null;
     };
   }, []);
 
