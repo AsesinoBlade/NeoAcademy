@@ -9,6 +9,18 @@
 
 {{teacherContext}}
 
+## Source Evidence
+
+{{sourceEvidence}}
+
+For claims about a particular uploaded or reference source:
+
+- Treat the Source Evidence above as authoritative.
+- Preserve uncertainty, qualifiers, and stated limitations.
+- Do not invent source-specific observations or properties.
+- Do not strengthen an interpretation, hypothesis, possibility, or model inference into a fact.
+- If the source says something cannot be determined, do not imply that it has been determined.
+- General knowledge may be used for explanation, but keep it distinct from claims about the specific source.
 ## Available Resources
 
 - **Available Images**: {{assignedImages}}

@@ -96,16 +96,35 @@ export function GenerationToolbar({
 
   const currentProviderConfig = providersConfig?.[currentProviderId];
 
-  // PDF handler
+  // Source handler
   const handleFilesSelect = (incomingFiles: File[]) => {
     const validFiles: File[] = [];
 
+    const mineruSelected =
+      pdfProviderId === 'mineru';
+
     for (const file of incomingFiles) {
+      const lowerName =
+        file.name.toLowerCase();
+
       const isPdf =
         file.type === 'application/pdf' ||
-        file.name.toLowerCase().endsWith('.pdf');
+        lowerName.endsWith('.pdf');
 
-      if (!isPdf) {
+      const isImage =
+        file.type === 'image/jpeg' ||
+        file.type === 'image/png' ||
+        file.type === 'image/webp' ||
+        lowerName.endsWith('.jpg') ||
+        lowerName.endsWith('.jpeg') ||
+        lowerName.endsWith('.png') ||
+        lowerName.endsWith('.webp');
+
+      const supported =
+        isPdf ||
+        (mineruSelected && isImage);
+
+      if (!supported) {
         continue;
       }
 
@@ -275,7 +294,11 @@ export function GenerationToolbar({
               type="file"
               ref={fileInputRef}
               className="hidden"
-              accept=".pdf"
+              accept={
+                pdfProviderId === 'mineru'
+                  ? '.pdf,.jpg,.jpeg,.png,.webp'
+                  : '.pdf'
+              }
               multiple
               onChange={(e) => {
                 handleFilesSelect(
@@ -355,12 +378,14 @@ export function GenerationToolbar({
 
               <p className="text-xs font-medium">
                 {pdfFiles.length > 0
-                  ? 'Add more PDFs'
+                  ? 'Add more sources'
                   : t('toolbar.pdfUpload')}
               </p>
 
               <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                {t('upload.pdfSizeLimit')}
+                {pdfProviderId === 'mineru'
+                  ? t('upload.sourceSizeLimit')
+                  : t('upload.pdfSizeLimit')}
               </p>
             </div>
           </div>

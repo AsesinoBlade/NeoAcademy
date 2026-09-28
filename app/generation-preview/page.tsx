@@ -225,6 +225,7 @@ function GenerationPreviewContent() {
         const parsedDocuments: Array<{
           fileName: string;
           fileSize: number;
+          mimeType?: string;
           parsed: ParsedPdfContent;
           imageStartIndex: number;
           imageCount: number;
@@ -236,6 +237,7 @@ function GenerationPreviewContent() {
           description?: string;
           width?: number;
           height?: number;
+          visualRegions?: PdfImage['visualRegions'];
         }> = [];
 
         let totalRawTextLength = 0;
@@ -245,6 +247,7 @@ function GenerationPreviewContent() {
           fileSize: number,
           parsed: ParsedPdfContent,
           documentIndex: number,
+          mimeType?: string,
         ) => {
           const documentText =
             parsed.text || '';
@@ -266,6 +269,7 @@ function GenerationPreviewContent() {
             description?: string;
             width?: number;
             height?: number;
+            visualRegions?: PdfImage['visualRegions'];
           }> =
             rawPdfImages
               ? rawPdfImages.map(
@@ -277,6 +281,8 @@ function GenerationPreviewContent() {
                       img.description,
                     width: img.width,
                     height: img.height,
+                    visualRegions:
+                      img.visualRegions,
                   }),
                 )
               : (parsed.images || []).map(
@@ -301,12 +307,15 @@ function GenerationPreviewContent() {
                   : `Source PDF: ${fileName}`,
               width: image.width,
               height: image.height,
+              visualRegions:
+                image.visualRegions,
             });
           }
 
           parsedDocuments.push({
             fileName,
             fileSize,
+            mimeType,
             parsed,
             imageStartIndex:
               documentImageStartIndex,
@@ -315,7 +324,7 @@ function GenerationPreviewContent() {
           });
 
           log.info(
-            `[Generation] Parsed PDF ${documentIndex + 1}/${pdfDocuments.length}: ` +
+            `[Generation] Parsed source ${documentIndex + 1}/${pdfDocuments.length}: ` +
               `${fileName} ` +
               `(${documentText.length} chars, ${documentImages.length} images)`,
           );
@@ -334,6 +343,9 @@ function GenerationPreviewContent() {
 
           const mineruFileSizes:
             number[] = [];
+
+          const mineruMimeTypes:
+            Array<string | undefined> = [];
 
           for (
             let documentIndex = 0;
@@ -370,19 +382,32 @@ function GenerationPreviewContent() {
               pdfBlob.size,
             );
 
-            const pdfFile =
+            const sourceMimeType =
+              document.mimeType ||
+              pdfBlob.type ||
+              (document.fileName
+                .toLowerCase()
+                .endsWith('.pdf')
+                ? 'application/pdf'
+                : 'application/octet-stream');
+
+            mineruMimeTypes.push(
+              sourceMimeType,
+            );
+
+            const sourceFile =
               new File(
                 [pdfBlob],
                 document.fileName,
                 {
                   type:
-                    'application/pdf',
+                    sourceMimeType,
                 },
               );
 
             mineruFormData.append(
-              'pdfs',
-              pdfFile,
+              'sources',
+              sourceFile,
               document.fileName,
             );
           }
@@ -467,6 +492,9 @@ function GenerationPreviewContent() {
               ],
               parsed,
               documentIndex,
+              mineruMimeTypes[
+                documentIndex
+              ],
             );
           }
         } else {
@@ -482,7 +510,7 @@ function GenerationPreviewContent() {
               ];
 
             log.info(
-              `[Generation] Parsing PDF ${documentIndex + 1}/${pdfDocuments.length}: ${document.fileName}`,
+              `[Generation] Parsing source ${documentIndex + 1}/${pdfDocuments.length}: ${document.fileName}`,
             );
 
             const pdfBlob =
@@ -602,6 +630,7 @@ function GenerationPreviewContent() {
               parseResult.data as
                 ParsedPdfContent,
               documentIndex,
+              'application/pdf',
             );
           }
         }
@@ -692,7 +721,7 @@ function GenerationPreviewContent() {
               {
                 id: `source_${nanoid(10)}`,
                 fileName: parsedDocument.fileName,
-                mimeType: 'application/pdf',
+                mimeType: parsedDocument.mimeType ?? 'application/pdf',
                 fileSize: parsedDocument.fileSize,
                 imageStorageIds: documentImageStorageIds,
               },
@@ -717,6 +746,8 @@ function GenerationPreviewContent() {
               description: img.description,
               width: img.width,
               height: img.height,
+              visualRegions:
+                img.visualRegions,
               storageId:
                 imageStorageIds[i],
             }),
@@ -776,7 +807,7 @@ function GenerationPreviewContent() {
         }
 
         log.info(
-          `[Generation] PDF analysis complete: ` +
+          `[Generation] Source analysis complete: ` +
             `${pdfDocuments.length} documents, ` +
             `${totalRawTextLength} raw text chars, ` +
             `${images.length} images`,
@@ -1111,6 +1142,8 @@ function GenerationPreviewContent() {
           outline: firstOutline,
           allOutlines: outlines,
           pdfImages: currentSession.pdfImages,
+          sourceEvidence: currentSession.pdfText,
+          classRequirement: currentSession.requirements.requirement,
           imageMapping,
           stageInfo,
           stageId: stage.id,
@@ -1140,6 +1173,7 @@ function GenerationPreviewContent() {
           outline: contentData.effectiveOutline || firstOutline,
           allOutlines: outlines,
           content: contentData.content,
+          sourceEvidence: currentSession.pdfText,
           stageId: stage.id,
           agents,
           previousSpeeches: [],
@@ -1174,6 +1208,8 @@ function GenerationPreviewContent() {
       if (remaining.length > 0) {
         await generateRemaining({
           pdfImages: currentSession.pdfImages,
+          sourceEvidence: currentSession.pdfText,
+          classRequirement: currentSession.requirements.requirement,
           imageMapping,
           stageInfo,
           agents,

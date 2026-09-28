@@ -151,6 +151,8 @@ async function fetchSceneContent(
     allOutlines: SceneOutline[];
     stageId: string;
     pdfImages?: PdfImage[];
+    sourceEvidence?: string;
+    classRequirement?: string;
     imageMapping?: ImageMapping;
     stageInfo: {
       name: string;
@@ -183,6 +185,7 @@ async function fetchSceneActions(
     outline: SceneOutline;
     allOutlines: SceneOutline[];
     content: unknown;
+    sourceEvidence?: string;
     stageId: string;
     agents?: AgentInfo[];
     previousSpeeches?: string[];
@@ -309,6 +312,8 @@ export interface UseSceneGeneratorOptions {
 
 export interface GenerationParams {
   pdfImages?: PdfImage[];
+  sourceEvidence?: string;
+  classRequirement?: string;
   imageMapping?: ImageMapping;
   stageInfo: {
     name: string;
@@ -408,6 +413,8 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
               allOutlines: outlines,
               stageId: stage.id,
               pdfImages: params.pdfImages,
+              sourceEvidence: params.sourceEvidence,
+              classRequirement: params.classRequirement,
               imageMapping: params.imageMapping,
               stageInfo: params.stageInfo,
               agents: params.agents,
@@ -440,6 +447,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
               outline: contentResult.effectiveOutline || outline,
               allOutlines: outlines,
               content: contentResult.content,
+              sourceEvidence: params.sourceEvidence,
               stageId: stage.id,
               agents: params.agents,
               previousSpeeches,
@@ -542,6 +550,8 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             allOutlines: state.outlines,
             stageId: state.stage.id,
             pdfImages: params.pdfImages,
+            sourceEvidence: params.sourceEvidence,
+            classRequirement: params.classRequirement,
             imageMapping: params.imageMapping,
             stageInfo: params.stageInfo,
             agents: params.agents,
@@ -568,6 +578,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             outline: contentResult.effectiveOutline || outline,
             allOutlines: state.outlines,
             content: contentResult.content,
+            sourceEvidence: params.sourceEvidence,
             stageId: state.stage.id,
             agents: params.agents,
             previousSpeeches,

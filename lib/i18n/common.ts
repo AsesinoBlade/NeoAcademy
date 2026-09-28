@@ -12,7 +12,7 @@ export const commonZhCN = {
   toolbar: {
     languageHint: '课程将以此语言生成',
     pdfParser: '解析器',
-    pdfUpload: '上传 PDF',
+    pdfUpload: '上传资料来源',
     removePdf: '移除文件',
     webSearchOn: '已开启',
     webSearchOff: '点击开启',
@@ -53,7 +53,7 @@ export const commonEnUS = {
   toolbar: {
     languageHint: 'Course will be generated in this language',
     pdfParser: 'Parser',
-    pdfUpload: 'Upload PDF',
+    pdfUpload: 'Upload Sources',
     removePdf: 'Remove file',
     webSearchOn: 'Enabled',
     webSearchOff: 'Click to enable',

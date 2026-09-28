@@ -158,6 +158,8 @@ export async function generateSceneContent(
   visionEnabled?: boolean,
   generatedMediaMapping?: ImageMapping,
   agents?: AgentInfo[],
+  sourceEvidence?: string,
+  classRequirement?: string,
 ): Promise<
   | GeneratedSlideContent
   | GeneratedQuizContent
@@ -179,6 +181,7 @@ export async function generateSceneContent(
       visionEnabled,
       generatedMediaMapping,
       agents,
+      sourceEvidence,
     );
   }
 
@@ -192,11 +195,20 @@ export async function generateSceneContent(
         visionEnabled,
         generatedMediaMapping,
         agents,
+        sourceEvidence,
       );
     case 'quiz':
-      return generateQuizContent(outline, aiCall);
+      return generateQuizContent(outline, aiCall, sourceEvidence);
     case 'interactive':
-      return generateInteractiveContent(outline, aiCall, outline.language);
+      return generateInteractiveContent(
+        outline,
+        aiCall,
+        outline.language,
+        sourceEvidence,
+        classRequirement,
+        assignedImages,
+        imageMapping,
+      );
     case 'pbl':
       return generatePBLSceneContent(outline, languageModel);
     default:
@@ -908,6 +920,7 @@ async function generateSlideContent(
   visionEnabled?: boolean,
   generatedMediaMapping?: ImageMapping,
   agents?: AgentInfo[],
+  sourceEvidence?: string,
 ): Promise<GeneratedSlideContent | null> {
   const lang = outline.language || 'zh-CN';
 
@@ -986,6 +999,7 @@ async function generateSlideContent(
     canvas_width: canvasWidth,
     canvas_height: canvasHeight,
     teacherContext,
+    sourceEvidence: sourceEvidence || 'No source evidence provided.',
   });
 
   if (!prompts) {
@@ -1086,6 +1100,7 @@ async function generateSlideContent(
 async function generateQuizContent(
   outline: SceneOutline,
   aiCall: AICallFn,
+  sourceEvidence?: string,
 ): Promise<GeneratedQuizContent | null> {
   const quizConfig = outline.quizConfig || {
     questionCount: 3,
@@ -1100,6 +1115,7 @@ async function generateQuizContent(
     questionCount: quizConfig.questionCount,
     difficulty: quizConfig.difficulty,
     questionTypes: quizConfig.questionTypes.join(', '),
+    sourceEvidence: sourceEvidence || 'No source evidence provided.',
   });
 
   if (!prompts) {
@@ -1190,8 +1206,80 @@ async function generateInteractiveContent(
   outline: SceneOutline,
   aiCall: AICallFn,
   language: 'zh-CN' | 'en-US' = 'zh-CN',
+  sourceEvidence?: string,
+  classRequirement?: string,
+  assignedImages?: PdfImage[],
+  imageMapping?: ImageMapping,
 ): Promise<GeneratedInteractiveContent | null> {
   const config = outline.interactiveConfig!;
+
+  // Source images available to this interactive.
+  //
+  // Do not place base64 data in the model prompt. The generated HTML uses
+  // logical neo-source:// image references, which are resolved to real data
+  // URLs only after generation and JavaScript validation.
+  let availableSourceImages =
+    'No source images are assigned to this interactive.';
+
+  if (assignedImages && assignedImages.length > 0) {
+    availableSourceImages = assignedImages
+      .map((img) => {
+        const dimensions =
+          img.width && img.height
+            ? ` (${img.width}x${img.height})`
+            : '';
+
+        const description =
+          img.description
+            ? ` — ${img.description}`
+            : '';
+
+        const spatialRegions =
+          img.visualRegions &&
+          img.visualRegions.length > 0
+            ? [
+                '  Spatial regions normalized to the source image:',
+                ...img.visualRegions.map((region) => {
+                  const centerX =
+                    region.x +
+                    region.width / 2;
+
+                  const centerY =
+                    region.y +
+                    region.height / 2;
+
+                  const confidence =
+                    region.confidence !== undefined
+                      ? `, confidence=${region.confidence.toFixed(2)}`
+                      : '';
+
+                  const regionDescription =
+                    region.description
+                      ? ` — ${region.description}`
+                      : '';
+
+                  return (
+                    `    - ${region.label}: ` +
+                    `x=${region.x.toFixed(4)}, ` +
+                    `y=${region.y.toFixed(4)}, ` +
+                    `width=${region.width.toFixed(4)}, ` +
+                    `height=${region.height.toFixed(4)}, ` +
+                    `centerX=${centerX.toFixed(4)}, ` +
+                    `centerY=${centerY.toFixed(4)}` +
+                    `${confidence}${regionDescription}`
+                  );
+                }),
+              ].join('\n')
+            : '  Spatial regions: none available';
+
+        return (
+          `- ${img.id}${dimensions}${description}\n` +
+          `  Embed reference: neo-source://${img.id}\n` +
+          spatialRegions
+        );
+      })
+      .join('\n');
+  }
 
   // Step 1: Scientific modeling (with fallback on failure)
   let scientificModel: ScientificModel | undefined;
@@ -1202,6 +1290,8 @@ async function generateInteractiveContent(
       conceptOverview: config.conceptOverview,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
       designIdea: config.designIdea,
+      sourceEvidence: sourceEvidence || 'No source evidence provided.',
+      classRequirement: classRequirement || 'No original class requirement provided.',
     });
 
     if (modelPrompts) {
@@ -1246,6 +1336,8 @@ async function generateInteractiveContent(
     keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
     scientificConstraints,
     designIdea: config.designIdea,
+    sourceEvidence: sourceEvidence || 'No source evidence provided.',
+    availableSourceImages,
     language,
   });
 
@@ -1255,7 +1347,12 @@ async function generateInteractiveContent(
   }
 
   log.info(`Step 2: Generating HTML for: ${outline.title}`);
-  const htmlResponse = await aiCall(htmlPrompts.system, htmlPrompts.user);
+  const htmlResponse = await aiCall(
+    htmlPrompts.system,
+    htmlPrompts.user,
+    undefined,
+    { tokenProfile: 'interactive-html' },
+  );
   // Extract HTML from response
   const rawHtml = extractHtml(htmlResponse);
   if (!rawHtml) {
@@ -1347,6 +1444,68 @@ async function generateInteractiveContent(
     log.info(
       `Interactive JavaScript validated successfully: "${outline.title}"`,
     );
+  }
+
+  // Ensure controls intended for learner interaction cannot be disabled by
+  // a broad decorative-overlay `pointer-events: none` rule generated by the
+  // model. Decorative layers may still disable pointer events, but explicit
+  // controls always remain clickable.
+  const interactivePointerSafetyStyle = `
+<style data-interactive-pointer-safety>
+button,
+[role="button"],
+.hotspot,
+[class*="hotspot"],
+[class*="marker"],
+input,
+select,
+textarea,
+label[for] {
+  pointer-events: auto !important;
+}
+</style>`;
+
+  if (processedHtml.includes('</head>')) {
+    processedHtml = processedHtml.replace(
+      '</head>',
+      `${interactivePointerSafetyStyle}\n</head>`,
+    );
+  } else {
+    processedHtml =
+      interactivePointerSafetyStyle +
+      '\n' +
+      processedHtml;
+  }
+
+  // Resolve logical source-image references to the real data URLs loaded
+  // from IndexedDB by the generation preview page.
+  if (assignedImages && assignedImages.length > 0) {
+    for (const image of assignedImages) {
+      const token = `neo-source://${image.id}`;
+      const mappedSrc = imageMapping?.[image.id];
+
+      if (!processedHtml.includes(token)) {
+        log.warn(
+          `Interactive "${outline.title}" was assigned image ${image.id} ` +
+            `but generated HTML did not reference ${token}`,
+        );
+        continue;
+      }
+
+      if (!mappedSrc) {
+        log.warn(
+          `Interactive "${outline.title}" references ${token} ` +
+            `but no image mapping exists for ${image.id}`,
+        );
+        continue;
+      }
+
+      processedHtml = processedHtml.split(token).join(mappedSrc);
+
+      log.info(
+        `Resolved interactive source image ${image.id} for: "${outline.title}"`,
+      );
+    }
   }
 
   return {
@@ -1452,6 +1611,7 @@ export async function generateSceneActions(
   ctx?: SceneGenerationContext,
   agents?: AgentInfo[],
   userProfile?: string,
+  sourceEvidence?: string,
 ): Promise<Action[]> {
   const agentsText = formatAgentsForPrompt(agents);
 
@@ -1467,6 +1627,7 @@ export async function generateSceneActions(
       courseContext: buildCourseContext(ctx),
       agents: agentsText,
       userProfile: userProfile || '',
+      sourceEvidence: sourceEvidence || 'No source evidence provided.',
     });
 
     if (!prompts) {
@@ -1512,6 +1673,7 @@ export async function generateSceneActions(
       questions: questionsText,
       courseContext: buildCourseContext(ctx),
       agents: agentsText,
+      sourceEvidence: sourceEvidence || 'No source evidence provided.',
     });
 
     if (!prompts) {
@@ -1539,6 +1701,7 @@ export async function generateSceneActions(
       designIdea: config?.designIdea || '',
       courseContext: buildCourseContext(ctx),
       agents: agentsText,
+      sourceEvidence: sourceEvidence || 'No source evidence provided.',
     });
 
     if (!prompts) {

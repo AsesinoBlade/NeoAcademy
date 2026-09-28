@@ -65,8 +65,13 @@ export interface GenerationCallbacks {
   onError?: (error: string) => void;
 }
 
+export type AICallOptions = {
+  tokenProfile?: 'default' | 'interactive-html';
+};
+
 export type AICallFn = (
   systemPrompt: string,
   userPrompt: string,
   images?: Array<{ id: string; src: string }>,
+  options?: AICallOptions,
 ) => Promise<string>;

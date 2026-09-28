@@ -11,6 +11,22 @@ import type { MediaGenerationRequest } from '@/lib/media/types';
 // ==================== PDF Image Types ====================
 
 /**
+ * Normalized region within an image.
+ *
+ * x/y are the top-left corner and width/height are the region size,
+ * all expressed from 0.0 to 1.0 relative to the original image bounds.
+ */
+export interface VisualRegion {
+  label: string;
+  description?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence?: number;
+}
+
+/**
  * Image extracted from PDF with metadata
  */
 export interface PdfImage {
@@ -21,6 +37,7 @@ export interface PdfImage {
   storageId?: string; // Reference to IndexedDB (session_xxx_img_1)
   width?: number; // Image width (px or normalized)
   height?: number; // Image height (px or normalized)
+  visualRegions?: VisualRegion[]; // Spatially grounded visible regions
 }
 
 /**

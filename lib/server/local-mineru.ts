@@ -14,7 +14,7 @@ import sharp from 'sharp';
 
 import { createLogger } from '@/lib/logger';
 import type { ParsedPdfContent } from '@/lib/types/pdf';
-import { unloadLocalLlm } from '@/lib/server/local-llm';
+import { unloadAllLocalOllamaModels } from '@/lib/server/local-llm';
 
 const log = createLogger('Local MinerU');
 
@@ -129,8 +129,7 @@ async function runMinerU(
     ...inputPaths,
     '--tier',
     getMinerUTier(),
-    '--pages',
-    'all',
+
     '--format',
     'zip',
     '--output',
@@ -845,10 +844,26 @@ export async function parseLocalMinerUBatch(
           index + 1,
         ).padStart(3, '0')}`;
 
+      const originalExtension =
+        path.extname(
+          input.fileName,
+        ).toLowerCase();
+
+      const supportedExtension =
+        [
+          '.pdf',
+          '.jpg',
+          '.jpeg',
+          '.png',
+          '.webp',
+        ].includes(originalExtension)
+          ? originalExtension
+          : '.pdf';
+
       const inputPath =
         path.join(
           inputDir,
-          `${stem}.pdf`,
+          `${stem}${supportedExtension}`,
         );
 
       const zipPath =
@@ -870,15 +885,15 @@ export async function parseLocalMinerUBatch(
     }
 
     log.info(
-      '[MinerU] Unloading local LLM before batch parse',
+      '[MinerU] Unloading all resident Ollama models before batch parse',
     );
 
     const unloadResult =
-      await unloadLocalLlm();
+      await unloadAllLocalOllamaModels();
 
     if (!unloadResult.success) {
       throw new Error(
-        'Failed to unload local LLM before MinerU: ' +
+        'Failed to unload resident Ollama models before MinerU: ' +
           (unloadResult.message ??
             'unknown error'),
       );

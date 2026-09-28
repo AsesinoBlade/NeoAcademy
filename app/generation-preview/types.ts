@@ -27,6 +27,7 @@ export interface GenerationSessionState {
   pdfDocuments?: Array<{
     storageKey: string;
     fileName: string;
+    mimeType?: string;
   }>;
   pdfStorageKey?: string;
   pdfFileName?: string;

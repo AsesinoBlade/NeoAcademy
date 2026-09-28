@@ -1,3 +1,5 @@
+import type { VisualRegion } from './generation';
+
 /**
  * Generalized source-document representation.
  *
@@ -73,6 +75,11 @@ export interface SourceAsset {
   pageNumber?: number;
   width?: number;
   height?: number;
+
+  /**
+   * Spatially grounded visible regions normalized to this image's bounds.
+   */
+  visualRegions?: VisualRegion[];
 }
 
 export interface DocumentDigest {

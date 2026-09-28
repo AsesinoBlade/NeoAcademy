@@ -38,6 +38,7 @@ export async function POST(req: NextRequest) {
       outline,
       allOutlines,
       content,
+      sourceEvidence,
       stageId,
       agents,
       previousSpeeches: incomingPreviousSpeeches,
@@ -50,6 +51,7 @@ export async function POST(req: NextRequest) {
         | GeneratedQuizContent
         | GeneratedInteractiveContent
         | GeneratedPBLContent;
+      sourceEvidence?: string;
       stageId: string;
       agents?: AgentInfo[];
       previousSpeeches?: string[];
@@ -128,7 +130,15 @@ export async function POST(req: NextRequest) {
     // ── Generate actions ──
     log.info(`Generating actions: "${outline.title}" (${outline.type}) [model=${modelString}]`);
 
-    const actions = await generateSceneActions(outline, content, aiCall, ctx, agents, userProfile);
+    const actions = await generateSceneActions(
+      outline,
+      content,
+      aiCall,
+      ctx,
+      agents,
+      userProfile,
+      sourceEvidence,
+    );
 
     log.info(`Generated ${actions.length} actions for: "${outline.title}"`);
 

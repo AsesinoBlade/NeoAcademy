@@ -146,32 +146,58 @@ export async function getImageStorageSize(): Promise<number> {
 }
 
 /**
- * Store a PDF file as a Blob in IndexedDB.
- * Returns a storage key that can be used to retrieve the blob later.
+ * Store an uploaded source file as a Blob in IndexedDB.
+ * Returns a storage key that can be used to retrieve it later.
  */
-export async function storePdfBlob(file: File): Promise<string> {
-  const storageKey = `pdf_${nanoid(10)}`;
-  const blob = new Blob([await file.arrayBuffer()], {
-    type: file.type || 'application/pdf',
-  });
+export async function storeSourceBlob(
+  file: File,
+): Promise<string> {
+  const storageKey =
+    `source_${nanoid(10)}`;
+
+  const blob = new Blob(
+    [await file.arrayBuffer()],
+    {
+      type:
+        file.type ||
+        'application/octet-stream',
+    },
+  );
 
   const record: ImageFileRecord = {
     id: storageKey,
     blob,
     filename: file.name,
-    mimeType: file.type || 'application/pdf',
+    mimeType:
+      file.type ||
+      'application/octet-stream',
     size: blob.size,
     createdAt: Date.now(),
   };
 
   await db.imageFiles.put(record);
+
   return storageKey;
 }
 
 /**
- * Load a PDF Blob from IndexedDB by its storage key.
+ * Load a stored source Blob from IndexedDB.
  */
-export async function loadPdfBlob(key: string): Promise<Blob | null> {
-  const record = await db.imageFiles.get(key);
+export async function loadSourceBlob(
+  key: string,
+): Promise<Blob | null> {
+  const record =
+    await db.imageFiles.get(key);
+
   return record?.blob ?? null;
 }
+
+/*
+ * Backward-compatible PDF aliases while the rest of the
+ * generation pipeline migrates to generalized source naming.
+ */
+export const storePdfBlob =
+  storeSourceBlob;
+
+export const loadPdfBlob =
+  loadSourceBlob;

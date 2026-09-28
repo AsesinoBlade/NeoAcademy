@@ -10,7 +10,8 @@ export const generationZhCN = {
     delete: '删除',
   },
   upload: {
-    pdfSizeLimit: '支持最大50MB的PDF文件',
+    pdfSizeLimit: '每个PDF资料来源最大50MB',
+    sourceSizeLimit: 'PDF、JPG、PNG和WebP资料来源，每个最大50MB',
     generateFailed: '生成课堂失败，请重试',
     requirementPlaceholder:
       '输入你想学的任何内容，例如：\n「从零学 Python，30 分钟写出第一个程序」\n「用白板给我讲解傅里叶变换」\n「阿瓦隆桌游怎么玩」',
@@ -19,8 +20,8 @@ export const generationZhCN = {
   },
   generation: {
     // Progress steps (used dynamically via activeStep)
-    analyzingPdf: '解析 PDF 文档',
-    analyzingPdfDesc: '正在提取文档结构和内容...',
+    analyzingPdf: '分析资料来源',
+    analyzingPdfDesc: '正在提取资料来源的结构和内容...',
     generatingOutlines: '生成课程大纲',
     generatingOutlinesDesc: '正在构建学习路径...',
     generatingSlideContent: '生成页面内容',
@@ -74,7 +75,8 @@ export const generationEnUS = {
     delete: 'Delete',
   },
   upload: {
-    pdfSizeLimit: 'Supports PDF files up to 50MB',
+    pdfSizeLimit: 'PDF sources up to 50MB each',
+    sourceSizeLimit: 'PDF, JPG, PNG, and WebP sources up to 50MB each',
     generateFailed: 'Failed to generate classroom, please try again',
     requirementPlaceholder:
       'Tell me anything you want to learn, e.g.\n"Teach me Python from scratch in 30 minutes"\n"Explain Fourier Transform on the whiteboard"\n"How to play the board game Avalon"',
@@ -83,8 +85,8 @@ export const generationEnUS = {
   },
   generation: {
     // Progress steps (used dynamically via activeStep)
-    analyzingPdf: 'Analyzing PDF Document',
-    analyzingPdfDesc: 'Extracting document structure and content...',
+    analyzingPdf: 'Analyzing Sources',
+    analyzingPdfDesc: 'Extracting source structure and content...',
     generatingOutlines: 'Drafting Course Outline',
     generatingOutlinesDesc: 'Structuring the learning path...',
     generatingSlideContent: 'Generating Page Content',

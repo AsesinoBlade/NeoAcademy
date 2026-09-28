@@ -27,7 +27,7 @@ import { GenerationToolbar } from '@/components/generation/generation-toolbar';
 import { AgentBar } from '@/components/agent/agent-bar';
 import { useTheme } from '@/lib/hooks/use-theme';
 import { nanoid } from 'nanoid';
-import { storePdfBlob } from '@/lib/utils/image-storage';
+import { storeSourceBlob } from '@/lib/utils/image-storage';
 import type { UserRequirements } from '@/lib/types/generation';
 import { signOut } from '@/lib/auth/client';
 import { useSettingsStore } from '@/lib/store/settings';
@@ -249,6 +249,7 @@ function HomePage() {
         | Array<{
             storageKey: string;
             fileName: string;
+            mimeType?: string;
           }>
         | undefined;
       let pdfProviderId: string | undefined;
@@ -259,8 +260,16 @@ function HomePage() {
       if (form.pdfFiles.length > 0) {
         pdfDocuments = await Promise.all(
           form.pdfFiles.map(async (file) => ({
-            storageKey: await storePdfBlob(file),
+            storageKey:
+              await storeSourceBlob(file),
             fileName: file.name,
+            mimeType:
+              file.type ||
+              (file.name
+                .toLowerCase()
+                .endsWith('.pdf')
+                ? 'application/pdf'
+                : 'application/octet-stream'),
           })),
         );
 

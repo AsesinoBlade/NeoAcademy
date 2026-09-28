@@ -30,6 +30,8 @@ export async function POST(req: NextRequest) {
       outline: rawOutline,
       allOutlines,
       pdfImages,
+      sourceEvidence,
+      classRequirement,
       imageMapping,
       stageInfo,
       stageId,
@@ -38,6 +40,8 @@ export async function POST(req: NextRequest) {
       outline: SceneOutline;
       allOutlines: SceneOutline[];
       pdfImages?: PdfImage[];
+      sourceEvidence?: string;
+      classRequirement?: string;
       imageMapping?: ImageMapping;
       stageInfo: {
         name: string;
@@ -81,18 +85,25 @@ export async function POST(req: NextRequest) {
       10,
     );
 
+    const configuredInteractiveHtmlOutputTokens = Number.parseInt(
+      process.env.INTERACTIVE_HTML_MAX_OUTPUT_TOKENS || '32768',
+      10,
+    );
     const maxSceneOutputTokens = Math.min(
       modelInfo?.outputWindow ?? configuredSceneOutputTokens,
       configuredSceneOutputTokens,
     );
 
-    const logTokenUsage = (result: {
-      usage?: {
-        inputTokens?: number;
-        outputTokens?: number;
-        totalTokens?: number;
-      };
-    }) => {
+    const logTokenUsage = (
+      result: {
+        usage?: {
+          inputTokens?: number;
+          outputTokens?: number;
+          totalTokens?: number;
+        };
+      },
+      maxOutputTokens: number,
+    ) => {
       const outputTokens = result.usage?.outputTokens;
       const inputTokens = result.usage?.inputTokens;
       const totalTokens = result.usage?.totalTokens;
@@ -102,10 +113,10 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      const percent = ((outputTokens / maxSceneOutputTokens) * 100).toFixed(1);
+      const percent = ((outputTokens / maxOutputTokens) * 100).toFixed(1);
 
       log.info(
-        `Scene content tokens: output=${outputTokens}/${maxSceneOutputTokens} (${percent}%), input=${inputTokens ?? 'unknown'}, total=${totalTokens ?? 'unknown'}`,
+        `Scene content tokens: output=${outputTokens}/${maxOutputTokens} (${percent}%), input=${inputTokens ?? 'unknown'}, total=${totalTokens ?? 'unknown'}`,
       );
     };
 
@@ -114,7 +125,19 @@ export async function POST(req: NextRequest) {
       systemPrompt: string,
       userPrompt: string,
       images?: Array<{ id: string; src: string }>,
+      options?: {
+        tokenProfile?: 'default' | 'interactive-html';
+      },
     ): Promise<string> => {
+      const configuredOutputTokens =
+        options?.tokenProfile === 'interactive-html'
+          ? configuredInteractiveHtmlOutputTokens
+          : configuredSceneOutputTokens;
+
+      const maxOutputTokens = Math.min(
+        modelInfo?.outputWindow ?? configuredOutputTokens,
+        configuredOutputTokens,
+      );
       if (images?.length && hasVision) {
         const result = await callLLM(
           {
@@ -126,11 +149,11 @@ export async function POST(req: NextRequest) {
                 content: buildVisionUserContent(userPrompt, images),
               },
             ],
-            maxOutputTokens: maxSceneOutputTokens,
+            maxOutputTokens: maxOutputTokens,
           },
           'scene-content',
         );
-        logTokenUsage(result);
+        logTokenUsage(result, maxOutputTokens);
         return result.text;
       }
       const result = await callLLM(
@@ -138,11 +161,11 @@ export async function POST(req: NextRequest) {
           model: languageModel,
           system: systemPrompt,
           prompt: userPrompt,
-          maxOutputTokens: maxSceneOutputTokens,
+          maxOutputTokens: maxOutputTokens,
         },
         'scene-content',
       );
-      logTokenUsage(result);
+      logTokenUsage(result, maxOutputTokens);
       return result.text;
     };
 
@@ -151,14 +174,48 @@ export async function POST(req: NextRequest) {
 
     // ── Filter images assigned to this outline ──
     let assignedImages: PdfImage[] | undefined;
-    if (
-      pdfImages &&
-      pdfImages.length > 0 &&
-      effectiveOutline.suggestedImageIds &&
-      effectiveOutline.suggestedImageIds.length > 0
-    ) {
-      const suggestedIds = new Set(effectiveOutline.suggestedImageIds);
-      assignedImages = pdfImages.filter((img) => suggestedIds.has(img.id));
+
+    if (pdfImages && pdfImages.length > 0) {
+      const assignedImageIds = new Set(
+        effectiveOutline.suggestedImageIds || [],
+      );
+
+      // Interactive outlines occasionally reference an image explicitly in
+      // interactiveConfig but omit suggestedImageIds. Recover those explicit
+      // logical image references deterministically so image assignment does
+      // not depend on the model emitting redundant metadata correctly.
+      if (effectiveOutline.type === 'interactive') {
+        const interactiveReferenceText = [
+          effectiveOutline.description || '',
+          ...(effectiveOutline.keyPoints || []),
+          effectiveOutline.interactiveConfig?.conceptName || '',
+          effectiveOutline.interactiveConfig?.conceptOverview || '',
+          effectiveOutline.interactiveConfig?.designIdea || '',
+        ].join('\n');
+
+        const referencedImageIds =
+          interactiveReferenceText.match(/\bimg_\d+\b/g) || [];
+
+        for (const imageId of referencedImageIds) {
+          assignedImageIds.add(imageId);
+        }
+      }
+
+      if (assignedImageIds.size > 0) {
+        assignedImages = pdfImages.filter((img) =>
+          assignedImageIds.has(img.id),
+        );
+
+        if (
+          effectiveOutline.type === 'interactive' &&
+          assignedImages.length > 0
+        ) {
+          log.info(
+            `Interactive source images assigned: ` +
+              assignedImages.map((img) => img.id).join(', '),
+          );
+        }
+      }
     }
 
     // ── Media generation is handled client-side in parallel (media-orchestrator.ts) ──
@@ -180,6 +237,8 @@ export async function POST(req: NextRequest) {
       hasVision,
       generatedMediaMapping,
       agents,
+      sourceEvidence,
+      classRequirement,
     );
 
     if (!content) {

@@ -1,3 +1,5 @@
+import type { VisualRegion } from './generation';
+
 /**
  * PDF parsing result types
  * Extended to support advanced features from providers like MinerU
@@ -53,6 +55,7 @@ export interface ParsedPdfContent {
       description?: string;
       width?: number;
       height?: number;
+      visualRegions?: VisualRegion[];
     }>;
     [key: string]: unknown;
   };

@@ -88,14 +88,24 @@ export function sourceDocumentFromParsedPdf(
     pageNumber: image.pageNumber,
     width: image.width,
     height: image.height,
+    visualRegions: image.visualRegions,
   }));
+
+  const mimeType =
+    options.mimeType ??
+    'application/pdf';
+
+  const sourceType =
+    mimeType.startsWith('image/')
+      ? 'image'
+      : 'pdf';
 
   return {
     id: options.id,
 
     fileName: options.fileName,
-    mimeType: options.mimeType ?? 'application/pdf',
-    sourceType: 'pdf',
+    mimeType,
+    sourceType,
 
     content: parsed.text ?? '',
 
