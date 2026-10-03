@@ -275,7 +275,7 @@ const getDefaultAudioConfig = () => ({
 
 // Initialize default PDF config
 const getDefaultPDFConfig = () => ({
-  pdfProviderId: 'unpdf' as PDFProviderId,
+  pdfProviderId: 'mineru' as PDFProviderId,
   pdfProvidersConfig: {
     unpdf: { apiKey: '', baseUrl: '', enabled: true },
     // mineru: { apiKey: '', baseUrl: '', enabled: false },

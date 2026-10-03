@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { Bot, Check, ChevronLeft, Globe, Paperclip, FileText, X, Globe2 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
@@ -63,6 +63,14 @@ export function GenerationToolbar({
   const setWebSearchProvider = useSettingsStore((s) => s.setWebSearchProvider);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Default the front-page source parser to MinerU even when an
+  // older persisted browser setting still points to another parser.
+  useEffect(() => {
+    if (pdfProviderId !== 'mineru') {
+      setPDFProvider('mineru');
+    }
+  }, [pdfProviderId, setPDFProvider]);
 
   // Check if the selected web search provider has a valid config (API key or server-configured)
   const webSearchProvider = WEB_SEARCH_PROVIDERS[webSearchProviderId];
