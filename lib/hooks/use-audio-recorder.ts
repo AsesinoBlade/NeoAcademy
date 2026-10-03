@@ -30,10 +30,13 @@ declare global {
 export interface UseAudioRecorderOptions {
   onTranscription?: (text: string) => void;
   onError?: (error: string) => void;
+  languageOverride?: string;
 }
 
 export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
-  const { onTranscription, onError } = options;
+  const { onTranscription, onError, languageOverride } = options;
+  const languageOverrideRef = useRef(languageOverride);
+  languageOverrideRef.current = languageOverride;
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -61,7 +64,16 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
           const { asrProviderId, asrLanguage, asrProvidersConfig } = useSettingsStore.getState();
 
           formData.append('providerId', asrProviderId);
-          formData.append('language', asrLanguage);
+
+          const classroomLanguage = languageOverrideRef.current;
+          const effectiveLanguage =
+            classroomLanguage === 'en-US'
+              ? 'en'
+              : classroomLanguage === 'zh-CN'
+                ? 'zh'
+                : classroomLanguage || asrLanguage;
+
+          formData.append('language', effectiveLanguage);
 
           // Append API key and base URL if configured
           const providerConfig = asrProvidersConfig?.[asrProviderId];
@@ -119,7 +131,7 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
           const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
           const recognition = new SpeechRecognition();
 
-          recognition.lang = asrLanguage || 'zh-CN';
+          recognition.lang = languageOverrideRef.current || asrLanguage || 'zh-CN';
           recognition.continuous = false;
           recognition.interimResults = false;
 

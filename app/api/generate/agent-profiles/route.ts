@@ -10,7 +10,7 @@ import { nanoid } from 'nanoid';
 import { callLLM } from '@/lib/ai/llm';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
+import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
 
 const log = createLogger('Agent Profiles API');
 
@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Model resolution from request headers ──
-    const { model: languageModel, modelString } = resolveModelFromHeaders(req);
+    const { model: languageModel, modelString } = resolveGenerationModelFromHeaders(req);
 
     // ── Build prompt ──
     const sceneSummary = sceneOutlines?.length

@@ -291,6 +291,24 @@ export interface VideoGenerationResult {
 // Shared / Cross-cutting Types
 // ============================================================================
 
+export interface MediaAnnotationFeature {
+  /** Stable identifier used to match localization results */
+  id: string;
+  /** Canonical learner-facing label; the image model must not rewrite it */
+  label: string;
+  /** Optional canonical explanation rendered by NeoAcademy */
+  description?: string;
+}
+
+export interface MediaAnnotationRequest {
+  /**
+   * Diagram annotations are rendered as native NeoAcademy elements after
+   * the finished image has been localized by the vision model.
+   */
+  mode: 'diagram';
+  features: MediaAnnotationFeature[];
+}
+
 /**
  * Media Generation Request
  *
@@ -328,6 +346,12 @@ export interface MediaGenerationRequest {
   aspectRatio?: '16:9' | '4:3' | '1:1' | '9:16';
   /** Optional artistic style hint */
   style?: string;
+
+  /**
+   * Optional structured annotation plan for an educational image.
+   * The image itself should contain no baked-in instructional labels.
+   */
+  annotationRequest?: MediaAnnotationRequest;
 }
 
 /**

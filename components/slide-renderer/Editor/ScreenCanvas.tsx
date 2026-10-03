@@ -16,14 +16,75 @@ import { useRef, useMemo } from 'react';
 import { AnimatePresence } from 'motion/react';
 
 export function ScreenCanvas() {
+  const allowSlideOverflow =
+    process.env.NEXT_PUBLIC_SLIDE_ALLOW_OVERFLOW === 'true';
   const canvasScale = useCanvasStore.use.canvasScale();
   const elements = useSceneSelector<SlideContent, PPTElement[]>(
     (content) => content.canvas.elements,
   );
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  const maxElementBottom = useMemo(
+    () =>
+      elements.reduce((maxBottom, element) => {
+        const geometry =
+          element as {
+            top?: number;
+            height?: number;
+          };
+
+        const top =
+          typeof geometry.top === 'number' &&
+          Number.isFinite(geometry.top)
+            ? geometry.top
+            : 0;
+
+        const height =
+          typeof geometry.height === 'number' &&
+          Number.isFinite(geometry.height)
+            ? geometry.height
+            : 0;
+
+        return Math.max(
+          maxBottom,
+          top + height,
+        );
+      }, 562.5),
+    [elements],
+  );
+
   // Viewport size and positioning
   const { viewportStyles } = useViewportSize(canvasRef);
+
+  const overflowScrollHeight = useMemo(() => {
+    const logicalSlideHeight = 562.5;
+
+    const renderedSlideHeight =
+      viewportStyles.height *
+      canvasScale;
+
+    const overflowRatio =
+      Math.max(
+        1,
+        maxElementBottom /
+          logicalSlideHeight,
+      );
+
+    return (
+      Math.max(
+        0,
+        viewportStyles.top,
+      ) +
+      renderedSlideHeight *
+        overflowRatio +
+      24
+    );
+  }, [
+    canvasScale,
+    maxElementBottom,
+    viewportStyles.height,
+    viewportStyles.top,
+  ]);
 
   // Get background style
   const background = useSceneSelector<SlideContent, SlideBackground | undefined>(
@@ -59,9 +120,30 @@ export function ScreenCanvas() {
   }, [zoomTarget, elements]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden select-none" ref={canvasRef}>
+    <div
+      className={`relative h-full w-full ${
+        allowSlideOverflow
+          ? 'overflow-y-auto overflow-x-hidden'
+          : 'overflow-hidden'
+      } select-none`}
+      ref={canvasRef}
+    >
+      {allowSlideOverflow && (
+        <div
+          data-slide-overflow-spacer
+          aria-hidden="true"
+          className="pointer-events-none w-px shrink-0"
+          style={{
+            height: `${overflowScrollHeight}px`,
+          }}
+        />
+      )}
       <div
-        className="absolute shadow-[0_0_0_1px_rgba(0,0,0,0.01),0_0_12px_0_rgba(0,0,0,0.1)] rounded-lg overflow-hidden transition-transform duration-700"
+        className={`absolute shadow-[0_0_0_1px_rgba(0,0,0,0.01),0_0_12px_0_rgba(0,0,0,0.1)] rounded-lg transition-transform duration-700 ${
+          allowSlideOverflow
+          ? 'overflow-y-auto overflow-x-hidden'
+          : 'overflow-hidden'
+        }`}
         style={{
           width: `${viewportStyles.width * canvasScale}px`,
           height: `${viewportStyles.height * canvasScale}px`,

@@ -2,13 +2,16 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ArrowUp,
+  AlertCircle,
   Check,
   ChevronDown,
   Clock,
   Copy,
+  FileText,
   ImagePlus,
   Pencil,
   Trash2,
@@ -35,6 +38,7 @@ import { useUserProfileStore, AVATAR_OPTIONS } from '@/lib/store/user-profile';
 import {
   StageListItem,
   listStages,
+  loadStageData,
   deleteStageData,
   getFirstSlideByStages,
 } from '@/lib/utils/stage-storage';
@@ -51,6 +55,19 @@ const log = createLogger('Home');
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
+
+type ClassroomHistoryStatus =
+  | 'generating'
+  | 'completed'
+  | 'failed';
+
+interface ClassroomHistoryItem
+  extends StageListItem {
+  status?: ClassroomHistoryStatus;
+  error?: string;
+  requirement?: string;
+  thumbnail?: Slide;
+}
 
 interface FormState {
   pdfFiles: File[];
@@ -140,7 +157,8 @@ function HomePage() {
 
   const [themeOpen, setThemeOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
+  const [classrooms, setClassrooms] =
+    useState<ClassroomHistoryItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -160,13 +178,128 @@ function HomePage() {
 
   const loadClassrooms = async () => {
     try {
-      const list = await listStages();
-      setClassrooms(list);
-      // Load first slide thumbnails
-      if (list.length > 0) {
-        const slides = await getFirstSlideByStages(list.map((c) => c.id));
-        setThumbnails(slides);
+      const localList = await listStages();
+
+      let serverList: ClassroomHistoryItem[] = [];
+
+      try {
+        const response = await fetch('/api/classroom', {
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Classroom history request failed (${response.status})`,
+          );
+        }
+
+        const data = (await response.json()) as {
+          success?: boolean;
+          classrooms?: ClassroomHistoryItem[];
+        };
+
+        if (!data.success) {
+          throw new Error(
+            'Classroom history request was not successful',
+          );
+        }
+
+        serverList = data.classrooms || [];
+      } catch (serverError) {
+        log.warn(
+          'Failed to load server classroom history; using local cache:',
+          serverError,
+        );
       }
+
+      const serverIds = new Set(
+        serverList.map((item) => item.id),
+      );
+
+      // One-time migration path for classrooms created before durable
+      // server history was enabled.
+      for (const localItem of localList) {
+        if (serverIds.has(localItem.id)) {
+          continue;
+        }
+
+        const localData = await loadStageData(localItem.id);
+
+        if (!localData) {
+          continue;
+        }
+
+        try {
+          const migrateResponse = await fetch('/api/classroom', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              stage: localData.stage,
+              scenes: localData.scenes,
+              currentSceneId: localData.currentSceneId,
+              chats: localData.chats,
+              status: 'completed',
+            }),
+          });
+
+          if (migrateResponse.ok) {
+            serverIds.add(localItem.id);
+            serverList.push({
+              ...localItem,
+              status: 'completed',
+            });
+          }
+        } catch (migrationError) {
+          log.warn(
+            `Failed to migrate classroom ${localItem.id} to durable storage:`,
+            migrationError,
+          );
+        }
+      }
+
+      const merged =
+        new Map<string, ClassroomHistoryItem>();
+
+      for (const item of serverList) {
+        merged.set(item.id, item);
+      }
+
+      for (const item of localList) {
+        if (!merged.has(item.id)) {
+          merged.set(item.id, {
+            ...item,
+            status: 'completed',
+          });
+        }
+      }
+
+      const list = Array.from(merged.values()).sort(
+        (a, b) => b.updatedAt - a.updatedAt,
+      );
+
+      setClassrooms(list);
+
+      const localSlides =
+        localList.length > 0
+          ? await getFirstSlideByStages(
+              localList.map((item) => item.id),
+            )
+          : {};
+
+      const serverSlides: Record<string, Slide> = {};
+
+      for (const item of serverList) {
+        if (item.thumbnail) {
+          serverSlides[item.id] = item.thumbnail;
+        }
+      }
+
+      setThumbnails({
+        ...serverSlides,
+        ...localSlides,
+      });
     } catch (err) {
       log.error('Failed to load classrooms:', err);
     }
@@ -192,8 +325,11 @@ function HomePage() {
     setPendingDeleteId(null);
 
     try {
-      const [videoCleanupResponse, imageCleanupResponse] =
-        await Promise.all([
+      const [
+        videoCleanupResponse,
+        imageCleanupResponse,
+        classroomDeleteResponse,
+      ] = await Promise.all([
           fetch('/api/generate/video/long/cleanup', {
             method: 'POST',
             headers: {
@@ -212,6 +348,12 @@ function HomePage() {
               stageId: id,
             }),
           }),
+          fetch(
+            `/api/classroom?id=${encodeURIComponent(id)}`,
+            {
+              method: 'DELETE',
+            },
+          ),
         ]);
 
       if (!videoCleanupResponse.ok) {
@@ -223,6 +365,12 @@ function HomePage() {
       if (!imageCleanupResponse.ok) {
         throw new Error(
           `Failed to clean image files (${imageCleanupResponse.status})`,
+        );
+      }
+
+      if (!classroomDeleteResponse.ok) {
+        throw new Error(
+          `Failed to delete durable classroom (${classroomDeleteResponse.status})`,
         );
       }
 
@@ -634,7 +782,14 @@ function HomePage() {
                         confirmingDelete={pendingDeleteId === classroom.id}
                         onConfirmDelete={() => confirmDelete(classroom.id)}
                         onCancelDelete={() => setPendingDeleteId(null)}
-                        onClick={() => router.push(`/classroom/${classroom.id}`)}
+                        onClick={() => {
+                          if (
+                            classroom.status === 'completed' ||
+                            !classroom.status
+                          ) {
+                            router.push(`/classroom/${classroom.id}`);
+                          }
+                        }}
                       />
                     </motion.div>
                   ))}
@@ -954,7 +1109,7 @@ function ClassroomCard({
   onCancelDelete,
   onClick,
 }: {
-  classroom: StageListItem;
+  classroom: ClassroomHistoryItem;
   slide?: Slide;
   formatDate: (ts: number) => string;
   onDelete: (id: string, e: React.MouseEvent) => void;
@@ -964,7 +1119,74 @@ function ClassroomCard({
   onClick: () => void;
 }) {
   const { t } = useI18n();
+  const isFailed = classroom.status === 'failed';
+  const isGenerating = classroom.status === 'generating';
+  const [failureLogOpen, setFailureLogOpen] = useState(false);
+  const [failureLogText, setFailureLogText] = useState('');
+  const [failureLogLoading, setFailureLogLoading] = useState(false);
   const thumbRef = useRef<HTMLDivElement>(null);
+
+  const loadFailureLog = async () => {
+    if (failureLogText) {
+      return failureLogText;
+    }
+
+    setFailureLogLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/classroom/log?id=${encodeURIComponent(classroom.id)}`,
+        {
+          cache: 'no-store',
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          response.status === 404
+            ? 'No failure log was found for this classroom.'
+            : `Failed to load failure log (${response.status})`,
+        );
+      }
+
+      const logText = await response.text();
+      setFailureLogText(logText);
+      return logText;
+    } finally {
+      setFailureLogLoading(false);
+    }
+  };
+
+  const handleViewFailureLog = async (
+    event: React.MouseEvent,
+  ) => {
+    event.stopPropagation();
+    setFailureLogOpen(true);
+
+    try {
+      await loadFailureLog();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Failed to load classroom failure log',
+      );
+    }
+  };
+
+  const handleCopyFailureLog = async () => {
+    try {
+      const logText = await loadFailureLog();
+      await navigator.clipboard.writeText(logText);
+      toast.success('Failure log copied');
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Failed to copy classroom failure log',
+      );
+    }
+  };
   const [thumbWidth, setThumbWidth] = useState(0);
 
   useEffect(() => {
@@ -984,7 +1206,29 @@ function ClassroomCard({
         ref={thumbRef}
         className="relative w-full aspect-[16/9] rounded-2xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
       >
-        {slide && thumbWidth > 0 ? (
+        {isFailed ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-50 dark:bg-red-950/20 px-4 text-center">
+            <AlertCircle className="size-8 text-red-500" />
+            <span className="text-xs font-semibold text-red-600 dark:text-red-400">
+              Failed
+            </span>
+            {classroom.error && (
+              <span
+                className="text-[10px] leading-snug text-red-500/80 line-clamp-3"
+                title={classroom.error}
+              >
+                {classroom.error}
+              </span>
+            )}
+          </div>
+        ) : isGenerating ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-amber-50 dark:bg-amber-950/20">
+            <Clock className="size-8 text-amber-500 animate-pulse" />
+            <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+              Generating
+            </span>
+          </div>
+        ) : slide && thumbWidth > 0 ? (
           <ThumbnailSlide
             slide={slide}
             size={thumbWidth}
@@ -1023,6 +1267,29 @@ function ClassroomCard({
           )}
         </AnimatePresence>
 
+        {isFailed && !confirmingDelete && (
+          <div
+            className="absolute top-2 left-2 z-[6]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 rounded-full bg-black/45 hover:bg-black/65 text-white hover:text-white backdrop-blur-sm"
+                  onClick={handleViewFailureLog}
+                  aria-label="View failure log"
+                >
+                  <FileText className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                View failure log
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
         {/* Inline delete confirmation overlay */}
         <AnimatePresence>
           {confirmingDelete && (
@@ -1056,10 +1323,109 @@ function ClassroomCard({
         </AnimatePresence>
       </div>
 
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {failureLogOpen && (
+              <motion.div
+                className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setFailureLogOpen(false);
+                }}
+              >
+                <motion.div
+                  className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+                  initial={{ opacity: 0, scale: 0.97, y: 8 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.97, y: 8 }}
+                  transition={{ duration: 0.15 }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <FileText className="size-4 shrink-0 text-red-500" />
+                        <h3 className="font-semibold">
+                          NeoAcademy failure log
+                        </h3>
+                      </div>
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {classroom.name}
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          failureLogLoading ||
+                          !failureLogText
+                        }
+                        onClick={() => {
+                          void handleCopyFailureLog();
+                        }}
+                      >
+                        <Copy className="mr-1.5 size-3.5" />
+                        Copy log
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          setFailureLogOpen(false)
+                        }
+                      >
+                        Close
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-auto bg-muted/30 p-4">
+                    {failureLogLoading ? (
+                      <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
+                        Loading failure log...
+                      </div>
+                    ) : failureLogText ? (
+                      <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                        {failureLogText}
+                      </pre>
+                    ) : (
+                      <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
+                        No failure log is available.
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
+        )}
       {/* Info — outside the thumbnail */}
       <div className="mt-2.5 px-1 flex items-center gap-2">
-        <span className="shrink-0 inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
-          {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
+        <span
+          className={cn(
+            'shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium',
+            isFailed
+              ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'
+              : isGenerating
+                ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                : 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400',
+          )}
+        >
+          {isFailed
+            ? 'Failed'
+            : isGenerating
+              ? 'Generating'
+              : `${classroom.sceneCount} ${t('classroom.slides')}`}
+          {' Â· '}
+          {formatDate(classroom.updatedAt)}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>

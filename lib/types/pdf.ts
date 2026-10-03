@@ -35,6 +35,13 @@ export interface ParsedPdfContent {
     type: 'title' | 'text' | 'image' | 'table' | 'formula';
     content: string;
     position?: { x: number; y: number; width: number; height: number };
+
+    /**
+     * Optional generalized source-location metadata.
+     * Used by non-PDF compatibility parsers such as XLSX.
+     */
+    sheetName?: string;
+    cellRange?: string;
   }>;
 
   /** Metadata about the PDF */

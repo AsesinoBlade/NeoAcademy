@@ -245,20 +245,27 @@ export async function getLocalSpeechServicesStatus() {
 }
 
 export async function startLocalSpeechServices() {
-  if (!dockerDesktopIsRunning()) {
-    await execFileAsync('docker', ['desktop', 'start']);
-    await waitForDockerDesktop(true);
-    writeManagedDockerState();
-  } else if (readManagedDockerState()) {
-    // Docker is already running and was previously started by NeoAcademy.
-    // Keep the ownership marker.
-  } else {
-    // Docker was already running before NeoAcademy needed it.
-    // Do not claim ownership.
-    clearManagedDockerState();
-  }
+  // The Docker engine is the authoritative readiness check. On some Windows /
+  // Docker Desktop versions, `docker desktop status` may report "stopped" even
+  // while the Linux engine is fully reachable through `docker info`.
+  //
+  // If the engine already works, do not waste 120 seconds waiting for the
+  // Desktop CLI status to change — proceed directly to the speech containers.
+  if (!dockerEngineIsReady()) {
+    if (!dockerDesktopIsRunning()) {
+      await execFileAsync('docker', ['desktop', 'start']);
+      await waitForDockerEngine();
+      writeManagedDockerState();
+    } else {
+      // Desktop reports running but the engine is not ready yet.
+      await waitForDockerEngine();
 
-  await waitForDockerEngine();
+      if (!readManagedDockerState()) {
+        // Docker was started outside NeoAcademy, so do not claim ownership.
+        clearManagedDockerState();
+      }
+    }
+  }
 
   await ensureContainer(KOKORO_CONTAINER);
   await ensureContainer(WHISPER_CONTAINER);
@@ -270,7 +277,7 @@ export async function startLocalSpeechServices() {
 
   return {
     success: true,
-    dockerDesktopRunning: true,
+    dockerDesktopRunning: dockerDesktopIsRunning(),
     dockerEngineReady: true,
     kokoroHealthy: true,
     whisperHealthy: true,

@@ -120,8 +120,36 @@ export function GenerationToolbar({
         lowerName.endsWith('.png') ||
         lowerName.endsWith('.webp');
 
+      const isDirectSource =
+        file.type === 'text/plain' ||
+        file.type === 'text/markdown' ||
+        file.type === 'application/json' ||
+        file.type === 'text/json' ||
+        file.type === 'application/xml' ||
+        file.type === 'text/xml' ||
+        file.type === 'text/csv' ||
+        lowerName.endsWith('.txt') ||
+        lowerName.endsWith('.md') ||
+        lowerName.endsWith('.markdown') ||
+        lowerName.endsWith('.json') ||
+        lowerName.endsWith('.xml') ||
+        lowerName.endsWith('.csv');
+
+      const isDocx =
+        file.type ===
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        lowerName.endsWith('.docx');
+
+      const isXlsx =
+        file.type ===
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        lowerName.endsWith('.xlsx');
+
       const supported =
         isPdf ||
+        isDirectSource ||
+        isDocx ||
+        isXlsx ||
         (mineruSelected && isImage);
 
       if (!supported) {
@@ -208,7 +236,7 @@ export function GenerationToolbar({
               <span className="max-w-[120px] truncate">
                 {pdfFiles.length === 1
                   ? pdfFiles[0].name
-                  : `${pdfFiles.length} PDFs`}
+                  : `${pdfFiles.length} sources`}
               </span>
               <span
                 role="button"
@@ -296,8 +324,8 @@ export function GenerationToolbar({
               className="hidden"
               accept={
                 pdfProviderId === 'mineru'
-                  ? '.pdf,.jpg,.jpeg,.png,.webp'
-                  : '.pdf'
+                  ? '.pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.markdown,.json,.xml,.csv,.docx,.xlsx'
+                  : '.pdf,.txt,.md,.markdown,.json,.xml,.csv,.docx,.xlsx'
               }
               multiple
               onChange={(e) => {
@@ -379,7 +407,7 @@ export function GenerationToolbar({
               <p className="text-xs font-medium">
                 {pdfFiles.length > 0
                   ? 'Add more sources'
-                  : t('toolbar.pdfUpload')}
+                  : 'Add sources'}
               </p>
 
               <p className="text-[10px] text-muted-foreground/60 mt-0.5">

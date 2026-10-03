@@ -129,8 +129,214 @@ function patchHtmlForIframe(html: string): string {
 })();
 </script>`;
 
+  // Generated image-inspection interactives may keep inactive evidence cards
+  // in the layout at opacity: 0. Invisible cards must not intercept hotspot
+  // clicks. The one visible evidence card is also kept inside its clipping
+  // visualization container.
+  const evidenceCardSafetyPatch = `<script data-evidence-card-safety-patch>
+(function () {
+  const CARD_SELECTOR = '.evidence-card';
+  const EDGE_PADDING = 8;
+
+  function findClippingAncestor(element) {
+    let current = element.parentElement;
+
+    while (current && current !== document.body) {
+      const style = getComputedStyle(current);
+
+      if (
+        style.overflow === 'hidden' ||
+        style.overflow === 'clip' ||
+        style.overflowX === 'hidden' ||
+        style.overflowX === 'clip' ||
+        style.overflowY === 'hidden' ||
+        style.overflowY === 'clip'
+      ) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function resetClamp(card) {
+    if (card.dataset.neoEvidenceClamp !== '1') {
+      return;
+    }
+
+    card.style.translate =
+      card.dataset.neoEvidenceOriginalTranslate || '';
+
+    delete card.dataset.neoEvidenceClamp;
+  }
+
+  function clampVisibleCard(card) {
+    resetClamp(card);
+
+    const clippingAncestor =
+      findClippingAncestor(card);
+
+    if (!clippingAncestor) {
+      return;
+    }
+
+    const cardRect =
+      card.getBoundingClientRect();
+
+    const boundary =
+      clippingAncestor.getBoundingClientRect();
+
+    let dx = 0;
+    let dy = 0;
+
+    const safeLeft =
+      boundary.left + EDGE_PADDING;
+
+    const safeRight =
+      boundary.right - EDGE_PADDING;
+
+    const safeTop =
+      boundary.top + EDGE_PADDING;
+
+    const safeBottom =
+      boundary.bottom - EDGE_PADDING;
+
+    if (cardRect.left < safeLeft) {
+      dx += safeLeft - cardRect.left;
+    }
+
+    if (cardRect.right + dx > safeRight) {
+      dx -= cardRect.right + dx - safeRight;
+    }
+
+    if (cardRect.top < safeTop) {
+      dy += safeTop - cardRect.top;
+    }
+
+    if (cardRect.bottom + dy > safeBottom) {
+      dy -= cardRect.bottom + dy - safeBottom;
+    }
+
+    if (dx === 0 && dy === 0) {
+      return;
+    }
+
+    if (!('neoEvidenceOriginalTranslate' in card.dataset)) {
+      card.dataset.neoEvidenceOriginalTranslate =
+        card.style.translate || '';
+    }
+
+    card.style.translate =
+      dx + 'px ' + dy + 'px';
+
+    card.dataset.neoEvidenceClamp = '1';
+  }
+
+  function syncEvidenceCards() {
+    document
+      .querySelectorAll(CARD_SELECTOR)
+      .forEach((card) => {
+        if (!(card instanceof HTMLElement)) {
+          return;
+        }
+
+        const style =
+          getComputedStyle(card);
+
+        const opacity =
+          Number.parseFloat(style.opacity || '1');
+
+        const visible =
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number.isFinite(opacity) &&
+          opacity > 0.01;
+
+        if (!visible) {
+          card.style.pointerEvents = 'none';
+          resetClamp(card);
+          return;
+        }
+
+        card.style.pointerEvents = 'auto';
+        clampVisibleCard(card);
+      });
+  }
+
+  let scheduled = false;
+
+  function scheduleSync() {
+    if (scheduled) {
+      return;
+    }
+
+    scheduled = true;
+
+    requestAnimationFrame(() => {
+      scheduled = false;
+      syncEvidenceCards();
+
+      // Allow CSS transitions or generated click handlers to finish updating
+      // card opacity/position before the final geometry check.
+      setTimeout(
+        syncEvidenceCards,
+        50,
+      );
+    });
+  }
+
+  const observer =
+    new MutationObserver(scheduleSync);
+
+  function start() {
+    syncEvidenceCards();
+
+    observer.observe(
+      document.body,
+      {
+        subtree: true,
+        attributes: true,
+        attributeFilter: [
+          'class',
+          'style',
+          'hidden',
+          'aria-hidden',
+        ],
+      },
+    );
+
+    document.addEventListener(
+      'click',
+      scheduleSync,
+      true,
+    );
+
+    window.addEventListener(
+      'resize',
+      scheduleSync,
+    );
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      start,
+      { once: true },
+    );
+  } else {
+    start();
+  }
+})();
+</script>`;
+
   const iframePatch =
-    iframeCss + '\n' + canvasSafetyPatch;
+    iframeCss +
+    '\n' +
+    canvasSafetyPatch +
+    '\n' +
+    evidenceCardSafetyPatch;
   // Insert right after <head> or at the start of the document
   const headIdx = repairedHtml.indexOf('<head>');
   if (headIdx !== -1) {

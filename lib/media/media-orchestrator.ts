@@ -126,6 +126,7 @@ export async function retryMediaTask(elementId: string): Promise<void> {
       aspectRatio: task.params.aspectRatio as MediaGenerationRequest['aspectRatio'],
       style: task.params.style,
       enhancePrompt: task.params.enhancePrompt === true,
+      annotationRequest: task.params.annotationRequest,
     },
     task.stageId,
   );
@@ -178,6 +179,7 @@ async function generateSingleMedia(
         aspectRatio: req.aspectRatio,
         style: req.style,
         enhancePrompt: req.enhancePrompt === true,
+        annotationRequest: req.annotationRequest,
       }),
       createdAt: Date.now(),
     });
@@ -208,6 +210,7 @@ async function generateSingleMedia(
             duration: req.durationSeconds,
             aspectRatio: req.aspectRatio,
             style: req.style,
+            annotationRequest: req.annotationRequest,
           }),
           error: message,
           errorCode,

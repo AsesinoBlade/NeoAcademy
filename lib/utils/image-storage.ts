@@ -93,8 +93,11 @@ export async function loadImageMapping(imageIds: string[]): Promise<Record<strin
       const record = await db.imageFiles.get(storageId);
       if (record) {
         const base64 = await blobToBase64(record.blob);
-        // Extract original ID (img_1) from storage ID (session_xxx_img_1)
-        const originalId = storageId.replace(/^session_[^_]+_/, '');
+
+        // The original logical image ID is preserved in the filename.
+        // Do not parse it from the session-prefixed storage ID because
+        // NanoID session IDs may themselves contain underscores.
+        const originalId = record.filename.replace(/\.[^.]+$/, '');
         mapping[originalId] = base64;
       }
     } catch (error) {

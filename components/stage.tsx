@@ -47,6 +47,7 @@ export function Stage({
   const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
     useStageStore();
   const failedOutlines = useStageStore.use.failedOutlines();
+  const stageLanguage = useStageStore((s) => s.stage?.language);
 
   const currentScene = getCurrentScene();
 
@@ -136,6 +137,7 @@ export function Stage({
   // Shared classroom speech-service startup. Live TTS waits on this same promise,
   // preventing questions asked immediately after classroom load from racing Docker.
   const speechServicesReadyRef = useRef<Promise<void> | null>(null);
+  const [speechServicesReady, setSpeechServicesReady] = useState(false);
 
   // Incrementing this invalidates previously queued/generated live-TTS chunks.
   const liveTtsEpochRef = useRef(0);
@@ -226,6 +228,8 @@ export function Stage({
 
   const ensureLocalSpeechServices = useCallback(() => {
     if (!speechServicesReadyRef.current) {
+      setSpeechServicesReady(false);
+
       speechServicesReadyRef.current = fetch('/api/local-speech-services', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -237,10 +241,13 @@ export function Stage({
           if (!response.ok || !data.success) {
             throw new Error(data.error || 'Failed to start local speech services');
           }
+
+          setSpeechServicesReady(true);
         })
         .catch((error) => {
           // Allow a later interaction to retry if startup failed.
           speechServicesReadyRef.current = null;
+          setSpeechServicesReady(false);
           throw error;
         });
     }
@@ -794,6 +801,10 @@ export function Stage({
         agentId: discussionTrigger.agentId || 'default-1',
       }
     : null;
+  const allowSlideOverflow =
+    process.env.NEXT_PUBLIC_SLIDE_ALLOW_OVERFLOW === 'true';
+
+
 
   // Calculate scene viewer height (subtract Header's 80px height)
   const sceneViewerHeight = (() => {
@@ -821,7 +832,11 @@ export function Stage({
 
         {/* Canvas Area */}
         <div
-          className="overflow-hidden relative flex-1 min-h-0 isolate"
+          className={`relative flex-1 min-h-0 isolate ${
+            allowSlideOverflow
+              ? 'overflow-y-auto overflow-x-hidden'
+              : 'overflow-hidden'
+          }`}
           style={{
             height: sceneViewerHeight,
           }}
@@ -890,7 +905,14 @@ export function Stage({
             thinkingState={thinkingState}
             isCueUser={isCueUser}
             isTopicPending={isTopicPending}
+            qaControlsDisabled={!speechServicesReady}
+            asrLanguageOverride={stageLanguage}
             onMessageSend={(msg) => {
+              // Direct user input always has priority over previously queued
+              // classroom speech. Stop the current voice and invalidate any
+              // generated/generating TTS chunks from the old turn.
+              cancelLiveTts();
+
               // Clear soft-paused state — user is continuing the topic
               if (isTopicPending) {
                 setIsTopicPending(false);
@@ -933,7 +955,21 @@ export function Stage({
               // interrupt prerecorded lecture playback or a live discussion.
               // Actual interruption happens only when the user submits.
             }}
-            onVoiceActivate={handleVoiceActivate}
+            onVoiceActivate={() => {
+              // Silence live Q&A immediately when the student presses the mic.
+              // The model request may already be finished while TTS is still
+              // playing, so this must not depend on chatIsStreaming.
+              cancelLiveTts();
+
+              // If generation/SSE is still active, stop that turn too while
+              // keeping the Q&A session alive for the incoming transcription.
+              if (chatIsStreaming) {
+                void doSoftPause();
+              }
+
+              // Preserve the existing prerecorded-lecture microphone behavior.
+              handleVoiceActivate();
+            }}
             onSoftPause={doSoftPause}
             onResumeTopic={doResumeTopic}
             onPlayPause={handlePlayPause}

@@ -5,6 +5,77 @@ import type {
   SourceSection,
 } from '@/lib/types/source-document';
 
+function inferSourceDocumentType(
+  fileName: string,
+  mimeType: string,
+): SourceDocument['sourceType'] {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime = mimeType.toLowerCase();
+
+  if (
+    lowerMime === 'application/pdf' ||
+    lowerName.endsWith('.pdf')
+  ) {
+    return 'pdf';
+  }
+
+  if (lowerMime.startsWith('image/')) {
+    return 'image';
+  }
+
+  if (
+    lowerMime === 'application/json' ||
+    lowerMime === 'text/json' ||
+    lowerName.endsWith('.json')
+  ) {
+    return 'json';
+  }
+
+  if (
+    lowerMime === 'application/xml' ||
+    lowerMime === 'text/xml' ||
+    lowerName.endsWith('.xml')
+  ) {
+    return 'xml';
+  }
+
+  if (
+    lowerMime === 'text/csv' ||
+    lowerName.endsWith('.csv')
+  ) {
+    return 'csv';
+  }
+
+  if (
+    lowerMime === 'text/markdown' ||
+    lowerName.endsWith('.md') ||
+    lowerName.endsWith('.markdown')
+  ) {
+    return 'markdown';
+  }
+
+  if (
+    lowerMime === 'text/plain' ||
+    lowerName.endsWith('.txt')
+  ) {
+    return 'text';
+  }
+
+  if (lowerName.endsWith('.docx')) {
+    return 'docx';
+  }
+
+  if (lowerName.endsWith('.xlsx')) {
+    return 'xlsx';
+  }
+
+  if (lowerName.endsWith('.pptx')) {
+    return 'pptx';
+  }
+
+  return 'other';
+}
+
 export interface SourceDocumentFromPdfOptions {
   id: string;
   fileName: string;
@@ -51,6 +122,8 @@ export function sourceDocumentFromParsedPdf(
         text: item.content,
         location: {
           pageNumber: item.page,
+          sheetName: item.sheetName,
+          cellRange: item.cellRange,
           bbox: item.position
             ? {
                 x: item.position.x,
@@ -96,9 +169,10 @@ export function sourceDocumentFromParsedPdf(
     'application/pdf';
 
   const sourceType =
-    mimeType.startsWith('image/')
-      ? 'image'
-      : 'pdf';
+    inferSourceDocumentType(
+      options.fileName,
+      mimeType,
+    );
 
   return {
     id: options.id,

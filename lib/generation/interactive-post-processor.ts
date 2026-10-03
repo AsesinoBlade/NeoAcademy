@@ -162,6 +162,7 @@ export interface InteractiveJavaScriptValidationResult {
   valid: boolean;
   scriptIndex?: number;
   error?: string;
+  script?: string;
 }
 
 /**
@@ -213,6 +214,7 @@ export function validateInteractiveHtmlJavaScript(
         return {
           valid: false,
           scriptIndex,
+          script,
           error:
             'Generated interactive contains an inline module script; ' +
             'NeoAcademy interactives require classic inline JavaScript.',
@@ -232,6 +234,7 @@ export function validateInteractiveHtmlJavaScript(
       return {
         valid: false,
         scriptIndex,
+        script,
         error:
           error instanceof Error
             ? `${error.name}: ${error.message}`

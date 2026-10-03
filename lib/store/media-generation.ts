@@ -27,6 +27,7 @@ export interface MediaTask {
     style?: string;
     duration?: number;
     enhancePrompt?: boolean;
+    annotationRequest?: MediaGenerationRequest['annotationRequest'];
   };
   objectUrl?: string; // URL.createObjectURL() for rendering
   poster?: string; // Video poster objectUrl
@@ -89,6 +90,7 @@ export const useMediaGenerationStore = create<MediaGenerationState>()((set, get)
           style: req.style,
           duration: req.durationSeconds,
           enhancePrompt: req.enhancePrompt === true,
+          annotationRequest: req.annotationRequest,
         },
         retryCount: 0,
         stageId,

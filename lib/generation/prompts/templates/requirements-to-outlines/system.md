@@ -14,117 +14,113 @@ Based on the user's free-form requirement text, automatically infer course detai
 
 ---
 
+## Requirement Scope Resolution — Perform This First
+
+Before designing any scenes and before applying source-grounding rules, determine the hierarchy of the user's request.
+
+Silently separate the request into these categories:
+
+1. **Primary learning objective**
+   - What subject does the user fundamentally want to learn?
+   - This determines the overall course theme, progression, scene titles, and assessment emphasis.
+
+2. **Scene-local requirements**
+   - Requirements explicitly attached to one interactive, quiz, demonstration, exercise, comparison, example, discussion, or other particular activity.
+   - These requirements belong only to the relevant scene unless the user explicitly says they should apply throughout the course.
+
+3. **Implementation constraints**
+   - Requirements about how content must be delivered, such as using an uploaded image, using a particular source, including an interactive, using specific media, or following a technical format.
+   - Implementation constraints do not become learning objectives merely because they are described in detail.
+
+4. **Course-wide secondary objectives**
+   - Additional topics that the user explicitly asks to learn across the course.
+   - Treat something as course-wide only when the user's wording actually makes it part of the overall learning goal.
+
+### Priority Rule
+
+The primary learning objective controls the course.
+
+A detailed scene-local instruction must NOT override, replace, or broaden the primary learning objective.
+
+Do not infer course-wide importance from:
+- how many words the user spends describing an activity;
+- how technically specific an interactive requirement is;
+- repeated implementation details;
+- grounding requirements;
+- the amount of available source evidence.
+
+### Scope Test
+
+Before adding every scene, ask silently:
+
+- Does this scene primarily teach the user's main subject?
+- Or is it mainly teaching a mechanic or distinction that the user requested only inside another activity?
+
+If the second is true, do not create the scene unless the user explicitly requested that topic as a broader learning objective.
+
+### Example of Correct Scope Resolution
+
+User request:
+
+"Teach me about the horse in this image. Include an interactive activity where I inspect the actual uploaded image by clicking on visible features such as the coat, mane, tail, hooves, and leg positions. For each clicked feature, show what can be directly observed and what can only be inferred."
+
+Resolve this as:
+
+- Primary learning objective: learn about the horse.
+- Scene-local requirement: one interactive compares direct observation with inference for clicked features.
+- Implementation constraint: the interactive must use the actual uploaded horse image.
+- NOT a course-wide objective: teaching observation-versus-inference as a general subject.
+
+Therefore:
+- ordinary slides should teach useful horse anatomy, visible features, movement, or other relevant horse knowledge;
+- the interactive may explicitly compare observation with inference;
+- the final quiz should primarily assess horse knowledge;
+- do not add separate scenes about uncertainty, evidence methodology, inference theory, epistemology, or limitations unless the user explicitly asks to learn those topics.
+
+Complete this scope resolution before applying the source evidence rules below.
+
+---
 
 ## Source Evidence Policy
 
-When reference material or uploaded source content is provided, distinguish carefully between what the source establishes and what you know from general knowledge.
+When uploaded or referenced source material is available, use it carefully without allowing source-validation mechanics to become the subject of the course.
 
-1. Direct observations or explicit statements in the source are evidence.
-2. Interpretations, classifications, hypotheses, and uncertain statements in the source remain hypotheses. Preserve words such as "may", "might", "possibly", "likely", "appears", "consistent with", and "cannot be determined".
-3. Never strengthen a qualified source statement into an unqualified fact.
-4. Do not infer an unobserved property of the specific source merely because it is commonly associated with an observed feature.
-5. Do not infer source-specific health, diagnosis, identity, breed, lineage, provenance, purpose, intent, cause, history, ownership, behavior, or condition unless the source itself supports that conclusion.
-6. If the source explicitly states that something cannot be determined, do not later claim or imply that it has been determined.
-7. If two source statements appear inconsistent, preserve the uncertainty rather than silently resolving the conflict.
-8. General knowledge may be used to teach established concepts, definitions, comparisons, and background information, but clearly distinguish that general knowledge from claims about the specific source.
-9. Before making a conclusion about the specific source, check it against all source uncertainty and limitation statements.
-10. Source limitations take precedence over speculative interpretation.
+Apply these rules silently:
 
-## Source-Specific Claim Test
+1. **Respect explicit context**
+   - A premise explicitly supplied by the user or established course context may be used as context unless the supplied materials genuinely contradict it.
+   - Do not require the source itself to independently prove every contextual premise.
 
-Before writing any scene title, description, keyPoint, teachingObjective, quiz focus, interactiveConfig, or media prompt that makes a claim about a particular supplied source, apply this test:
+2. **Keep source-specific claims supported**
+   - Direct observations or explicit source statements may be presented as such.
+   - Preserve uncertainty for interpretations, hypotheses, classifications, or qualified statements.
+   - Do not turn general knowledge or plausible associations into unsupported claims about the particular source.
 
-1. Is the claim directly stated or directly observed in the supplied source?
-   - If yes, it may be stated as evidence.
-2. Is the claim an interpretation or hypothesis in the source?
-   - If yes, preserve the original uncertainty and qualifiers.
-3. Does the source say the point cannot be determined?
-   - If yes, the outline must not present it as determined.
-4. Is the claim coming only from general background knowledge?
-   - If yes, present it as general teaching context, not as a fact about the specific source.
-5. Would the claim require assumptions about identity, breed, genotype, diagnosis, health, lineage, provenance, purpose, intent, cause, history, ownership, behavior, or condition?
-   - If yes, do not attribute it to the specific source unless the supplied evidence supports it.
+3. **Separate general teaching from source-specific claims**
+   - General knowledge may be used freely to teach established concepts, background, definitions, mechanisms, and comparisons.
+   - When referring specifically to the supplied source, stay within what the source evidence or explicit user/course context supports.
 
-Bad:
-- "The horse is a Bay."
-- "Its muscular build shows that it is healthy."
-- "Its light hooves suggest a particular lineage."
+4. **Do not manufacture certainty**
+   - Do not strengthen qualified source statements into facts.
+   - If the source explicitly says a point cannot be determined, do not present that point as determined.
+   - If source evidence conflicts, preserve the relevant uncertainty rather than silently resolving it.
 
-Better:
-- "Explain that a brown body with dark mane and tail can be consistent with bay coloration, while the image alone does not establish genotype or definitive classification."
-- "Describe visible muscular contours without inferring health or conditioning."
-- "Describe the hooves as light-colored without using that observation to infer lineage."
+5. **Grounding is quality control, not curriculum**
+   - Do not create scenes whose primary purpose is discussing source limitations, uncertainty, evidence methodology, observation-versus-inference, or what cannot be known unless the user explicitly asked to learn those subjects.
+   - Mention a limitation only when needed to keep a substantive claim accurate.
+   - Prefer useful teaching about the requested subject over commentary about missing evidence.
 
-Outline fields must preserve this distinction so downstream slide, quiz, and interactive generators do not inherit speculation as fact.
-When describing a specific source, do not embellish direct observations with descriptive adjectives, behavioral interpretations, emotional states, functional implications, or other details that are not explicitly present in the source evidence.
+6. **Keep local requirements local**
+   - A requirement attached to one interactive, quiz, exercise, demonstration, comparison, or other specific activity remains scoped to that activity unless the user clearly makes it a course-wide objective.
+   - Do not promote a local mechanic or assessment criterion into the theme of unrelated scenes.
+   - Quizzes should primarily assess the user's main learning objective unless the user explicitly requests assessment of a secondary skill.
 
-Keep observation and interpretation separate.
+7. **Final silent check**
+   - Before returning the outline, ensure source-specific claims are supported or appropriately qualified.
+   - Ensure the overall scene sequence still reflects the primary learning objective identified in the Requirement Scope Resolution section above.
 
-Bad:
-- "The horse's visible ears indicate alertness."
-- "The horse has a glossy, healthy-looking coat."
+These are internal implementation rules. Do not expose grounding-policy terminology or source-validation mechanics in learner-facing titles, descriptions, key points, assessments, interactive copy, or teacher speech unless those concepts are themselves part of the requested subject.
 
-Better:
-- "The horse's ears are visible."
-- "The source describes a brown coat; do not add claims about health, grooming, or condition unless the source supports them."
-
-If an observation could support several interpretations, state the observation first and present any interpretation separately with the source's uncertainty.
-
-## Closed-World Rule for Specific Sources
-
-When a scene discusses a particular uploaded or reference source, treat the supplied source evidence as a CLOSED WORLD for source-specific claims.
-
-This means:
-
-1. You may repeat a direct observation only if that observation is explicitly present in the source evidence.
-
-2. You may repeat an interpretation or hypothesis only if that interpretation already exists in the source evidence, and you must preserve its original uncertainty.
-
-3. Do NOT invent a new source-specific observation, interpretation, implication, association, hypothesis, or explanation, even if it seems reasonable from general knowledge.
-
-4. Adding uncertainty words such as "may", "might", "could", "suggests", "likely", or "appears" does NOT make an unsupported source-specific claim acceptable.
-
-5. General knowledge may explain a concept in the abstract, but it must not be connected to the particular source unless the source evidence already makes that connection.
-
-Examples:
-
-Source evidence:
-- "The animal has a brown coat."
-- "The mane and tail are black."
-- "The limb positions may be consistent with a walking gait."
-- "Health status cannot be determined."
-
-Allowed:
-- "The animal has a brown coat."
-- "The limb positions may be consistent with a walking gait."
-- "In general, coat-color terminology describes visible pigmentation patterns."
-
-Not allowed:
-- "The mane is long."
-- "The body is elongated."
-- "The horse appears mature."
-- "The glossy coat may indicate good grooming."
-- "The stance suggests alertness."
-- "The color pattern may indicate a particular breed type."
-- "The animal appears athletic."
-
-Those claims remain prohibited unless they are explicitly present in Source Evidence.
-
-6. If an outline field contains both general educational material and a claim about the specific source, make the boundary explicit.
-
-Example:
-- General: "Some coat patterns are associated with particular genetic mechanisms."
-- Source-specific: "The supplied image establishes only a brown coat and black mane/tail; it does not establish genotype."
-
-7. Before returning the outline, silently audit every source-specific noun phrase and adjective in:
-   - title
-   - description
-   - keyPoints
-   - quiz focus
-   - interactiveConfig
-   - media prompts
-
-Remove any source-specific detail that cannot be traced directly to Source Evidence.
 ## Design Principles
 ### MAIC Platform Technical Constraints
 
@@ -218,6 +214,11 @@ When no suitable supplied source image exists and generated media would material
 - Add a `mediaGenerations` array to the scene outline
 - Each entry specifies: `type` ("image" or "video"), `prompt` (description for the generation model), `elementId` (unique placeholder), and optionally `aspectRatio` (default "16:9") and `style`
 - For image entries, also include `enhancePrompt` as an explicit boolean (`true` or `false`). Never omit it for generated images.
+- When a generated educational diagram needs named parts or explanatory callouts, add an `annotationRequest` object instead of asking the image model to render the instructional text. Use:
+  - `mode: "diagram"`
+  - `features`: an array of canonical `{ "id", "label", "description" }` items.
+  - `id` must be a short stable identifier.
+  - `label` and `description` are the exact learner-facing wording NeoAcademy should render after the generated image is localized.
 - For video entries, also specify `durationSeconds`. Allowed values are 5, 10, 15, 20, 25, or 30 seconds.
 - Choose the shortest duration that can clearly convey the intended motion or process:
   - 5 seconds: one very simple motion or visual beat
@@ -233,12 +234,24 @@ When no suitable supplied source image exists and generated media would material
   - Use `enhancePrompt: true` only when additional visual richness would help without changing the educational meaning, such as atmospheric scenes, historical or environmental illustrations, landscapes, artistic concept illustrations, photorealistic objects, or visually expressive contextual scenes.
   - Enhancement must never be used as a substitute for specifying required facts, labels, relationships, quantities, positions, or educational details in the original prompt.
   - When uncertain, choose `false`.
-- **Language in images**: If the image contains text, labels, or annotations, the prompt MUST explicitly specify that all text in the image should be in the course language (e.g., "all labels in Chinese" for zh-CN courses, "all labels in English" for en-US courses). For purely visual images without text, language does not matter.
+- **Educational diagram text policy**:
+  - Do NOT ask an image-generation model to bake instructional labels, captions, legends, explanatory text, numbered callouts, or part names into an educational diagram when NeoAcademy can render them as native slide elements.
+  - Instead, generate the clean visual structure with no words, labels, letters, numbers, captions, or embedded instructional text, and provide an `annotationRequest` containing the exact canonical labels and explanations.
+  - The generated visual may contain intrinsic text only when that text is itself the subject being depicted and cannot reasonably be represented separately.
+  - Ordinary non-instructional generated images may still contain incidental text when genuinely necessary; specify the course language when doing so.
 - Only request media generation when it genuinely enhances the content — not every slide needs an image or video
+- Interactive HTML is generated before AI-generated media is available. Do not design an interactive that depends on a future generated image unless the image is already available as an assigned source image. Use a slide diagram with native annotations instead.
 - Video generation is slow (1-2 minutes each), so only request videos when motion genuinely enhances understanding
 - If a suitable PDF image exists, prefer using `suggestedImageIds` instead
-- **Avoid duplicate media across slides**: Each generated image/video must be visually distinct. Do NOT request near-identical media for different slides (e.g., two "diagram of cell structure" images). If multiple slides cover the same topic, vary the visual angle, scope, or style
-- **Cross-scene reuse**: To reuse a generated image/video in a different scene, reference the same `elementId` in the later scene's content WITHOUT adding a new `mediaGenerations` entry. Only the scene that first defines the `elementId` in its `mediaGenerations` should include the generation request — later scenes just reference the ID. For example, if scene 1 defines `gen_img_1`, scene 3 can also use `gen_img_1` as an image src without declaring it again in mediaGenerations
+- **Avoid duplicate media across slides**: Each generated image/video must be visually distinct. Do NOT request near-identical media for different slides (e.g., two "diagram of cell structure" images). If multiple slides cover the same topic, vary the visual angle, scope, or style.
+- **Singular media requests are hard constraints**:
+  - If the learner explicitly asks for **one diagram**, **one image**, **one illustration**, **one map**, or equivalent singular visual containing multiple requested features, create exactly ONE generated media asset for that requested visual.
+  - Put every requested label/feature that belongs on that visual into the SAME `annotationRequest.features` array.
+  - Do NOT split one requested diagram into multiple generated images merely because different scenes discuss different subsets of its features.
+  - Later scenes may reuse the same generated asset when useful.
+  - Example: "one horse diagram showing mane, withers, barrel, tail, fetlock, and hoof" means ONE horse image with ONE annotation request containing all six features, not three horse images each containing a subset.
+- **Cross-scene reuse**: To reuse a generated image/video in a different scene, reference the same `elementId` in the later scene's content WITHOUT adding a new `mediaGenerations` entry. Only the scene that first defines the `elementId` in its `mediaGenerations` should include the generation request — later scenes just reference the ID. For example, if scene 1 defines `gen_img_1`, scene 3 can also use `gen_img_1` as an image src without declaring it again in mediaGenerations.
+- When a singular generated educational diagram is reused across scenes, preserve the same `elementId`; do not create another media-generation request for a crop, close-up, alternate rendering, or restatement unless the learner explicitly asks for additional visuals or the additional visual conveys genuinely different information that cannot reasonably use the original diagram.
 
 **Content safety guidelines for media prompts** (to avoid being blocked by the generation model's safety filter):
 
@@ -261,10 +274,30 @@ Image example:
 "mediaGenerations": [
   {
     "type": "image",
-    "prompt": "A colorful diagram showing the water cycle with evaporation, condensation, and precipitation arrows",
+    "prompt": "A clean educational water-cycle illustration showing ocean water, rising vapor, clouds, rainfall, and runoff arrows. No words, labels, letters, numbers, captions, legends, or embedded instructional text.",
     "elementId": "gen_img_1",
     "aspectRatio": "16:9",
-    "enhancePrompt": false
+    "enhancePrompt": false,
+    "annotationRequest": {
+      "mode": "diagram",
+      "features": [
+        {
+          "id": "evaporation",
+          "label": "Evaporation",
+          "description": "Liquid water changes into water vapor and rises."
+        },
+        {
+          "id": "condensation",
+          "label": "Condensation",
+          "description": "Water vapor cools and forms clouds."
+        },
+        {
+          "id": "precipitation",
+          "label": "Precipitation",
+          "description": "Water falls from clouds to the surface."
+        }
+      ]
+    }
   }
 ]
 ```
@@ -303,6 +336,7 @@ Good candidates include:
 Selection rules:
 
 1. Do not create an interactive merely for variety.
+1a. If the user asks for one clear educational diagram with labels/explanations, satisfy that as a slide with a generated image plus native annotations. Do not add a separate interactive unless the user explicitly asks for an activity, explorer, clickable diagram, simulation, or quiz-like manipulation.
 2. Prefer an interactive when the learner can meaningfully **do** something that teaches the concept better than simply reading it.
 3. When a supplied image or other source is itself the object of study, strongly consider an interactive if annotation, inspection, comparison, classification, or evidence evaluation would materially support the learning objective.
 4. If the original user request explicitly asks for an interactive, simulation, explorer, annotation activity, manipulable model, or similar hands-on experience, preserve that requirement whenever technically appropriate.
@@ -314,7 +348,7 @@ Selection rules:
 - Limit to **1-2 interactive scenes per course** (they are resource-intensive)
 - Interactive scenes **require** an `interactiveConfig` object
 - The `interactiveConfig.designIdea` must describe the specific learner actions and resulting feedback
-- Interactive source-specific claims remain subject to the Source Evidence Policy and Closed-World Rule
+- Interactive claims derived from a supplied source must remain evidence-grounded. Explicit user/course premises may provide context, but must not be expanded into unsupported source-specific conclusions.
 
 ### PBL Scene Guidelines
 

@@ -32,14 +32,3307 @@ import {
 import type { ParsedPdfContent } from '@/lib/types/pdf';
 import { nanoid } from 'nanoid';
 import type { Stage } from '@/lib/types/stage';
-import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
+import type {
+  SceneOutline,
+  PdfImage,
+  ImageMapping,
+  LocalizedVisualRegion,
+} from '@/lib/types/generation';
 import { AgentRevealModal } from '@/components/agent/agent-reveal-modal';
 import { createLogger } from '@/lib/logger';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
+import { useMediaGenerationStore } from '@/lib/store/media-generation';
+import { applyDiagramAnnotationsToScene } from '@/lib/generation/diagram-annotations';
+import type { MediaGenerationRequest } from '@/lib/media/types';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import { StepVisualizer } from './components/visualizers';
 
 const log = createLogger('GenerationPreview');
+
+function isDirectTextSource(
+  fileName: string,
+  mimeType?: string,
+): boolean {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime = (mimeType || '').toLowerCase();
+
+  return (
+    lowerMime === 'text/plain' ||
+    lowerMime === 'text/markdown' ||
+    lowerMime === 'application/json' ||
+    lowerMime === 'text/json' ||
+    lowerMime === 'application/xml' ||
+    lowerMime === 'text/xml' ||
+    lowerMime === 'text/csv' ||
+    lowerName.endsWith('.txt') ||
+    lowerName.endsWith('.md') ||
+    lowerName.endsWith('.markdown') ||
+    lowerName.endsWith('.json') ||
+    lowerName.endsWith('.xml') ||
+    lowerName.endsWith('.csv')
+  );
+}
+
+function normalizeDirectSourceText(
+  fileName: string,
+  mimeType: string | undefined,
+  rawText: string,
+): string {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime = (mimeType || '').toLowerCase();
+
+  const isJson =
+    lowerMime === 'application/json' ||
+    lowerMime === 'text/json' ||
+    lowerName.endsWith('.json');
+
+  if (isJson) {
+    try {
+      const parsed = JSON.parse(rawText);
+
+      // Pretty formatting retains JSON's structure while making it much
+      // easier for downstream LLM prompts to read.
+      return JSON.stringify(parsed, null, 2);
+    } catch (error) {
+      throw new Error(
+        `${fileName}: invalid JSON ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`,
+      );
+    }
+  }
+
+  const isXml =
+    lowerMime === 'application/xml' ||
+    lowerMime === 'text/xml' ||
+    lowerName.endsWith('.xml');
+
+  if (isXml) {
+    const parsed =
+      new DOMParser().parseFromString(
+        rawText,
+        'application/xml',
+      );
+
+    if (
+      parsed.querySelector('parsererror')
+    ) {
+      throw new Error(
+        `${fileName}: invalid XML`,
+      );
+    }
+  }
+
+  // TXT, Markdown, CSV and valid XML retain their original textual
+  // representation. CSV therefore preserves rows and columns exactly.
+  return rawText;
+}
+
+function isDocxSource(
+  fileName: string,
+  mimeType?: string,
+): boolean {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime =
+    (mimeType || '').toLowerCase();
+
+  return (
+    lowerMime ===
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    lowerName.endsWith('.docx')
+  );
+}
+
+/**
+ * Extract visible WordprocessingML text while retaining common
+ * inline Word controls such as tabs and line breaks.
+ */
+function extractWordNodeText(
+  node: Element,
+): string {
+  let result = '';
+
+  const visit = (current: Node) => {
+    if (
+      current.nodeType ===
+      Node.TEXT_NODE
+    ) {
+      return;
+    }
+
+    if (
+      current.nodeType !==
+      Node.ELEMENT_NODE
+    ) {
+      return;
+    }
+
+    const element =
+      current as Element;
+
+    switch (element.localName) {
+      case 't':
+        result +=
+          element.textContent || '';
+        return;
+
+      case 'tab':
+        result += '\t';
+        return;
+
+      case 'br':
+      case 'cr':
+        result += '\n';
+        return;
+    }
+
+    for (
+      const child of
+      Array.from(element.childNodes)
+    ) {
+      visit(child);
+    }
+  };
+
+  visit(node);
+
+  return result;
+}
+
+function getWordParagraphStyle(
+  paragraph: Element,
+): string | undefined {
+  const styleElements =
+    paragraph.getElementsByTagNameNS(
+      '*',
+      'pStyle',
+    );
+
+  const style =
+    styleElements.item(0);
+
+  if (!style) {
+    return undefined;
+  }
+
+  return (
+    style.getAttribute('w:val') ||
+    style.getAttribute('val') ||
+    undefined
+  );
+}
+
+function escapeMarkdownTableCell(
+  value: string,
+): string {
+  return value
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim();
+}
+
+function wordTableToData(
+  table: Element,
+): string[][] {
+  const rows: string[][] = [];
+
+  const rowElements =
+    Array.from(table.children).filter(
+      (element) =>
+        element.localName === 'tr',
+    );
+
+  for (const row of rowElements) {
+    const cells =
+      Array.from(row.children).filter(
+        (element) =>
+          element.localName === 'tc',
+      );
+
+    rows.push(
+      cells.map((cell) => {
+        const paragraphs =
+          Array.from(
+            cell.getElementsByTagNameNS(
+              '*',
+              'p',
+            ),
+          );
+
+        return paragraphs
+          .map((paragraph) =>
+            extractWordNodeText(
+              paragraph,
+            ).trim(),
+          )
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+      }),
+    );
+  }
+
+  return rows;
+}
+
+function wordTableToMarkdown(
+  rows: string[][],
+): string {
+  if (rows.length === 0) {
+    return '';
+  }
+
+  const width =
+    Math.max(
+      1,
+      ...rows.map(
+        (row) => row.length,
+      ),
+    );
+
+  const normalized =
+    rows.map((row) =>
+      Array.from(
+        { length: width },
+        (_, index) =>
+          escapeMarkdownTableCell(
+            row[index] || '',
+          ),
+      ),
+    );
+
+  const firstRow =
+    normalized[0];
+
+  const header =
+    `| ${firstRow.join(' | ')} |`;
+
+  const separator =
+    `| ${Array.from(
+      { length: width },
+      () => '---',
+    ).join(' | ')} |`;
+
+  const body =
+    normalized
+      .slice(1)
+      .map(
+        (row) =>
+          `| ${row.join(' | ')} |`,
+      );
+
+  return [
+    header,
+    separator,
+    ...body,
+  ].join('\n');
+}
+
+function isXlsxSource(
+  fileName: string,
+  mimeType?: string,
+): boolean {
+  const lowerName =
+    fileName.toLowerCase();
+
+  const lowerMime =
+    (mimeType || '').toLowerCase();
+
+  return (
+    lowerMime ===
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    lowerName.endsWith('.xlsx')
+  );
+}
+
+function resolveXlsxRelationshipPath(
+  target: string,
+): string | undefined {
+  if (
+    !target ||
+    /^(?:https?:|data:)/i.test(
+      target,
+    )
+  ) {
+    return undefined;
+  }
+
+  const normalized =
+    target
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+
+  if (
+    normalized.startsWith('xl/')
+  ) {
+    return normalized;
+  }
+
+  const parts = [
+    'xl',
+    ...normalized.split('/'),
+  ];
+
+  const resolved:
+    string[] = [];
+
+  for (const part of parts) {
+    if (
+      !part ||
+      part === '.'
+    ) {
+      continue;
+    }
+
+    if (part === '..') {
+      resolved.pop();
+      continue;
+    }
+
+    resolved.push(part);
+  }
+
+  return resolved.join('/');
+}
+
+function resolveXlsxPartRelationshipPath(
+  sourcePartPath: string,
+  target: string,
+): string | undefined {
+  if (
+    !target ||
+    /^(?:https?:|data:)/i.test(
+      target,
+    )
+  ) {
+    return undefined;
+  }
+
+  const normalizedTarget =
+    target
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+
+  if (
+    normalizedTarget.startsWith(
+      'xl/',
+    )
+  ) {
+    return normalizedTarget;
+  }
+
+  const sourceParts =
+    sourcePartPath
+      .replace(/\\/g, '/')
+      .split('/');
+
+  sourceParts.pop();
+
+  const combined = [
+    ...sourceParts,
+    ...normalizedTarget.split('/'),
+  ];
+
+  const resolved:
+    string[] = [];
+
+  for (const part of combined) {
+    if (
+      !part ||
+      part === '.'
+    ) {
+      continue;
+    }
+
+    if (part === '..') {
+      resolved.pop();
+      continue;
+    }
+
+    resolved.push(part);
+  }
+
+  return resolved.join('/');
+}
+
+function getXlsxTextContent(
+  element: Element,
+): string {
+  return Array.from(
+    element.getElementsByTagNameNS(
+      '*',
+      't',
+    ),
+  )
+    .map(
+      (textNode) =>
+        textNode.textContent || '',
+    )
+    .join('');
+}
+
+function formatXlsxValue(
+  value: string,
+): string {
+  if (
+    value.includes('\n') ||
+    value.includes('\r') ||
+    value.includes('|') ||
+    value.includes('"')
+  ) {
+    return JSON.stringify(value);
+  }
+
+  return value;
+}
+
+interface ParsedXlsxCell {
+  address: string;
+  value: string;
+  formula?: string;
+  cachedValue?: string;
+}
+
+interface ParsedXlsxSheet {
+  name: string;
+  range?: string;
+  rows: Array<{
+    rowNumber: number;
+    cells: ParsedXlsxCell[];
+  }>;
+}
+
+interface XlsxRichImageReference {
+  imagePath: string;
+  mimeType: string;
+}
+
+interface XlsxDrawingObject {
+  relationshipId: string;
+  kind: 'image' | 'chart';
+  fromCell?: string;
+  toCell?: string;
+}
+
+interface ParsedXlsxChart {
+  title?: string;
+  chartType: string;
+  series: Array<{
+    name?: string;
+    categories: string[];
+    values: string[];
+  }>;
+}
+
+async function getXlsxRichImageReferences(
+  zip: {
+    file(
+      path: string,
+    ): {
+      async(
+        type: 'string',
+      ): Promise<string>;
+    } | null;
+  },
+): Promise<Map<string, XlsxRichImageReference>> {
+  const result =
+    new Map<
+      string,
+      XlsxRichImageReference
+    >();
+
+  const metadataEntry =
+    zip.file(
+      'xl/metadata.xml',
+    );
+
+  const richValueEntry =
+    zip.file(
+      'xl/richData/rdrichvalue.xml',
+    );
+
+  const richStructureEntry =
+    zip.file(
+      'xl/richData/rdrichvaluestructure.xml',
+    );
+
+  const richValueRelEntry =
+    zip.file(
+      'xl/richData/richValueRel.xml',
+    );
+
+  const richValueRelRelsEntry =
+    zip.file(
+      'xl/richData/_rels/richValueRel.xml.rels',
+    );
+
+  if (
+    !metadataEntry ||
+    !richValueEntry ||
+    !richStructureEntry ||
+    !richValueRelEntry ||
+    !richValueRelRelsEntry
+  ) {
+    return result;
+  }
+
+  const [
+    metadataXml,
+    richValueXml,
+    richStructureXml,
+    richValueRelXml,
+    richValueRelRelsXml,
+  ] = await Promise.all([
+    metadataEntry.async('string'),
+    richValueEntry.async('string'),
+    richStructureEntry.async('string'),
+    richValueRelEntry.async('string'),
+    richValueRelRelsEntry.async(
+      'string',
+    ),
+  ]);
+
+  const parser =
+    new DOMParser();
+
+  const metadataDocument =
+    parser.parseFromString(
+      metadataXml,
+      'application/xml',
+    );
+
+  const richValueDocument =
+    parser.parseFromString(
+      richValueXml,
+      'application/xml',
+    );
+
+  const richStructureDocument =
+    parser.parseFromString(
+      richStructureXml,
+      'application/xml',
+    );
+
+  const richValueRelDocument =
+    parser.parseFromString(
+      richValueRelXml,
+      'application/xml',
+    );
+
+  const richValueRelRelsDocument =
+    parser.parseFromString(
+      richValueRelRelsXml,
+      'application/xml',
+    );
+
+  if (
+    metadataDocument.querySelector(
+      'parsererror',
+    ) ||
+    richValueDocument.querySelector(
+      'parsererror',
+    ) ||
+    richStructureDocument.querySelector(
+      'parsererror',
+    ) ||
+    richValueRelDocument.querySelector(
+      'parsererror',
+    ) ||
+    richValueRelRelsDocument.querySelector(
+      'parsererror',
+    )
+  ) {
+    return result;
+  }
+
+  // valueMetadata entries are addressed by the worksheet's vm attribute.
+  // vm is 1-based, while the backing arrays are naturally 0-based.
+  const valueMetadata =
+    metadataDocument
+      .getElementsByTagNameNS(
+        '*',
+        'valueMetadata',
+      )
+      .item(0);
+
+  if (!valueMetadata) {
+    return result;
+  }
+
+  const metadataBlocks =
+    Array.from(
+      valueMetadata.children,
+    ).filter(
+      (element) =>
+        element.localName === 'bk',
+    );
+
+  const futureMetadata =
+    metadataDocument
+      .getElementsByTagNameNS(
+        '*',
+        'futureMetadata',
+      )
+      .item(0);
+
+  const futureBlocks =
+    futureMetadata
+      ? Array.from(
+          futureMetadata.children,
+        ).filter(
+          (element) =>
+            element.localName === 'bk',
+        )
+      : [];
+
+  const richValues =
+    Array.from(
+      richValueDocument
+        .getElementsByTagNameNS(
+          '*',
+          'rv',
+        ),
+    );
+
+  const structures =
+    Array.from(
+      richStructureDocument
+        .getElementsByTagNameNS(
+          '*',
+          's',
+        ),
+    );
+
+  const richValueRelationships =
+    Array.from(
+      richValueRelDocument
+        .getElementsByTagNameNS(
+          '*',
+          'rel',
+        ),
+    );
+
+  const relationshipTargets =
+    new Map<string, string>();
+
+  for (
+    const relationship of
+    Array.from(
+      richValueRelRelsDocument
+        .getElementsByTagNameNS(
+          '*',
+          'Relationship',
+        ),
+    )
+  ) {
+    const id =
+      relationship.getAttribute(
+        'Id',
+      );
+
+    const target =
+      relationship.getAttribute(
+        'Target',
+      );
+
+    if (
+      id &&
+      target
+    ) {
+      relationshipTargets.set(
+        id,
+        target,
+      );
+    }
+  }
+
+  for (
+    let metadataIndex = 0;
+    metadataIndex <
+    metadataBlocks.length;
+    metadataIndex++
+  ) {
+    const block =
+      metadataBlocks[
+        metadataIndex
+      ];
+
+    const record =
+      block
+        .getElementsByTagNameNS(
+          '*',
+          'rc',
+        )
+        .item(0);
+
+    if (!record) {
+      continue;
+    }
+
+    const futureIndex =
+      Number(
+        record.getAttribute(
+          'v',
+        ),
+      );
+
+    if (
+      !Number.isInteger(
+        futureIndex,
+      ) ||
+      futureIndex < 0 ||
+      futureIndex >=
+        futureBlocks.length
+    ) {
+      continue;
+    }
+
+    const futureBlock =
+      futureBlocks[
+        futureIndex
+      ];
+
+    const richValueBinding =
+      futureBlock
+        .getElementsByTagNameNS(
+          '*',
+          'rvb',
+        )
+        .item(0);
+
+    if (!richValueBinding) {
+      continue;
+    }
+
+    const richValueIndex =
+      Number(
+        richValueBinding.getAttribute(
+          'i',
+        ),
+      );
+
+    if (
+      !Number.isInteger(
+        richValueIndex,
+      ) ||
+      richValueIndex < 0 ||
+      richValueIndex >=
+        richValues.length
+    ) {
+      continue;
+    }
+
+    const richValue =
+      richValues[
+        richValueIndex
+      ];
+
+    const structureIndex =
+      Number(
+        richValue.getAttribute(
+          's',
+        ),
+      );
+
+    if (
+      !Number.isInteger(
+        structureIndex,
+      ) ||
+      structureIndex < 0 ||
+      structureIndex >=
+        structures.length
+    ) {
+      continue;
+    }
+
+    const structure =
+      structures[
+        structureIndex
+      ];
+
+    const structureType =
+      structure.getAttribute(
+        't',
+      );
+
+    if (
+      structureType !==
+      '_localImage'
+    ) {
+      continue;
+    }
+
+    const keys =
+      Array.from(
+        structure.children,
+      ).filter(
+        (element) =>
+          element.localName === 'k',
+      );
+
+    const localImageKeyIndex =
+      keys.findIndex(
+        (key) =>
+          key.getAttribute(
+            'n',
+          ) ===
+          '_rvRel:LocalImageIdentifier',
+      );
+
+    if (
+      localImageKeyIndex < 0
+    ) {
+      continue;
+    }
+
+    const values =
+      Array.from(
+        richValue.children,
+      ).filter(
+        (element) =>
+          element.localName === 'v',
+      );
+
+    const relationshipOrdinal =
+      Number(
+        values[
+          localImageKeyIndex
+        ]?.textContent,
+      );
+
+    if (
+      !Number.isInteger(
+        relationshipOrdinal,
+      ) ||
+      relationshipOrdinal < 0 ||
+      relationshipOrdinal >=
+        richValueRelationships.length
+    ) {
+      continue;
+    }
+
+    const richRelationship =
+      richValueRelationships[
+        relationshipOrdinal
+      ];
+
+    const relationshipId =
+      richRelationship.getAttribute(
+        'r:id',
+      ) ||
+      richRelationship.getAttributeNS(
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+        'id',
+      );
+
+    if (!relationshipId) {
+      continue;
+    }
+
+    const target =
+      relationshipTargets.get(
+        relationshipId,
+      );
+
+    if (!target) {
+      continue;
+    }
+
+    const imagePath =
+      resolveXlsxPartRelationshipPath(
+        'xl/richData/richValueRel.xml',
+        target,
+      );
+
+    if (!imagePath) {
+      continue;
+    }
+
+    const mimeType =
+      getDocxImageMimeType(
+        imagePath,
+      );
+
+    if (!mimeType) {
+      continue;
+    }
+
+    // Worksheet vm values are 1-based.
+    result.set(
+      String(metadataIndex + 1),
+      {
+        imagePath,
+        mimeType,
+      },
+    );
+  }
+
+  return result;
+}
+
+function getXlsxColumnLetters(
+  zeroBasedColumn: number,
+): string {
+  let value =
+    zeroBasedColumn + 1;
+
+  let result = '';
+
+  while (value > 0) {
+    const remainder =
+      (value - 1) % 26;
+
+    result =
+      String.fromCharCode(
+        65 + remainder,
+      ) + result;
+
+    value =
+      Math.floor(
+        (value - 1) / 26,
+      );
+  }
+
+  return result;
+}
+
+function xlsxMarkerToCell(
+  marker: Element | null,
+): string | undefined {
+  if (!marker) {
+    return undefined;
+  }
+
+  const colText =
+    marker
+      .getElementsByTagNameNS(
+        '*',
+        'col',
+      )
+      .item(0)
+      ?.textContent;
+
+  const rowText =
+    marker
+      .getElementsByTagNameNS(
+        '*',
+        'row',
+      )
+      .item(0)
+      ?.textContent;
+
+  if (
+    colText === null ||
+    colText === undefined ||
+    rowText === null ||
+    rowText === undefined
+  ) {
+    return undefined;
+  }
+
+  const column =
+    Number(colText);
+
+  const row =
+    Number(rowText);
+
+  if (
+    !Number.isInteger(column) ||
+    column < 0 ||
+    !Number.isInteger(row) ||
+    row < 0
+  ) {
+    return undefined;
+  }
+
+  return (
+    getXlsxColumnLetters(
+      column,
+    ) +
+    String(row + 1)
+  );
+}
+
+function getXlsxDrawingObjects(
+  drawingDocument: Document,
+): XlsxDrawingObject[] {
+  const objects:
+    XlsxDrawingObject[] = [];
+
+  const anchors = [
+    ...Array.from(
+      drawingDocument
+        .getElementsByTagNameNS(
+          '*',
+          'twoCellAnchor',
+        ),
+    ),
+    ...Array.from(
+      drawingDocument
+        .getElementsByTagNameNS(
+          '*',
+          'oneCellAnchor',
+        ),
+    ),
+    ...Array.from(
+      drawingDocument
+        .getElementsByTagNameNS(
+          '*',
+          'absoluteAnchor',
+        ),
+    ),
+  ];
+
+  for (const anchor of anchors) {
+    const from =
+      anchor
+        .getElementsByTagNameNS(
+          '*',
+          'from',
+        )
+        .item(0);
+
+    const to =
+      anchor
+        .getElementsByTagNameNS(
+          '*',
+          'to',
+        )
+        .item(0);
+
+    const fromCell =
+      xlsxMarkerToCell(from);
+
+    const toCell =
+      xlsxMarkerToCell(to);
+
+    const blips =
+      Array.from(
+        anchor
+          .getElementsByTagNameNS(
+            '*',
+            'blip',
+          ),
+      );
+
+    for (const blip of blips) {
+      const relationshipId =
+        blip.getAttribute(
+          'r:embed',
+        ) ||
+        blip.getAttributeNS(
+          'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'embed',
+        );
+
+      if (relationshipId) {
+        objects.push({
+          relationshipId,
+          kind: 'image',
+          fromCell,
+          toCell,
+        });
+      }
+    }
+
+    const charts =
+      Array.from(
+        anchor
+          .getElementsByTagNameNS(
+            '*',
+            'chart',
+          ),
+      );
+
+    for (const chart of charts) {
+      const relationshipId =
+        chart.getAttribute(
+          'r:id',
+        ) ||
+        chart.getAttributeNS(
+          'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'id',
+        );
+
+      if (relationshipId) {
+        objects.push({
+          relationshipId,
+          kind: 'chart',
+          fromCell,
+          toCell,
+        });
+      }
+    }
+  }
+
+  return objects;
+}
+
+function getXlsxCachedPointValues(
+  parent: Element,
+): string[] {
+  return Array.from(
+    parent
+      .getElementsByTagNameNS(
+        '*',
+        'pt',
+      ),
+  )
+    .map((point) =>
+      point
+        .getElementsByTagNameNS(
+          '*',
+          'v',
+        )
+        .item(0)
+        ?.textContent ?? '',
+    )
+    .filter(Boolean);
+}
+
+function getXlsxSeriesText(
+  element: Element | null,
+): string | undefined {
+  if (!element) {
+    return undefined;
+  }
+
+  const directValue =
+    element
+      .getElementsByTagNameNS(
+        '*',
+        'v',
+      )
+      .item(0)
+      ?.textContent;
+
+  if (directValue) {
+    return directValue;
+  }
+
+  const text =
+    getXlsxTextContent(
+      element,
+    );
+
+  return text || undefined;
+}
+
+function getXlsxChartType(
+  chartDocument: Document,
+): string {
+  const knownTypes = [
+    'barChart',
+    'bar3DChart',
+    'lineChart',
+    'line3DChart',
+    'pieChart',
+    'pie3DChart',
+    'doughnutChart',
+    'areaChart',
+    'area3DChart',
+    'scatterChart',
+    'bubbleChart',
+    'radarChart',
+    'surfaceChart',
+    'surface3DChart',
+    'stockChart',
+  ];
+
+  for (const type of knownTypes) {
+    if (
+      chartDocument
+        .getElementsByTagNameNS(
+          '*',
+          type,
+        )
+        .length > 0
+    ) {
+      return type;
+    }
+  }
+
+  return 'chart';
+}
+
+function parseXlsxChart(
+  chartDocument: Document,
+): ParsedXlsxChart {
+  const titleElement =
+    chartDocument
+      .getElementsByTagNameNS(
+        '*',
+        'title',
+      )
+      .item(0);
+
+  const title =
+    titleElement
+      ? getXlsxTextContent(
+          titleElement,
+        ) || undefined
+      : undefined;
+
+  const seriesElements =
+    Array.from(
+      chartDocument
+        .getElementsByTagNameNS(
+          '*',
+          'ser',
+        ),
+    );
+
+  const series =
+    seriesElements.map(
+      (seriesElement) => {
+        const tx =
+          seriesElement
+            .getElementsByTagNameNS(
+              '*',
+              'tx',
+            )
+            .item(0);
+
+        const name =
+          getXlsxSeriesText(tx);
+
+        const strCaches =
+          Array.from(
+            seriesElement
+              .getElementsByTagNameNS(
+                '*',
+                'strCache',
+              ),
+          );
+
+        const numCaches =
+          Array.from(
+            seriesElement
+              .getElementsByTagNameNS(
+                '*',
+                'numCache',
+              ),
+          );
+
+        const categories =
+          strCaches.length > 0
+            ? getXlsxCachedPointValues(
+                strCaches[0],
+              )
+            : numCaches.length > 1
+              ? getXlsxCachedPointValues(
+                  numCaches[0],
+                )
+              : [];
+
+        const values =
+          numCaches.length > 0
+            ? getXlsxCachedPointValues(
+                numCaches[
+                  numCaches.length - 1
+                ],
+              )
+            : [];
+
+        return {
+          name,
+          categories,
+          values,
+        };
+      },
+    );
+
+  return {
+    title,
+    chartType:
+      getXlsxChartType(
+        chartDocument,
+      ),
+    series,
+  };
+}
+
+function formatXlsxChartText(
+  chart: ParsedXlsxChart,
+): string {
+  const lines:
+    string[] = [];
+
+  lines.push(
+    `Chart type: ${chart.chartType}`,
+  );
+
+  if (chart.title) {
+    lines.push(
+      `Title: ${chart.title}`,
+    );
+  }
+
+  if (chart.series.length === 0) {
+    lines.push(
+      'Series: none cached in chart XML',
+    );
+  } else {
+    chart.series.forEach(
+      (series, index) => {
+        lines.push(
+          `Series ${index + 1}: ${series.name || '(unnamed)'}`,
+        );
+
+        if (
+          series.categories.length > 0
+        ) {
+          lines.push(
+            `Categories: ${series.categories.join(', ')}`,
+          );
+        }
+
+        if (
+          series.values.length > 0
+        ) {
+          lines.push(
+            `Values: ${series.values.join(', ')}`,
+          );
+        }
+      },
+    );
+  }
+
+  return lines.join('\n');
+}
+
+async function parseXlsxSource(
+  sourceBlob: Blob,
+  fileName: string,
+  signal?: AbortSignal,
+): Promise<ParsedPdfContent> {
+  const JSZip =
+    (await import('jszip')).default;
+
+  const startedAt =
+    performance.now();
+
+  let zip;
+
+  try {
+    zip =
+      await JSZip.loadAsync(
+        await sourceBlob.arrayBuffer(),
+      );
+  } catch (error) {
+    throw new Error(
+      `${fileName}: invalid or unreadable XLSX ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`,
+    );
+  }
+
+  const workbookEntry =
+    zip.file('xl/workbook.xml');
+
+  if (!workbookEntry) {
+    throw new Error(
+      `${fileName}: XLSX is missing xl/workbook.xml`,
+    );
+  }
+
+  const workbookXml =
+    await workbookEntry.async(
+      'string',
+    );
+
+  const workbookDocument =
+    new DOMParser().parseFromString(
+      workbookXml,
+      'application/xml',
+    );
+
+  if (
+    workbookDocument.querySelector(
+      'parsererror',
+    )
+  ) {
+    throw new Error(
+      `${fileName}: invalid workbook XML`,
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Workbook relationships:
+  // rId -> xl/worksheets/sheetN.xml
+  // ----------------------------------------------------------
+
+  const relationshipTargets =
+    new Map<string, string>();
+
+  const relationshipsEntry =
+    zip.file(
+      'xl/_rels/workbook.xml.rels',
+    );
+
+  if (relationshipsEntry) {
+    const relationshipsXml =
+      await relationshipsEntry.async(
+        'string',
+      );
+
+    const relationshipsDocument =
+      new DOMParser().parseFromString(
+        relationshipsXml,
+        'application/xml',
+      );
+
+    if (
+      !relationshipsDocument.querySelector(
+        'parsererror',
+      )
+    ) {
+      const relationships =
+        Array.from(
+          relationshipsDocument
+            .getElementsByTagNameNS(
+              '*',
+              'Relationship',
+            ),
+        );
+
+      for (
+        const relationship of
+        relationships
+      ) {
+        const id =
+          relationship.getAttribute(
+            'Id',
+          );
+
+        const target =
+          relationship.getAttribute(
+            'Target',
+          );
+
+        if (
+          id &&
+          target
+        ) {
+          relationshipTargets.set(
+            id,
+            target,
+          );
+        }
+      }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Shared strings.
+  // ----------------------------------------------------------
+
+  const sharedStrings:
+    string[] = [];
+
+  const sharedStringsEntry =
+    zip.file(
+      'xl/sharedStrings.xml',
+    );
+
+  if (sharedStringsEntry) {
+    const sharedStringsXml =
+      await sharedStringsEntry.async(
+        'string',
+      );
+
+    const sharedStringsDocument =
+      new DOMParser().parseFromString(
+        sharedStringsXml,
+        'application/xml',
+      );
+
+    if (
+      !sharedStringsDocument.querySelector(
+        'parsererror',
+      )
+    ) {
+      const stringItems =
+        Array.from(
+          sharedStringsDocument
+            .getElementsByTagNameNS(
+              '*',
+              'si',
+            ),
+        );
+
+      for (
+        const stringItem of
+        stringItems
+      ) {
+        sharedStrings.push(
+          getXlsxTextContent(
+            stringItem,
+          ),
+        );
+      }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Workbook sheet list.
+  // ----------------------------------------------------------
+
+  const richImageReferences =
+    await getXlsxRichImageReferences(
+      zip,
+    );
+
+  const sheetElements =
+    Array.from(
+      workbookDocument
+        .getElementsByTagNameNS(
+          '*',
+          'sheet',
+        ),
+    );
+
+  if (
+    sheetElements.length === 0
+  ) {
+    throw new Error(
+      `${fileName}: workbook contains no worksheets`,
+    );
+  }
+
+  const parsedSheets:
+    ParsedXlsxSheet[] = [];
+
+  const layout:
+    NonNullable<
+      ParsedPdfContent['layout']
+    > = [];
+
+  const canonicalBlocks:
+    string[] = [];
+
+  const extractedImages:
+    ExtractedSourceImage[] = [];
+
+  const imageLocations:
+    Array<{
+      sheetName: string;
+      cellRange?: string;
+    }> = [];
+
+  const extractedRichImageKeys =
+    new Set<string>();
+
+  let chartCount = 0;
+  let totalCellCount = 0;
+  let formulaCount = 0;
+
+  for (
+    let sheetIndex = 0;
+    sheetIndex <
+    sheetElements.length;
+    sheetIndex++
+  ) {
+    const sheetElement =
+      sheetElements[
+        sheetIndex
+      ];
+
+    const sheetName =
+      sheetElement.getAttribute(
+        'name',
+      ) ||
+      `Sheet${sheetIndex + 1}`;
+
+    const relationshipId =
+      sheetElement.getAttribute(
+        'r:id',
+      ) ||
+      sheetElement.getAttributeNS(
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+        'id',
+      );
+
+    if (!relationshipId) {
+      log.warn(
+        `[Generation] XLSX sheet has no relationship ID: ${sheetName}`,
+      );
+      continue;
+    }
+
+    const target =
+      relationshipTargets.get(
+        relationshipId,
+      );
+
+    if (!target) {
+      log.warn(
+        `[Generation] XLSX sheet relationship not found: ${sheetName}`,
+      );
+      continue;
+    }
+
+    const sheetPath =
+      resolveXlsxRelationshipPath(
+        target,
+      );
+
+    if (!sheetPath) {
+      continue;
+    }
+
+    const sheetEntry =
+      zip.file(sheetPath);
+
+    if (!sheetEntry) {
+      log.warn(
+        `[Generation] XLSX worksheet XML missing: ${sheetPath}`,
+      );
+      continue;
+    }
+
+    const sheetXml =
+      await sheetEntry.async(
+        'string',
+      );
+
+    const sheetDocument =
+      new DOMParser().parseFromString(
+        sheetXml,
+        'application/xml',
+      );
+
+    if (
+      sheetDocument.querySelector(
+        'parsererror',
+      )
+    ) {
+      throw new Error(
+        `${fileName}: invalid worksheet XML for ${sheetName}`,
+      );
+    }
+
+    const worksheetRelationships =
+      new Map<string, string>();
+
+    const sheetPathParts =
+      sheetPath.split('/');
+
+    const sheetFileName =
+      sheetPathParts.pop();
+
+    const sheetDirectory =
+      sheetPathParts.join('/');
+
+    const sheetRelsPath =
+      sheetFileName
+        ? `${sheetDirectory}/_rels/${sheetFileName}.rels`
+        : undefined;
+
+    if (sheetRelsPath) {
+      const sheetRelsEntry =
+        zip.file(
+          sheetRelsPath,
+        );
+
+      if (sheetRelsEntry) {
+        const sheetRelsXml =
+          await sheetRelsEntry.async(
+            'string',
+          );
+
+        const sheetRelsDocument =
+          new DOMParser().parseFromString(
+            sheetRelsXml,
+            'application/xml',
+          );
+
+        if (
+          !sheetRelsDocument.querySelector(
+            'parsererror',
+          )
+        ) {
+          const relationships =
+            Array.from(
+              sheetRelsDocument
+                .getElementsByTagNameNS(
+                  '*',
+                  'Relationship',
+                ),
+            );
+
+          for (
+            const relationship of
+            relationships
+          ) {
+            const id =
+              relationship.getAttribute(
+                'Id',
+              );
+
+            const target =
+              relationship.getAttribute(
+                'Target',
+              );
+
+            if (
+              id &&
+              target
+            ) {
+              worksheetRelationships.set(
+                id,
+                target,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    const drawingElements =
+      Array.from(
+        sheetDocument
+          .getElementsByTagNameNS(
+            '*',
+            'drawing',
+          ),
+      );
+
+    for (
+      const drawingElement of
+      drawingElements
+    ) {
+      const drawingRelationshipId =
+        drawingElement.getAttribute(
+          'r:id',
+        ) ||
+        drawingElement.getAttributeNS(
+          'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'id',
+        );
+
+      if (
+        !drawingRelationshipId
+      ) {
+        continue;
+      }
+
+      const drawingTarget =
+        worksheetRelationships.get(
+          drawingRelationshipId,
+        );
+
+      if (!drawingTarget) {
+        continue;
+      }
+
+      const drawingPath =
+        resolveXlsxPartRelationshipPath(
+          sheetPath,
+          drawingTarget,
+        );
+
+      if (!drawingPath) {
+        continue;
+      }
+
+      const drawingEntry =
+        zip.file(
+          drawingPath,
+        );
+
+      if (!drawingEntry) {
+        continue;
+      }
+
+      const drawingXml =
+        await drawingEntry.async(
+          'string',
+        );
+
+      const drawingDocument =
+        new DOMParser().parseFromString(
+          drawingXml,
+          'application/xml',
+        );
+
+      if (
+        drawingDocument.querySelector(
+          'parsererror',
+        )
+      ) {
+        continue;
+      }
+
+      const drawingPathParts =
+        drawingPath.split('/');
+
+      const drawingFileName =
+        drawingPathParts.pop();
+
+      const drawingDirectory =
+        drawingPathParts.join('/');
+
+      const drawingRelsPath =
+        drawingFileName
+          ? `${drawingDirectory}/_rels/${drawingFileName}.rels`
+          : undefined;
+
+      const drawingRelationships =
+        new Map<string, string>();
+
+      if (drawingRelsPath) {
+        const drawingRelsEntry =
+          zip.file(
+            drawingRelsPath,
+          );
+
+        if (drawingRelsEntry) {
+          const drawingRelsXml =
+            await drawingRelsEntry.async(
+              'string',
+            );
+
+          const drawingRelsDocument =
+            new DOMParser().parseFromString(
+              drawingRelsXml,
+              'application/xml',
+            );
+
+          if (
+            !drawingRelsDocument.querySelector(
+              'parsererror',
+            )
+          ) {
+            const relationships =
+              Array.from(
+                drawingRelsDocument
+                  .getElementsByTagNameNS(
+                    '*',
+                    'Relationship',
+                  ),
+              );
+
+            for (
+              const relationship of
+              relationships
+            ) {
+              const id =
+                relationship.getAttribute(
+                  'Id',
+                );
+
+              const target =
+                relationship.getAttribute(
+                  'Target',
+                );
+
+              if (
+                id &&
+                target
+              ) {
+                drawingRelationships.set(
+                  id,
+                  target,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      const drawingObjects =
+        getXlsxDrawingObjects(
+          drawingDocument,
+        );
+
+      for (
+        const drawingObject of
+        drawingObjects
+      ) {
+        const target =
+          drawingRelationships.get(
+            drawingObject.relationshipId,
+          );
+
+        if (!target) {
+          continue;
+        }
+
+        const resolvedTarget =
+          resolveXlsxPartRelationshipPath(
+            drawingPath,
+            target,
+          );
+
+        if (!resolvedTarget) {
+          continue;
+        }
+
+        const cellRange =
+          drawingObject.fromCell &&
+          drawingObject.toCell
+            ? `${drawingObject.fromCell}:${drawingObject.toCell}`
+            : drawingObject.fromCell;
+
+        if (
+          drawingObject.kind ===
+          'image'
+        ) {
+          const mimeType =
+            getDocxImageMimeType(
+              resolvedTarget,
+            );
+
+          if (!mimeType) {
+            log.warn(
+              `[Generation] Skipping unsupported XLSX embedded image: ${resolvedTarget}`,
+            );
+            continue;
+          }
+
+          const imageEntry =
+            zip.file(
+              resolvedTarget,
+            );
+
+          if (!imageEntry) {
+            continue;
+          }
+
+          const bytes =
+            await imageEntry.async(
+              'uint8array',
+            );
+
+          if (
+            bytes.length === 0
+          ) {
+            continue;
+          }
+
+          extractedImages.push({
+            id:
+              `xlsx_image_${extractedImages.length + 1}`,
+            fileName:
+              resolvedTarget
+                .split('/')
+                .pop() ||
+              `xlsx_image_${extractedImages.length + 1}`,
+            mimeType,
+            bytes,
+          });
+
+          imageLocations.push({
+            sheetName,
+            cellRange,
+          });
+
+          layout.push({
+            page:
+              sheetIndex + 1,
+            type: 'image',
+            content:
+              `[Embedded image ${extractedImages.length}]`,
+            sheetName,
+            cellRange,
+          });
+
+          continue;
+        }
+
+        if (
+          drawingObject.kind ===
+          'chart'
+        ) {
+          const chartEntry =
+            zip.file(
+              resolvedTarget,
+            );
+
+          if (!chartEntry) {
+            continue;
+          }
+
+          const chartXml =
+            await chartEntry.async(
+              'string',
+            );
+
+          const chartDocument =
+            new DOMParser().parseFromString(
+              chartXml,
+              'application/xml',
+            );
+
+          if (
+            chartDocument.querySelector(
+              'parsererror',
+            )
+          ) {
+            continue;
+          }
+
+          const chart =
+            parseXlsxChart(
+              chartDocument,
+            );
+
+          chartCount++;
+
+          const chartText =
+            formatXlsxChartText(
+              chart,
+            );
+
+          layout.push({
+            page:
+              sheetIndex + 1,
+            type: 'table',
+            content:
+              chartText,
+            sheetName,
+            cellRange,
+          });
+
+          canonicalBlocks.push(
+            `===== CHART ${chartCount}: ${sheetName}${cellRange ? ` (${cellRange})` : ''} =====`,
+            chartText,
+          );
+        }
+      }
+    }
+
+    const dimensionElement =
+      sheetDocument
+        .getElementsByTagNameNS(
+          '*',
+          'dimension',
+        )
+        .item(0);
+
+    const declaredRange =
+      dimensionElement
+        ?.getAttribute('ref') ||
+      undefined;
+
+    const parsedRows:
+      ParsedXlsxSheet['rows'] = [];
+
+    const rowElements =
+      Array.from(
+        sheetDocument
+          .getElementsByTagNameNS(
+            '*',
+            'row',
+          ),
+      );
+
+    for (
+      let rowIndex = 0;
+      rowIndex <
+      rowElements.length;
+      rowIndex++
+    ) {
+      const rowElement =
+        rowElements[
+          rowIndex
+        ];
+
+      const explicitRow =
+        Number(
+          rowElement.getAttribute(
+            'r',
+          ),
+        );
+
+      const rowNumber =
+        Number.isFinite(
+          explicitRow,
+        ) &&
+        explicitRow > 0
+          ? explicitRow
+          : rowIndex + 1;
+
+      const parsedCells:
+        ParsedXlsxCell[] = [];
+
+      const cellElements =
+        Array.from(
+          rowElement
+            .getElementsByTagNameNS(
+              '*',
+              'c',
+            ),
+        );
+
+      for (
+        const cellElement of
+        cellElements
+      ) {
+        const address =
+          cellElement.getAttribute(
+            'r',
+          ) ||
+          `row${rowNumber}`;
+
+        const cellType =
+          cellElement.getAttribute(
+            't',
+          ) || '';
+
+        const valueMetadataIndex =
+          cellElement.getAttribute(
+            'vm',
+          );
+
+        if (
+          valueMetadataIndex
+        ) {
+          const richImageReference =
+            richImageReferences.get(
+              valueMetadataIndex,
+            );
+
+          if (richImageReference) {
+            const richImageKey =
+              `${sheetName}:${address}:${valueMetadataIndex}`;
+
+            if (
+              !extractedRichImageKeys.has(
+                richImageKey,
+              )
+            ) {
+              const imageEntry =
+                zip.file(
+                  richImageReference
+                    .imagePath,
+                );
+
+              if (imageEntry) {
+                const bytes =
+                  await imageEntry.async(
+                    'uint8array',
+                  );
+
+                if (
+                  bytes.length > 0
+                ) {
+                  extractedRichImageKeys.add(
+                    richImageKey,
+                  );
+
+                  extractedImages.push({
+                    id:
+                      `xlsx_image_${extractedImages.length + 1}`,
+                    fileName:
+                      richImageReference
+                        .imagePath
+                        .split('/')
+                        .pop() ||
+                      `xlsx_image_${extractedImages.length + 1}`,
+                    mimeType:
+                      richImageReference
+                        .mimeType,
+                    bytes,
+                  });
+
+                  imageLocations.push({
+                    sheetName,
+                    cellRange:
+                      address,
+                  });
+
+                  layout.push({
+                    page:
+                      sheetIndex + 1,
+                    type: 'image',
+                    content:
+                      `[Embedded in-cell image ${extractedImages.length}]`,
+                    sheetName,
+                    cellRange:
+                      address,
+                  });
+
+                  canonicalBlocks.push(
+                    `===== IN-CELL IMAGE ${extractedImages.length}: ${sheetName}!${address} =====`,
+                    `[Embedded image ${extractedImages.length}]`,
+                  );
+                }
+              }
+            }
+
+            parsedCells.push({
+              address,
+              value:
+                `[Embedded image at ${sheetName}!${address}]`,
+            });
+
+            totalCellCount++;
+            continue;
+          }
+        }
+
+        const formulaElement =
+          cellElement
+            .getElementsByTagNameNS(
+              '*',
+              'f',
+            )
+            .item(0);
+
+        const valueElement =
+          cellElement
+            .getElementsByTagNameNS(
+              '*',
+              'v',
+            )
+            .item(0);
+
+        const rawValue =
+          valueElement
+            ?.textContent ??
+          '';
+
+        const formula =
+          formulaElement
+            ?.textContent ||
+          undefined;
+
+        let value = '';
+
+        switch (cellType) {
+          case 's': {
+            const sharedIndex =
+              Number(rawValue);
+
+            value =
+              Number.isInteger(
+                sharedIndex,
+              ) &&
+              sharedIndex >= 0
+                ? sharedStrings[
+                    sharedIndex
+                  ] ?? rawValue
+                : rawValue;
+
+            break;
+          }
+
+          case 'inlineStr':
+            value =
+              getXlsxTextContent(
+                cellElement,
+              );
+            break;
+
+          case 'b':
+            value =
+              rawValue === '1'
+                ? 'TRUE'
+                : 'FALSE';
+            break;
+
+          case 'e':
+            value =
+              rawValue
+                ? `#ERROR(${rawValue})`
+                : '#ERROR';
+            break;
+
+          default:
+            value =
+              rawValue;
+            break;
+        }
+
+        if (
+          !formula &&
+          value === ''
+        ) {
+          continue;
+        }
+
+        totalCellCount++;
+
+        if (formula) {
+          formulaCount++;
+        }
+
+        parsedCells.push({
+          address,
+          value:
+            formula
+              ? formula
+              : value,
+          formula,
+          cachedValue:
+            formula
+              ? value
+              : undefined,
+        });
+      }
+
+      if (
+        parsedCells.length > 0
+      ) {
+        parsedRows.push({
+          rowNumber,
+          cells:
+            parsedCells,
+        });
+      }
+    }
+
+    parsedSheets.push({
+      name:
+        sheetName,
+      range:
+        declaredRange,
+      rows:
+        parsedRows,
+    });
+
+    const sheetTitle =
+      declaredRange
+        ? `${sheetName} (${declaredRange})`
+        : sheetName;
+
+    layout.push({
+      page:
+        sheetIndex + 1,
+      type: 'title',
+      content:
+        `Worksheet: ${sheetTitle}`,
+      sheetName,
+      cellRange:
+        declaredRange,
+    });
+
+    const rowText =
+      parsedRows
+        .map(
+          (row) => {
+            const cells =
+              row.cells.map(
+                (cell) => {
+                  if (
+                    cell.formula
+                  ) {
+                    const cached =
+                      cell.cachedValue !==
+                        undefined &&
+                      cell.cachedValue !== ''
+                        ? ` [cached: ${formatXlsxValue(cell.cachedValue)}]`
+                        : '';
+
+                    return (
+                      `${cell.address}: =${cell.formula}${cached}`
+                    );
+                  }
+
+                  return (
+                    `${cell.address}: ${formatXlsxValue(cell.value)}`
+                  );
+                },
+              );
+
+            return (
+              `Row ${row.rowNumber}: ` +
+              cells.join(' | ')
+            );
+          },
+        )
+        .join('\n');
+
+    const tableText =
+      rowText ||
+      '(worksheet contains no populated cells)';
+
+    layout.push({
+      page:
+        sheetIndex + 1,
+      type: 'table',
+      content:
+        tableText,
+      sheetName,
+      cellRange:
+        declaredRange,
+    });
+
+    canonicalBlocks.push(
+      `===== WORKSHEET: ${sheetTitle} =====`,
+      tableText,
+    );
+  }
+
+  if (
+    parsedSheets.length === 0
+  ) {
+    throw new Error(
+      `${fileName}: no readable worksheets were found`,
+    );
+  }
+
+  const analyzedImages =
+    await analyzeSourceImages(
+      extractedImages,
+      signal,
+      'XLSX',
+    );
+
+  const analyzedPdfImages:
+    NonNullable<
+      NonNullable<
+        ParsedPdfContent['metadata']
+      >['pdfImages']
+    > = [];
+
+  const visualTextBlocks:
+    string[] = [];
+
+  for (
+    let index = 0;
+    index <
+    analyzedImages.length;
+    index++
+  ) {
+    const analyzed =
+      analyzedImages[index];
+
+    const image =
+      analyzed.metadata
+        ?.pdfImages?.[0];
+
+    if (!image) {
+      continue;
+    }
+
+    analyzedPdfImages.push({
+      ...image,
+      id:
+        extractedImages[index]?.id ||
+        image.id,
+      pageNumber: 1,
+    });
+
+    const location =
+      imageLocations[index];
+
+    if (
+      analyzed.text?.trim()
+    ) {
+      visualTextBlocks.push(
+        `--- XLSX EMBEDDED IMAGE ${index + 1}` +
+          `${location?.sheetName ? ` [${location.sheetName}${location.cellRange ? ` ${location.cellRange}` : ''}]` : ''} ---\n` +
+          analyzed.text.trim(),
+      );
+    }
+  }
+
+  if (
+    visualTextBlocks.length > 0
+  ) {
+    canonicalBlocks.push(
+      '===== XLSX EMBEDDED IMAGE ANALYSIS =====',
+      ...visualTextBlocks,
+    );
+  }
+
+  const content =
+    canonicalBlocks
+      .join('\n\n')
+      .trim();
+
+  return {
+    text:
+      content,
+    images: [],
+    layout,
+
+    metadata: {
+      pageCount:
+        parsedSheets.length,
+      fileName,
+      fileSize:
+        sourceBlob.size,
+      parser:
+        'xlsx-jszip',
+      processingTime:
+        Math.round(
+          performance.now() -
+            startedAt,
+        ),
+
+      workbookSheetCount:
+        parsedSheets.length,
+
+      workbookSheets:
+        parsedSheets.map(
+          (sheet) => ({
+            name:
+              sheet.name,
+            range:
+              sheet.range,
+            populatedRowCount:
+              sheet.rows.length,
+            populatedCellCount:
+              sheet.rows.reduce(
+                (
+                  count,
+                  row,
+                ) =>
+                  count +
+                  row.cells.length,
+                0,
+              ),
+          }),
+        ),
+
+      workbookCellCount:
+        totalCellCount,
+
+      workbookFormulaCount:
+        formulaCount,
+
+      workbookChartCount:
+        chartCount,
+
+      workbookEmbeddedImageCount:
+        extractedImages.length,
+
+      pdfImages:
+        analyzedPdfImages,
+    },
+  };
+}
+
+function getDocxImageMimeType(
+  path: string,
+): string | undefined {
+  const lower =
+    path.toLowerCase();
+
+  if (
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.jpeg')
+  ) {
+    return 'image/jpeg';
+  }
+
+  if (lower.endsWith('.png')) {
+    return 'image/png';
+  }
+
+  if (lower.endsWith('.webp')) {
+    return 'image/webp';
+  }
+
+  return undefined;
+}
+
+function resolveDocxRelationshipPath(
+  target: string,
+): string | undefined {
+  if (
+    !target ||
+    /^(?:https?:|data:)/i.test(
+      target,
+    )
+  ) {
+    return undefined;
+  }
+
+  const normalized =
+    target
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+
+  if (
+    normalized.startsWith(
+      'word/',
+    )
+  ) {
+    return normalized;
+  }
+
+  const parts =
+    [
+      'word',
+      ...normalized.split('/'),
+    ];
+
+  const resolved:
+    string[] = [];
+
+  for (const part of parts) {
+    if (
+      !part ||
+      part === '.'
+    ) {
+      continue;
+    }
+
+    if (part === '..') {
+      resolved.pop();
+      continue;
+    }
+
+    resolved.push(part);
+  }
+
+  return resolved.join('/');
+}
+
+interface ExtractedSourceImage {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+async function analyzeSourceImages(
+  images: ExtractedSourceImage[],
+  signal?: AbortSignal,
+  sourceLabel: 'DOCX' | 'XLSX' = 'DOCX',
+): Promise<ParsedPdfContent[]> {
+  if (images.length === 0) {
+    return [];
+  }
+
+  const message =
+    `[Generation] ${sourceLabel} vision phase: ${images.length} embedded image(s)`;
+
+  log.info(message);
+  logGenerationProgress(message);
+
+  const formData =
+    new FormData();
+
+  for (const image of images) {
+    const imageBuffer =
+      image.bytes.buffer.slice(
+        image.bytes.byteOffset,
+        image.bytes.byteOffset +
+          image.bytes.byteLength,
+      ) as ArrayBuffer;
+
+    const file =
+      new File(
+        [imageBuffer],
+        image.fileName,
+        {
+          type: image.mimeType,
+        },
+      );
+
+    formData.append(
+      'sources',
+      file,
+      image.fileName,
+    );
+  }
+
+  const response =
+    await fetch(
+      '/api/parse-pdf/mineru-batch',
+      {
+        method: 'POST',
+        body: formData,
+        signal,
+      },
+    );
+
+  if (!response.ok) {
+    const errorData =
+      await response
+        .json()
+        .catch(() => ({}));
+
+    throw new Error(
+      errorData.error ||
+        `${sourceLabel} embedded-image analysis failed`,
+    );
+  }
+
+  const result =
+    await response.json();
+
+  const batchResults =
+    Array.isArray(
+      result?.data?.data,
+    )
+      ? result.data.data
+      : Array.isArray(
+            result?.data,
+          )
+        ? result.data
+        : [];
+
+  if (
+    batchResults.length !==
+    images.length
+  ) {
+    throw new Error(
+      `${sourceLabel} vision returned ${batchResults.length} result(s), ` +
+        `but ${images.length} image(s) were submitted`,
+    );
+  }
+
+  const parsedResults =
+    batchResults.map(
+      (
+        item: {
+          data?: ParsedPdfContent;
+        },
+        index: number,
+      ) => {
+        if (!item?.data) {
+          throw new Error(
+            `${sourceLabel} embedded image ${index + 1} returned no parsed data`,
+          );
+        }
+
+        return item.data;
+      },
+    );
+
+  log.info(
+    `[Generation] ${sourceLabel} vision phase complete`,
+  );
+  logGenerationProgress(
+    `[Generation] ${sourceLabel} vision phase complete`,
+  );
+
+  return parsedResults;
+}
+
+async function parseDocxSource(
+  sourceBlob: Blob,
+  fileName: string,
+  signal?: AbortSignal,
+): Promise<ParsedPdfContent> {
+  const JSZip =
+    (await import('jszip')).default;
+
+  const startedAt =
+    performance.now();
+
+  let zip;
+
+  try {
+    zip =
+      await JSZip.loadAsync(
+        await sourceBlob.arrayBuffer(),
+      );
+  } catch (error) {
+    throw new Error(
+      `${fileName}: invalid or unreadable DOCX ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${
+        error instanceof Error
+          ? error.message
+          : String(error)
+      }`,
+    );
+  }
+
+  const documentEntry =
+    zip.file(
+      'word/document.xml',
+    );
+
+  if (!documentEntry) {
+    throw new Error(
+      `${fileName}: DOCX is missing word/document.xml`,
+    );
+  }
+
+  const documentXml =
+    await documentEntry.async(
+      'string',
+    );
+
+  const relationshipTargets =
+    new Map<string, string>();
+
+  const relationshipsEntry =
+    zip.file(
+      'word/_rels/document.xml.rels',
+    );
+
+  if (relationshipsEntry) {
+    const relationshipsXml =
+      await relationshipsEntry.async(
+        'string',
+      );
+
+    const relationshipsDocument =
+      new DOMParser().parseFromString(
+        relationshipsXml,
+        'application/xml',
+      );
+
+    if (
+      !relationshipsDocument.querySelector(
+        'parsererror',
+      )
+    ) {
+      const relationships =
+        Array.from(
+          relationshipsDocument
+            .getElementsByTagNameNS(
+              '*',
+              'Relationship',
+            ),
+        );
+
+      for (
+        const relationship of
+        relationships
+      ) {
+        const id =
+          relationship.getAttribute(
+            'Id',
+          );
+
+        const target =
+          relationship.getAttribute(
+            'Target',
+          );
+
+        const type =
+          relationship.getAttribute(
+            'Type',
+          ) || '';
+
+        if (
+          id &&
+          target &&
+          /\/image$/i.test(type)
+        ) {
+          relationshipTargets.set(
+            id,
+            target,
+          );
+        }
+      }
+    }
+  }
+
+  const xmlDocument =
+    new DOMParser().parseFromString(
+      documentXml,
+      'application/xml',
+    );
+
+  if (
+    xmlDocument.querySelector(
+      'parsererror',
+    )
+  ) {
+    throw new Error(
+      `${fileName}: invalid DOCX document XML`,
+    );
+  }
+
+  const bodyElements =
+    xmlDocument
+      .getElementsByTagNameNS(
+        '*',
+        'body',
+      );
+
+  const body =
+    bodyElements.item(0);
+
+  if (!body) {
+    throw new Error(
+      `${fileName}: DOCX contains no document body`,
+    );
+  }
+
+  const layout:
+    NonNullable<
+      ParsedPdfContent['layout']
+    > = [];
+
+  const tables:
+    NonNullable<
+      ParsedPdfContent['tables']
+    > = [];
+
+  const canonicalBlocks:
+    string[] = [];
+
+  const extractedImages:
+    ExtractedSourceImage[] = [];
+
+  const extractedRelationshipIds =
+    new Set<string>();
+
+  for (
+    const child of
+    Array.from(body.children)
+  ) {
+    const blips =
+      Array.from(
+        child.getElementsByTagNameNS(
+          '*',
+          'blip',
+        ),
+      );
+
+    for (const blip of blips) {
+      const relationshipId =
+        blip.getAttribute(
+          'r:embed',
+        ) ||
+        blip.getAttributeNS(
+          'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+          'embed',
+        );
+
+      if (
+        !relationshipId ||
+        extractedRelationshipIds.has(
+          relationshipId,
+        )
+      ) {
+        continue;
+      }
+
+      const target =
+        relationshipTargets.get(
+          relationshipId,
+        );
+
+      if (!target) {
+        continue;
+      }
+
+      const imagePath =
+        resolveDocxRelationshipPath(
+          target,
+        );
+
+      if (!imagePath) {
+        continue;
+      }
+
+      const mimeType =
+        getDocxImageMimeType(
+          imagePath,
+        );
+
+      if (!mimeType) {
+        log.warn(
+          `[Generation] Skipping unsupported DOCX embedded image: ${imagePath}`,
+        );
+        continue;
+      }
+
+      const imageEntry =
+        zip.file(imagePath);
+
+      if (!imageEntry) {
+        log.warn(
+          `[Generation] DOCX image relationship points to missing file: ${imagePath}`,
+        );
+        continue;
+      }
+
+      const bytes =
+        await imageEntry.async(
+          'uint8array',
+        );
+
+      if (
+        bytes.length === 0
+      ) {
+        continue;
+      }
+
+      extractedRelationshipIds.add(
+        relationshipId,
+      );
+
+      extractedImages.push({
+        id:
+          `docx_image_${extractedImages.length + 1}`,
+        fileName:
+          imagePath
+            .split('/')
+            .pop() ||
+          `docx_image_${extractedImages.length + 1}`,
+        mimeType,
+        bytes,
+      });
+
+      layout.push({
+        page: 1,
+        type: 'image',
+        content:
+          `[Embedded image ${extractedImages.length}]`,
+      });
+
+      canonicalBlocks.push(
+        `[Embedded image ${extractedImages.length}]`,
+      );
+    }
+
+    if (
+      child.localName === 'p'
+    ) {
+      const text =
+        extractWordNodeText(
+          child,
+        ).trim();
+
+      if (!text) {
+        continue;
+      }
+
+      const style =
+        getWordParagraphStyle(
+          child,
+        );
+
+      const isTitle =
+        !!style &&
+        (
+          /^title$/i.test(style) ||
+          /^heading\s*[1-6]$/i.test(style)
+        );
+
+      layout.push({
+        page: 1,
+        type:
+          isTitle
+            ? 'title'
+            : 'text',
+        content: text,
+      });
+
+      if (isTitle) {
+        const headingLevelMatch =
+          style?.match(
+            /^heading\s*([1-6])$/i,
+          );
+
+        const headingLevel =
+          headingLevelMatch
+            ? Number(
+                headingLevelMatch[1],
+              )
+            : 1;
+
+        canonicalBlocks.push(
+          `${'#'.repeat(
+            headingLevel,
+          )} ${text}`,
+        );
+      } else {
+        canonicalBlocks.push(
+          text,
+        );
+      }
+
+      continue;
+    }
+
+    if (
+      child.localName === 'tbl'
+    ) {
+      const rows =
+        wordTableToData(
+          child,
+        );
+
+      if (
+        rows.length === 0
+      ) {
+        continue;
+      }
+
+      const tableText =
+        wordTableToMarkdown(
+          rows,
+        );
+
+      tables.push({
+        page: 1,
+        data: rows,
+      });
+
+      layout.push({
+        page: 1,
+        type: 'table',
+        content: tableText,
+      });
+
+      canonicalBlocks.push(
+        tableText,
+      );
+    }
+  }
+
+  const analyzedImages =
+    await analyzeSourceImages(
+      extractedImages,
+      signal,
+      'DOCX',
+    );
+
+  const analyzedPdfImages:
+    NonNullable<
+      NonNullable<
+        ParsedPdfContent['metadata']
+      >['pdfImages']
+    > = [];
+
+  const visualTextBlocks:
+    string[] = [];
+
+  for (
+    let index = 0;
+    index <
+    analyzedImages.length;
+    index++
+  ) {
+    const analyzed =
+      analyzedImages[index];
+
+    const image =
+      analyzed.metadata
+        ?.pdfImages?.[0];
+
+    if (!image) {
+      continue;
+    }
+
+    analyzedPdfImages.push({
+      ...image,
+      id:
+        extractedImages[index]?.id ||
+        image.id,
+      pageNumber: 1,
+    });
+
+    if (
+      analyzed.text?.trim()
+    ) {
+      visualTextBlocks.push(
+        `--- DOCX EMBEDDED IMAGE ${index + 1} ---\n` +
+          analyzed.text.trim(),
+      );
+    }
+  }
+
+  if (
+    visualTextBlocks.length > 0
+  ) {
+    canonicalBlocks.push(
+      '===== DOCX EMBEDDED IMAGE ANALYSIS =====',
+      ...visualTextBlocks,
+    );
+  }
+
+  const content =
+    canonicalBlocks
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+
+  if (!content) {
+    throw new Error(
+      `${fileName}: DOCX contains no readable text or tables`,
+    );
+  }
+
+  return {
+    text: content,
+    images: [],
+    tables,
+    layout,
+
+    metadata: {
+      pageCount: 1,
+      fileName,
+      fileSize:
+        sourceBlob.size,
+      parser: 'docx-jszip',
+      processingTime:
+        Math.round(
+          performance.now() -
+            startedAt,
+        ),
+      pdfImages:
+        analyzedPdfImages,
+      docxEmbeddedImageCount:
+        extractedImages.length,
+    },
+  };
+}
+
+async function objectUrlToDataUrl(
+  objectUrl: string,
+): Promise<string> {
+  const response =
+    await fetch(objectUrl);
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to read generated image blob (${response.status})`,
+    );
+  }
+
+  const blob =
+    await response.blob();
+
+  return await new Promise<string>(
+    (
+      resolve,
+      reject,
+    ) => {
+      const reader =
+        new FileReader();
+
+      reader.onerror =
+        () =>
+          reject(
+            new Error(
+              'Failed to convert generated image to data URL',
+            ),
+          );
+
+      reader.onload =
+        () => {
+          if (
+            typeof reader.result ===
+            'string'
+          ) {
+            resolve(
+              reader.result,
+            );
+          }
+          else {
+            reject(
+              new Error(
+                'Generated image conversion returned no data',
+              ),
+            );
+          }
+        };
+
+      reader.readAsDataURL(
+        blob,
+      );
+    },
+  );
+}
 
 function GenerationPreviewContent() {
   const router = useRouter();
@@ -152,10 +3445,95 @@ function GenerationPreviewContent() {
     // Use a local mutable copy so we can update it after PDF parsing
     let currentSession = session;
 
+    // Use the generation session id as the durable classroom id.
+    // This exists before source parsing, so early failures still get
+    // a persistent history card.
+    const stageId =
+      currentSession.sessionId ||
+      nanoid(10);
+
+    const stage: Stage = {
+      id: stageId,
+      name: extractTopicFromRequirement(
+        currentSession.requirements.requirement,
+      ),
+      description: '',
+      language:
+        currentSession.requirements.language ||
+        'en-US',
+      style: 'professional',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const persistGenerationState = async (
+      status: 'generating' | 'completed' | 'failed',
+      options?: {
+        error?: string;
+        requireSuccess?: boolean;
+      },
+    ) => {
+      const currentState = useStageStore.getState();
+
+      const activeStage =
+        currentState.stage?.id === stage.id
+          ? currentState.stage
+          : stage;
+
+      const activeScenes =
+        currentState.stage?.id === stage.id
+          ? currentState.scenes
+          : [];
+
+      const response = await fetch('/api/classroom', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          stage: activeStage,
+          scenes: activeScenes,
+          currentSceneId:
+            currentState.stage?.id === stage.id
+              ? currentState.currentSceneId
+              : null,
+          chats:
+            currentState.stage?.id === stage.id
+              ? currentState.chats
+              : [],
+          outlines:
+            currentState.stage?.id === stage.id
+              ? currentState.outlines
+              : [],
+          status,
+          error: options?.error,
+          requirement:
+            currentSession.requirements.requirement,
+        }),
+      });
+
+      if (!response.ok) {
+        const message =
+          `Classroom persistence failed (${response.status})`;
+
+        if (options?.requireSuccess) {
+          throw new Error(message);
+        }
+
+        log.warn(message);
+      }
+    };
+
     setError(null);
     setCurrentStepIndex(0);
 
     try {
+      await persistGenerationState(
+        'generating',
+        {
+          requireSuccess: true,
+        },
+      );
       // Compute active steps for this session (recomputed after session mutations)
 
       // Keep Docker/Kokoro/Whisper out of memory while Ollama performs
@@ -183,7 +3561,7 @@ function GenerationPreviewContent() {
       // Determine whether one or more PDFs still need analysis.
       // Legacy singular fields are retained for sessions created before
       // multi-PDF support.
-      const pdfDocuments =
+      let pdfDocuments =
         currentSession.pdfDocuments?.length
           ? currentSession.pdfDocuments
           : currentSession.pdfStorageKey
@@ -213,9 +3591,11 @@ function GenerationPreviewContent() {
       }
 
       if (hasPdfToAnalyze) {
-        log.info(
-          `[Generation] Parsing ${pdfDocuments.length} PDF document(s)`,
-        );
+        const sourceParsingMessage =
+          `[Generation] Parsing ${pdfDocuments.length} source document(s)`;
+
+        log.info(sourceParsingMessage);
+        logGenerationProgress(sourceParsingMessage);
 
         const documentTexts: Array<{
           fileName: string;
@@ -303,8 +3683,8 @@ function GenerationPreviewContent() {
                 image.pageNumber,
               description:
                 image.description
-                  ? `${image.description} [Source PDF: ${fileName}]`
-                  : `Source PDF: ${fileName}`,
+                  ? `${image.description} [Source: ${fileName}]`
+                  : `Source: ${fileName}`,
               width: image.width,
               height: image.height,
               visualRegions:
@@ -323,14 +3703,296 @@ function GenerationPreviewContent() {
               documentImages.length,
           });
 
-          log.info(
-            `[Generation] Parsed source ${documentIndex + 1}/${pdfDocuments.length}: ` +
-              `${fileName} ` +
-              `(${documentText.length} chars, ${documentImages.length} images)`,
-          );
+          const parsedSourceMessage =
+            `[Generation] Parsed source ${documentIndex + 1}: ` +
+            `${fileName} ` +
+            `(${documentText.length} chars, ${documentImages.length} images)`;
+
+          log.info(parsedSourceMessage);
+          logGenerationProgress(parsedSourceMessage);
         };
 
+        // ------------------------------------------------------------
+        // Direct textual source phase.
+        //
+        // TXT / Markdown / JSON / XML / CSV do not need MinerU or
+        // unpdf. Read them directly from their original stored blobs.
+        // They still normalize through the same ParsedPdfContent ->
+        // SourceDocument adapter for now so the downstream generation
+        // pipeline remains unchanged.
+        // ------------------------------------------------------------
+
+        const directDocuments =
+          pdfDocuments.filter(
+            (document) =>
+              isDirectTextSource(
+                document.fileName,
+                document.mimeType,
+              ),
+          );
+
+        if (directDocuments.length > 0) {
+          const directPhaseMessage =
+            `[Generation] Direct source phase: ${directDocuments.length} document(s)`;
+
+          log.info(directPhaseMessage);
+          logGenerationProgress(directPhaseMessage);
+
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            directDocuments.length;
+            documentIndex++
+          ) {
+            const document =
+              directDocuments[
+                documentIndex
+              ];
+
+            const sourceBlob =
+              await loadPdfBlob(
+                document.storageKey,
+              );
+
+            if (
+              !sourceBlob ||
+              !(sourceBlob instanceof Blob) ||
+              sourceBlob.size === 0
+            ) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            const rawText =
+              await sourceBlob.text();
+
+            const normalizedText =
+              normalizeDirectSourceText(
+                document.fileName,
+                document.mimeType ||
+                  sourceBlob.type,
+                rawText,
+              );
+
+            const directParsed:
+              ParsedPdfContent = {
+                text: normalizedText,
+                images: [],
+                metadata: {
+                  parser: 'direct-source',
+                  fileSize:
+                    sourceBlob.size,
+                  pageCount: 1,
+                },
+              };
+
+            recordParsedDocument(
+              document.fileName,
+              sourceBlob.size,
+              directParsed,
+              documentIndex,
+              document.mimeType ||
+                sourceBlob.type ||
+                'text/plain',
+            );
+          }
+
+          log.info(
+            '[Generation] Direct source phase complete',
+          );
+          logGenerationProgress(
+            '[Generation] Direct source phase complete',
+          );
+        }
+
+        // ------------------------------------------------------------
+        // DOCX source phase.
+        //
+        // DOCX is an OOXML ZIP package. Parse word/document.xml
+        // locally with JSZip and DOMParser. MinerU is not involved.
+        // ------------------------------------------------------------
+
+        const docxDocuments =
+          pdfDocuments.filter(
+            (document) =>
+              isDocxSource(
+                document.fileName,
+                document.mimeType,
+              ),
+          );
+
         if (
+          docxDocuments.length > 0
+        ) {
+          const docxPhaseMessage =
+            `[Generation] DOCX source phase: ${docxDocuments.length} document(s)`;
+
+          log.info(
+            docxPhaseMessage,
+          );
+          logGenerationProgress(
+            docxPhaseMessage,
+          );
+
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            docxDocuments.length;
+            documentIndex++
+          ) {
+            const document =
+              docxDocuments[
+                documentIndex
+              ];
+
+            const sourceBlob =
+              await loadPdfBlob(
+                document.storageKey,
+              );
+
+            if (
+              !sourceBlob ||
+              !(sourceBlob instanceof Blob) ||
+              sourceBlob.size === 0
+            ) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            const parsed =
+              await parseDocxSource(
+                sourceBlob,
+                document.fileName,
+                signal,
+              );
+
+            recordParsedDocument(
+              document.fileName,
+              sourceBlob.size,
+              parsed,
+              documentIndex,
+              document.mimeType ||
+                sourceBlob.type ||
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            );
+          }
+
+          log.info(
+            '[Generation] DOCX source phase complete',
+          );
+          logGenerationProgress(
+            '[Generation] DOCX source phase complete',
+          );
+        }
+
+        // ------------------------------------------------------------
+        // XLSX source phase.
+        //
+        // XLSX is an OOXML ZIP package. Parse workbook/sheet XML
+        // directly with JSZip and DOMParser. No MinerU or vision is
+        // required for ordinary spreadsheet cells.
+        // ------------------------------------------------------------
+
+        const xlsxDocuments =
+          pdfDocuments.filter(
+            (document) =>
+              isXlsxSource(
+                document.fileName,
+                document.mimeType,
+              ),
+          );
+
+        if (
+          xlsxDocuments.length > 0
+        ) {
+          const xlsxPhaseMessage =
+            `[Generation] XLSX source phase: ${xlsxDocuments.length} document(s)`;
+
+          log.info(
+            xlsxPhaseMessage,
+          );
+
+          logGenerationProgress(
+            xlsxPhaseMessage,
+          );
+
+          for (
+            let documentIndex = 0;
+            documentIndex <
+            xlsxDocuments.length;
+            documentIndex++
+          ) {
+            const document =
+              xlsxDocuments[
+                documentIndex
+              ];
+
+            const sourceBlob =
+              await loadPdfBlob(
+                document.storageKey,
+              );
+
+            if (
+              !sourceBlob ||
+              !(sourceBlob instanceof Blob) ||
+              sourceBlob.size === 0
+            ) {
+              throw new Error(
+                `${t('generation.pdfLoadFailed')}: ${document.fileName}`,
+              );
+            }
+
+            const parsed =
+              await parseXlsxSource(
+                sourceBlob,
+                document.fileName,
+                signal,
+              );
+
+            recordParsedDocument(
+              document.fileName,
+              sourceBlob.size,
+              parsed,
+              documentIndex,
+              document.mimeType ||
+                sourceBlob.type ||
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            );
+          }
+
+          log.info(
+            '[Generation] XLSX source phase complete',
+          );
+
+          logGenerationProgress(
+            '[Generation] XLSX source phase complete',
+          );
+        }
+
+        // Only PDF/image-style sources continue into MinerU/unpdf.
+        // The original session field is still named pdfDocuments for
+        // backward compatibility during this migration.
+        pdfDocuments =
+          pdfDocuments.filter(
+            (document) =>
+              !isDirectTextSource(
+                document.fileName,
+                document.mimeType,
+              ) &&
+              !isDocxSource(
+                document.fileName,
+                document.mimeType,
+              ) &&
+              !isXlsxSource(
+                document.fileName,
+                document.mimeType,
+              ),
+          );
+
+        if (
+          pdfDocuments.length > 0 &&
           currentSession.pdfProviderId ===
           'mineru'
         ) {
@@ -639,7 +4301,7 @@ function GenerationPreviewContent() {
           documentTexts
             .map(
               ({ fileName, text }) =>
-                `===== SOURCE PDF: ${fileName} =====\n${text}`,
+                `===== SOURCE: ${fileName} =====\n${text}`,
             )
             .join('\n\n');
 
@@ -656,7 +4318,7 @@ function GenerationPreviewContent() {
             documentTexts.reduce(
               (total, document) =>
                 total +
-                `===== SOURCE PDF: ${document.fileName} =====\n\n`
+                `===== SOURCE: ${document.fileName} =====\n\n`
                   .length,
               0,
             );
@@ -681,7 +4343,7 @@ function GenerationPreviewContent() {
             documentTexts
               .map(
                 ({ fileName, text }) =>
-                  `===== SOURCE PDF: ${fileName} =====\n` +
+                  `===== SOURCE: ${fileName} =====\n` +
                   text.substring(
                     0,
                     perDocumentBudget,
@@ -699,10 +4361,13 @@ function GenerationPreviewContent() {
 
         const imageStorageIdByImageId = new Map<string, string>();
 
-        for (const storageId of imageStorageIds) {
-          const imageId = storageId.replace(/^session_[^_]+_/, '');
-          imageStorageIdByImageId.set(imageId, storageId);
-        }
+        images.forEach((image, index) => {
+          const storageId = imageStorageIds[index];
+
+          if (storageId) {
+            imageStorageIdByImageId.set(image.id, storageId);
+          }
+        });
 
         const sourceDocumentRefs = await Promise.all(
           parsedDocuments.map(async (parsedDocument) => {
@@ -734,9 +4399,11 @@ function GenerationPreviewContent() {
           }),
         );
 
-        log.info(
-          `[Generation] Stored ${sourceDocumentRefs.length} complete source document(s) in IndexedDB`,
-        );
+        const sourceStorageMessage =
+          `[Generation] Stored ${sourceDocumentRefs.length} complete source document(s) in IndexedDB`;
+
+        log.info(sourceStorageMessage);
+        logGenerationProgress(sourceStorageMessage);
         const pdfImages: PdfImage[] =
           images.map(
             (img, i) => ({
@@ -806,12 +4473,14 @@ function GenerationPreviewContent() {
           setTruncationWarnings(warnings);
         }
 
-        log.info(
+        const sourceAnalysisMessage =
           `[Generation] Source analysis complete: ` +
-            `${pdfDocuments.length} documents, ` +
-            `${totalRawTextLength} raw text chars, ` +
-            `${images.length} images`,
-        );
+          `${parsedDocuments.length} documents, ` +
+          `${totalRawTextLength} raw text chars, ` +
+          `${images.length} images`;
+
+        log.info(sourceAnalysisMessage);
+        logGenerationProgress(sourceAnalysisMessage);
 
         currentSession =
           updatedSession;
@@ -875,7 +4544,7 @@ function GenerationPreviewContent() {
         imageMapping = currentSession.imageMapping;
       }
 
-      // ── Agent generation (before outlines so persona can influence structure) ──
+      // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Agent generation (before outlines so persona can influence structure) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
       const settings = useSettingsStore.getState();
       let agents: Array<{
         id: string;
@@ -884,17 +4553,8 @@ function GenerationPreviewContent() {
         persona?: string;
       }> = [];
 
-      // Create stage client-side (needed for agent generation stageId)
-      const stageId = nanoid(10);
-      const stage: Stage = {
-        id: stageId,
-        name: extractTopicFromRequirement(currentSession.requirements.requirement),
-        description: '',
-        language: currentSession.requirements.language || 'en-US',
-        style: 'professional',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
+      // Stage was created before source parsing so its durable history
+      // record exists even when generation fails early.
 
       if (settings.agentMode === 'auto') {
         const agentStepIdx = activeSteps.findIndex((s) => s.id === 'agent-generation');
@@ -916,7 +4576,7 @@ function GenerationPreviewContent() {
             '/avatars/thinker-2.png',
           ];
 
-          // No outlines yet — agent generation uses only stage name + description
+          // No outlines yet ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â agent generation uses only stage name + description
           const agentResp = await fetch('/api/generate/agent-profiles', {
             method: 'POST',
             headers: getApiHeaders(),
@@ -964,7 +4624,7 @@ function GenerationPreviewContent() {
             }));
         }
       } else {
-        // Preset mode — use selected agents (include persona)
+        // Preset mode ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â use selected agents (include persona)
         const registry = useAgentRegistry.getState();
         agents = settings.selectedAgentIds
           .map((id) => registry.getAgent(id))
@@ -977,7 +4637,7 @@ function GenerationPreviewContent() {
           }));
       }
 
-      // ── Generate outlines (with agent personas for teacher context) ──
+      // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Generate outlines (with agent personas for teacher context) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
       let outlines = currentSession.sceneOutlines;
 
       const outlineStepIdx = activeSteps.findIndex((s) => s.id === 'outline');
@@ -1068,7 +4728,7 @@ function GenerationPreviewContent() {
         setSession(updatedSession);
         sessionStorage.setItem('generationSession', JSON.stringify(updatedSession));
 
-        // Outline generation succeeded — clear homepage draft cache
+        // Outline generation succeeded ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â clear homepage draft cache
         try {
           localStorage.removeItem('requirementDraft');
         } catch {
@@ -1122,7 +4782,7 @@ function GenerationPreviewContent() {
 
       const userProfile =
         currentSession.requirements.userNickname || currentSession.requirements.userBio
-          ? `Student: ${currentSession.requirements.userNickname || 'Unknown'}${currentSession.requirements.userBio ? ` — ${currentSession.requirements.userBio}` : ''}`
+          ? `Student: ${currentSession.requirements.userNickname || 'Unknown'}${currentSession.requirements.userBio ? ` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${currentSession.requirements.userBio}` : ''}`
           : undefined;
 
       // Generate ONLY the first scene
@@ -1252,7 +4912,7 @@ function GenerationPreviewContent() {
         log.warn('[Generation] Failed to unload local LLM before media generation:', err);
       }
 
-      // ── Dedicated TTS phase ──
+      // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Dedicated TTS phase ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
       // All LLM work is complete, so Ollama has been unloaded before starting
       // Docker/Kokoro. This keeps the two heavyweight services from competing
       // for unified memory during class generation.
@@ -1391,6 +5051,34 @@ function GenerationPreviewContent() {
         log.info('[Generation] Local ComfyUI media service is ready');
       };
 
+      const ensureComfyUiStopped = async () => {
+        if (!comfyUiStartedForMedia) return;
+
+        log.info('[Generation] Stopping local ComfyUI media service');
+
+        const stopResponse = await fetch('/api/local-comfyui', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'stop' }),
+        });
+
+        const stopData = await stopResponse.json().catch(() => ({
+          success: false,
+          error: 'Invalid local ComfyUI stop response',
+        }));
+
+        if (!stopResponse.ok || !stopData.success) {
+          throw new Error(
+            stopData.error ||
+              'Failed to confirm local ComfyUI media service shutdown',
+          );
+        }
+
+        comfyUiStartedForMedia = false;
+
+        log.info('[Generation] Local ComfyUI media service stopped');
+      };
+
       logGenerationProgress(
         `[Generation] Runtime profile loaded: image=${imageBackend}, video=${videoBackend}`,
       );
@@ -1442,16 +5130,23 @@ function GenerationPreviewContent() {
                   body: JSON.stringify({ action: 'stop' }),
                 });
 
-                if (!stopResponse.ok) {
-                  log.warn(
-                    `[Generation] Failed to stop local ${localImageService.name} image service`,
+                const stopData = await stopResponse.json().catch(() => ({
+                  success: false,
+                  error: `Invalid ${localImageService.name} stop response`,
+                }));
+
+                if (!stopResponse.ok || !stopData.success) {
+                  throw new Error(
+                    stopData.error ||
+                      `Failed to confirm local ${localImageService.name} image service shutdown`,
                   );
                 }
               } catch (err) {
-                log.warn(
+                log.error(
                   `[Generation] Failed to stop local ${localImageService.name} image service:`,
                   err,
                 );
+                throw err;
               }
             }
           }
@@ -1465,26 +5160,239 @@ function GenerationPreviewContent() {
 
           await generateMediaForOutlines(outlines, stage.id, signal, 'video');
         }
+
+        // ------------------------------------------------------------
+        // Generated-diagram annotation phase.
+        //
+        // Heavyweight lifecycle rule:
+        //   media backend -> STOP -> Qwen-VL -> UNLOAD -> speech restore
+        //
+        // Never begin vision localization until local media services have
+        // been confirmed stopped.
+        // ------------------------------------------------------------
+
+        await ensureComfyUiStopped();
+
+        const diagramRequests =
+          outlines.flatMap((outline) =>
+            (outline.mediaGenerations || [])
+              .filter(
+                (
+                  request,
+                ): request is MediaGenerationRequest =>
+                  request.type === 'image' &&
+                  request.annotationRequest?.mode === 'diagram' &&
+                  request.annotationRequest.features.length > 0,
+              ),
+          );
+
+        if (diagramRequests.length > 0) {
+          const mediaStore =
+            useMediaGenerationStore.getState();
+
+          const localizationInputs: Array<{
+            key: string;
+            imageId: string;
+            sourceFileName: string;
+            src: string;
+            features: NonNullable<
+              MediaGenerationRequest['annotationRequest']
+            >['features'];
+          }> = [];
+
+          for (const request of diagramRequests) {
+            if (signal.aborted) {
+              throw new DOMException(
+                'Generation aborted',
+                'AbortError',
+              );
+            }
+
+            const task =
+              mediaStore.getTask(
+                request.elementId,
+              );
+
+            if (
+              task?.status !== 'done' ||
+              !task.objectUrl
+            ) {
+              log.warn(
+                `[Generation] Skipping diagram localization for ${request.elementId}: generated image is not ready`,
+              );
+              continue;
+            }
+
+            const src =
+              await objectUrlToDataUrl(
+                task.objectUrl,
+              );
+
+            localizationInputs.push({
+              key:
+                request.elementId,
+              imageId:
+                request.elementId,
+              sourceFileName:
+                request.elementId,
+              src,
+              features:
+                request.annotationRequest!.features,
+            });
+          }
+
+          if (
+            localizationInputs.length > 0
+          ) {
+            logGenerationProgress(
+              `[Generation] Diagram localization phase: ${localizationInputs.length} image${localizationInputs.length === 1 ? '' : 's'}`,
+            );
+
+            const localizationResponse =
+              await fetch(
+                '/api/local-vision/localize',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type':
+                      'application/json',
+                  },
+                  body:
+                    JSON.stringify({
+                      images:
+                        localizationInputs,
+                    }),
+                  signal,
+                },
+              );
+
+            const localizationData =
+              (await localizationResponse.json()) as {
+                success?: boolean;
+                error?: string;
+                results?: Array<{
+                  key: string;
+                  regions: LocalizedVisualRegion[];
+                  model?: string;
+                }>;
+              };
+
+            if (
+              !localizationResponse.ok ||
+              !localizationData.success
+            ) {
+              throw new Error(
+                localizationData.error ||
+                  'Generated-diagram localization failed',
+              );
+            }
+
+            const resultMap =
+              new Map(
+                (
+                  localizationData.results ||
+                  []
+                ).map(
+                  (result) => [
+                    result.key,
+                    result.regions,
+                  ],
+                ),
+              );
+
+            for (
+              const request of
+              diagramRequests
+            ) {
+              const annotationRequest =
+                request.annotationRequest;
+
+              if (
+                !annotationRequest
+              ) {
+                continue;
+              }
+
+              const regions =
+                resultMap.get(
+                  request.elementId,
+                );
+
+              if (
+                !regions ||
+                regions.length === 0
+              ) {
+                log.warn(
+                  `[Generation] Vision localized no requested diagram features for ${request.elementId}`,
+                );
+                continue;
+              }
+
+              const stageStore =
+                useStageStore.getState();
+
+              const scene =
+                stageStore.scenes.find(
+                  (candidate) =>
+                    candidate.type === 'slide' &&
+                    candidate.content.type === 'slide' &&
+                    candidate.content.canvas.elements.some(
+                      (element) =>
+                        element.type === 'image' &&
+                        element.src === request.elementId,
+                    ),
+                );
+
+              if (!scene) {
+                log.warn(
+                  `[Generation] Could not find slide containing generated image ${request.elementId}`,
+                );
+                continue;
+              }
+
+              const updatedScene =
+                applyDiagramAnnotationsToScene(
+                  scene,
+                  request.elementId,
+                  annotationRequest,
+                  regions,
+                );
+
+              if (!updatedScene) {
+                log.warn(
+                  `[Generation] Could not apply native annotations for ${request.elementId}`,
+                );
+                continue;
+              }
+
+              stageStore.updateScene(
+                scene.id,
+                {
+                  content:
+                    updatedScene.content,
+                  updatedAt:
+                    updatedScene.updatedAt,
+                },
+              );
+
+              log.info(
+                `[Generation] Added native diagram annotations for ${request.elementId}`,
+              );
+            }
+
+            logGenerationProgress(
+              '[Generation] Diagram localization and native annotation phase complete',
+            );
+          }
+        }
       } finally {
         // The classroom needs Kokoro for live speech and Whisper for microphone
         // input. Restore them even if media generation fails.
 
         if (comfyUiStartedForMedia) {
-          try {
-            log.info('[Generation] Stopping local ComfyUI media service');
-
-            const stopResponse = await fetch('/api/local-comfyui', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'stop' }),
-            });
-
-            if (!stopResponse.ok) {
-              log.warn('[Generation] Failed to stop local ComfyUI media service');
-            }
-          } catch (err) {
-            log.warn('[Generation] Failed to stop local ComfyUI media service:', err);
-          }
+          // Safety requirement: do not restore another local AI service while
+          // ComfyUI is still resident. A failed shutdown is a generation error.
+          await ensureComfyUiStopped();
         }
 
         if (speechServicesStoppedForMedia) {
@@ -1515,6 +5423,13 @@ function GenerationPreviewContent() {
       sessionStorage.removeItem('generationParams');
 
       await finalState.saveToStorage();
+
+      await persistGenerationState(
+        'completed',
+        {
+          requireSuccess: true,
+        },
+      );
 
       // Briefly show the completed state before opening the classroom.
       await new Promise((resolve) => setTimeout(resolve, 800));
@@ -1547,16 +5462,212 @@ function GenerationPreviewContent() {
         );
       }
 
-      // AbortError is expected when navigating away — don't show as error
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        log.info('[GenerationPreview] Generation aborted');
-        return;
+      // AbortError is expected when navigating away ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â don't show as error
+      const wasAborted =
+        err instanceof DOMException &&
+        err.name === 'AbortError';
+
+      const errorMessage =
+        wasAborted
+          ? 'Generation cancelled before completion'
+          : err instanceof Error
+            ? err.message
+            : String(err);
+
+      if (wasAborted) {
+        log.info(
+          '[GenerationPreview] Generation aborted',
+        );
+      } else {
+        log.error(
+          '[Generation] Generation failed:',
+          err,
+        );
+        logGenerationProgress(
+          `[Generation] Generation failed: ${errorMessage}`,
+        );
       }
 
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const failedState = useStageStore.getState();
 
-      log.error('[Generation] Generation failed:', err);
-      logGenerationProgress(`[Generation] Generation failed: ${errorMessage}`);
+      if (failedState.stage?.id === stage.id) {
+        failedState.setGenerationStatus('error');
+      }
+
+      try {
+        const diagnosticState =
+          useStageStore.getState();
+
+        const activeStep =
+          activeSteps[
+            Math.min(
+              currentStepIndex,
+              Math.max(
+                0,
+                activeSteps.length - 1,
+              ),
+            )
+          ];
+
+        const sourceFiles =
+          currentSession.pdfDocuments?.map(
+            (document) =>
+              document.fileName,
+          ) ||
+          (
+            currentSession.pdfFileName
+              ? [
+                  currentSession.pdfFileName,
+                ]
+              : []
+          );
+
+        const diagnosticResponse =
+          await fetch(
+            '/api/classroom/log',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type':
+                  'application/json',
+              },
+              body:
+                JSON.stringify({
+                  classroomId:
+                    stage.id,
+                  timestamp:
+                    new Date().toISOString(),
+                  error: {
+                    name:
+                      err instanceof Error
+                        ? err.name
+                        : 'Error',
+                    message:
+                      errorMessage,
+                    stack:
+                      err instanceof Error
+                        ? err.stack
+                        : undefined,
+                  },
+                  requirement:
+                    currentSession
+                      .requirements
+                      .requirement,
+                  currentStepIndex,
+                  currentStepId:
+                    activeStep?.id,
+                  currentStepLabel:
+                    activeStep
+                      ? t(activeStep.title)
+                      : undefined,
+                  statusMessage,
+                  generationStatus:
+                    diagnosticState
+                      .generationStatus,
+                  currentGeneratingOrder:
+                    diagnosticState
+                      .currentGeneratingOrder,
+                  sceneCount:
+                    diagnosticState
+                      .scenes.length,
+                  scenes:
+                    diagnosticState
+                      .scenes.map(
+                        (scene) => ({
+                          id:
+                            scene.id,
+                          order:
+                            scene.order,
+                          title:
+                            scene.title,
+                          type:
+                            scene.content
+                              ?.type,
+                        }),
+                      ),
+                  outlineCount:
+                    diagnosticState
+                      .outlines.length,
+                  outlines:
+                    diagnosticState
+                      .outlines.map(
+                        (outline) => ({
+                          id:
+                            outline.id,
+                          order:
+                            outline.order,
+                          title:
+                            outline.title,
+                        }),
+                      ),
+                  failedOutlines:
+                    diagnosticState
+                      .failedOutlines.map(
+                        (outline) => ({
+                          id:
+                            outline.id,
+                          order:
+                            outline.order,
+                          title:
+                            outline.title,
+                        }),
+                      ),
+                  generatingOutlines:
+                    diagnosticState
+                      .generatingOutlines.map(
+                        (outline) => ({
+                          id:
+                            outline.id,
+                          order:
+                            outline.order,
+                          title:
+                            outline.title,
+                        }),
+                      ),
+                  sourceFiles,
+                  truncationWarnings,
+                  userAgent:
+                    navigator.userAgent,
+                }),
+            },
+          );
+
+        if (
+          !diagnosticResponse.ok
+        ) {
+          log.warn(
+            '[Generation] Failed to save classroom diagnostic log:',
+            diagnosticResponse.status,
+          );
+        } else {
+          log.info(
+            `[Generation] Failure diagnostics saved for classroom ${stage.id}`,
+          );
+        }
+      } catch (diagnosticError) {
+        log.warn(
+          '[Generation] Failed to save classroom diagnostic log:',
+          diagnosticError,
+        );
+      }
+
+      try {
+        await persistGenerationState(
+          'failed',
+          {
+            error: errorMessage,
+          },
+        );
+      } catch (persistenceError) {
+        log.warn(
+          '[Generation] Failed to persist failed classroom history:',
+          persistenceError,
+        );
+      }
+
+      if (wasAborted) {
+        return;
+      }
 
       setError(errorMessage);
     }

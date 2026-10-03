@@ -27,6 +27,23 @@ export interface VisualRegion {
 }
 
 /**
+ * A deliberately requested feature localized within an image.
+ *
+ * featureId comes from the caller's requested feature list. The vision
+ * model determines location only; canonical wording remains caller-owned.
+ */
+export interface LocalizedVisualRegion extends VisualRegion {
+  featureId: string;
+
+  /**
+   * Preferred callout point normalized to the original image bounds.
+   * When omitted, consumers should fall back to the region center.
+   */
+  anchorX?: number;
+  anchorY?: number;
+}
+
+/**
  * Image extracted from PDF with metadata
  */
 export interface PdfImage {

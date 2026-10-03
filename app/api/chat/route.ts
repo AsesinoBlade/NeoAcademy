@@ -61,9 +61,19 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Missing required field: config.agentIds');
     }
 
-    // Resolve API key: client > server > empty
-    const modelString = body.model || 'gpt-4o-mini';
-    const { providerId, modelId } = parseModelString(modelString);
+    // Live classroom interaction intentionally uses its own faster model.
+    const modelString =
+      process.env.CLASSROOM_RUNTIME_MODEL ||
+      body.model ||
+      process.env.DEFAULT_MODEL ||
+      'gpt-4o-mini';
+
+    const { providerId, modelId } =
+      parseModelString(modelString);
+
+    log.info(
+      `Classroom runtime model: ${providerId}:${modelId}`,
+    );
 
     const clientBaseUrl = body.baseUrl || undefined;
     if (clientBaseUrl && process.env.NODE_ENV === 'production') {

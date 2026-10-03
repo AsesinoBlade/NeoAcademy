@@ -1,5 +1,9 @@
 import { createLogger } from '@/lib/logger';
-import type { VisualRegion } from '@/lib/types/generation';
+import type {
+  LocalizedVisualRegion,
+  VisualRegion,
+} from '@/lib/types/generation';
+import type { MediaAnnotationFeature } from '@/lib/media/types';
 import {
   unloadAllLocalOllamaModels,
   unloadLocalOllamaModel,
@@ -27,6 +31,19 @@ export interface LocalVisualAnalysis {
   uncertaintyNotes: string[];
   visualRegions: VisualRegion[];
   classroomSummary: string;
+  model: string;
+}
+
+export interface LocalVisionLocalizationInput {
+  key: string;
+  sourceFileName: string;
+  imageId: string;
+  src: string;
+  features: MediaAnnotationFeature[];
+}
+
+export interface LocalVisualLocalization {
+  regions: LocalizedVisualRegion[];
   model: string;
 }
 
@@ -317,9 +334,13 @@ Examples:
 
 7. Never allow an interpretation to contradict, replace, or erase a direct observation. If an interpretation conflicts with visible evidence, preserve the visible evidence and put the conflict or ambiguity in uncertaintyNotes.
 
-8. If exact identity, breed, species, model, person, date, location, cause, meaning, diagnosis, gait, behavior, historical context, genetic category, health status, or other technical classification cannot be established visually, say so in uncertaintyNotes.
+8. UNCERTAINTY NOTES must be selective and educationally relevant. Do not produce a catalogue of every identity, category, property, diagnosis, history, or technical fact that an image cannot prove. Add an uncertainty note when:
+   - the analysis makes or considers an interpretation that remains ambiguous;
+   - distinguishing evidence is genuinely relevant to the educational use of the image;
+   - a likely learner question cannot be answered reliably from the visible evidence; or
+   - failing to state the limitation would make another statement misleading.
 
-9. Prefer "cannot be determined from the image alone" over guessing when distinguishing evidence is absent or ambiguous.
+9. When a relevant point truly cannot be established visually, say so narrowly and specifically. Prefer wording such as "The image alone does not establish the breed" rather than broad statements such as "identity/species cannot be determined." Do not negate an otherwise supplied contextual premise merely because pixels alone would not prove that premise.
 
 10. Transcribe important visible labels, numbers, legends, axes, formulas, captions, or text when readable.
 
@@ -331,7 +352,7 @@ Examples:
 
 14. Do not describe the source as merely "an image" or "a figure"; explain its useful visual content.
 
-15. classroomSummary must be evidence-conservative. Construct it primarily from OBSERVATIONS using the same literal wording and level of specificity.
+15. classroomSummary must be evidence-conservative. Construct it primarily from OBSERVATIONS using the same literal wording and level of specificity. Include uncertainty only when it materially helps the learner understand a relevant ambiguity; do not make limitations the focus of the summary merely because they exist.
 
 16. A claim from INTERPRETATIONS may appear in classroomSummary only if the SAME uncertainty is preserved. If an interpretation says "may indicate a walking gait", the summary must also say "may indicate a walking gait". It must NOT say "is walking", "walking gait", or "depicted walking" as an established fact.
 
@@ -364,6 +385,342 @@ Examples:
 
 25. Prefer a small useful set of distinct regions rather than dozens of overlapping boxes. Usually 3-12 regions is enough for an ordinary image.
 `.trim();
+}
+
+function createLocalizationPrompt(
+  input: LocalVisionLocalizationInput,
+): string {
+  const requestedFeatures =
+    input.features
+      .map((feature) => {
+        const description =
+          feature.description
+            ? ` — ${feature.description}`
+            : '';
+
+        return `- ${feature.id}: ${feature.label}${description}`;
+      })
+      .join('\n');
+
+  return `
+You are performing precise visual localization for an educational application.
+
+The caller already owns the canonical names and explanations. Your job is ONLY to locate the requested visible features in the supplied image.
+
+Source file: ${input.sourceFileName}
+Image ID: ${input.imageId}
+
+Requested features:
+${requestedFeatures}
+
+Return ONLY valid JSON using exactly this shape:
+
+{
+  "regions": [
+    {
+      "featureId": "one of the exact requested feature IDs",
+      "x": 0.0,
+      "y": 0.0,
+      "width": 0.0,
+      "height": 0.0,
+      "anchorX": 0.0,
+      "anchorY": 0.0,
+      "confidence": 0.0
+    }
+  ]
+}
+
+Rules:
+
+1. Return regions ONLY for the requested feature IDs.
+2. Do not rename, reinterpret, classify, diagnose, or replace the requested features.
+3. Coordinates are normalized to the ORIGINAL FULL IMAGE:
+   - x = left edge / image width
+   - y = top edge / image height
+   - width = region width / image width
+   - height = region height / image height
+4. Every coordinate must be between 0.0 and 1.0.
+5. x + width must not exceed 1.0.
+6. y + height must not exceed 1.0.
+7. Use a tight but practical bounding box around the feature that is actually visible.
+8. anchorX and anchorY are a preferred callout point normalized to the ORIGINAL FULL IMAGE.
+9. The anchor must lie visibly ON the requested feature, not merely near it, and should be a good point for attaching a leader line.
+10. For long or thin features such as a tail, mane, limb, cable, arrow, or narrow machine part, choose an anchor on the visually representative portion of the feature rather than relying on the geometric center of its bounding box.
+11. For broad regions such as a torso, barrel, panel, or large component, choose a visually central point that clearly lies within the requested feature.
+12. anchorX and anchorY must each be between 0.0 and 1.0.
+13. Do not place a box or anchor where a feature is merely expected to be anatomically, conceptually, or semantically.
+14. If a requested feature cannot be localized confidently, OMIT it rather than guessing.
+15. If one requested feature appears in multiple disconnected locations and each location is useful, you may return multiple regions with the same featureId.
+16. confidence is localization confidence from 0.0 to 1.0.
+17. Do not return prose outside the JSON object.
+`.trim();
+}
+
+function parseLocalizationResponse(
+  raw: string,
+  features: MediaAnnotationFeature[],
+  model: string,
+): LocalVisualLocalization {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      'Vision localization model returned invalid JSON',
+    );
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== 'object'
+  ) {
+    throw new Error(
+      'Vision localization model returned an invalid object',
+    );
+  }
+
+  const record =
+    parsed as Record<string, unknown>;
+
+  if (!Array.isArray(record.regions)) {
+    throw new Error(
+      'Vision localization response is missing regions',
+    );
+  }
+
+  const requestedById =
+    new Map(
+      features.map((feature) => [
+        feature.id,
+        feature,
+      ]),
+    );
+
+  const regions: LocalizedVisualRegion[] = [];
+
+  for (const rawRegion of record.regions) {
+    if (
+      !rawRegion ||
+      typeof rawRegion !== 'object'
+    ) {
+      continue;
+    }
+
+    const regionRecord =
+      rawRegion as Record<string, unknown>;
+
+    const featureId =
+      typeof regionRecord.featureId === 'string'
+        ? regionRecord.featureId.trim()
+        : '';
+
+    const feature =
+      requestedById.get(featureId);
+
+    if (!feature) {
+      continue;
+    }
+
+    const normalized =
+      normalizeVisualRegions([
+        {
+          label: feature.label,
+          description: feature.description,
+          x: regionRecord.x,
+          y: regionRecord.y,
+          width: regionRecord.width,
+          height: regionRecord.height,
+          confidence: regionRecord.confidence,
+        },
+      ])[0];
+
+    if (!normalized) {
+      continue;
+    }
+
+    const rawAnchorX =
+      typeof regionRecord.anchorX === 'number' &&
+      Number.isFinite(regionRecord.anchorX)
+        ? regionRecord.anchorX
+        : undefined;
+
+    const rawAnchorY =
+      typeof regionRecord.anchorY === 'number' &&
+      Number.isFinite(regionRecord.anchorY)
+        ? regionRecord.anchorY
+        : undefined;
+
+    const anchorX =
+      rawAnchorX !== undefined &&
+      rawAnchorX >= 0 &&
+      rawAnchorX <= 1
+        ? rawAnchorX
+        : undefined;
+
+    const anchorY =
+      rawAnchorY !== undefined &&
+      rawAnchorY >= 0 &&
+      rawAnchorY <= 1
+        ? rawAnchorY
+        : undefined;
+
+    regions.push({
+      ...normalized,
+      featureId,
+      ...(anchorX !== undefined &&
+      anchorY !== undefined
+        ? {
+            anchorX,
+            anchorY,
+          }
+        : {}),
+    });
+  }
+
+  return {
+    regions,
+    model,
+  };
+}
+
+async function localizeOneImage(
+  input: LocalVisionLocalizationInput,
+  model: string,
+  signal?: AbortSignal,
+): Promise<LocalVisualLocalization> {
+  const response =
+    await fetch(
+      `${OLLAMA_NATIVE_BASE_URL}/api/generate`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type':
+            'application/json',
+        },
+        signal,
+        body: JSON.stringify({
+          model,
+          stream: false,
+          format: 'json',
+          prompt:
+            createLocalizationPrompt(input),
+          images: [
+            dataUrlToBase64(
+              input.src,
+            ),
+          ],
+        }),
+      },
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Local vision localization request failed (${response.status}): ` +
+        `${await response.text()}`,
+    );
+  }
+
+  const payload =
+    (await response.json()) as
+      OllamaGenerateResponse;
+
+  const raw =
+    payload.response?.trim() || '';
+
+  if (!raw) {
+    throw new Error(
+      'Local vision localization model returned an empty response',
+    );
+  }
+
+  return parseLocalizationResponse(
+    raw,
+    input.features,
+    model,
+  );
+}
+
+/**
+ * Precisely localize caller-requested features using one resident local
+ * vision model. Canonical feature names come from the caller; the model
+ * supplies location only.
+ */
+export async function localizeImagesWithLocalVision(
+  inputs: LocalVisionLocalizationInput[],
+  signal?: AbortSignal,
+): Promise<Map<string, LocalVisualLocalization>> {
+  const results =
+    new Map<string, LocalVisualLocalization>();
+
+  if (inputs.length === 0) {
+    return results;
+  }
+
+  const model =
+    getVisionModel();
+
+  log.info(
+    `[Vision] Preparing ${inputs.length} image(s) for precise localization with ${model}`,
+  );
+
+  const unloadResult =
+    await unloadAllLocalOllamaModels();
+
+  if (!unloadResult.success) {
+    throw new Error(
+      'Failed to clear resident Ollama models before vision localization: ' +
+        (unloadResult.message ??
+          'unknown error'),
+    );
+  }
+
+  try {
+    for (
+      let index = 0;
+      index < inputs.length;
+      index++
+    ) {
+      const input =
+        inputs[index];
+
+      log.info(
+        `[Vision] Localizing ${input.features.length} requested feature(s) ` +
+          `in image ${index + 1}/${inputs.length}: ${input.sourceFileName}`,
+      );
+
+      const localization =
+        await localizeOneImage(
+          input,
+          model,
+          signal,
+        );
+
+      results.set(
+        input.key,
+        localization,
+      );
+    }
+
+    return results;
+  } finally {
+    log.info(
+      `[Vision] Unloading ${model} after localization`,
+    );
+
+    const unload =
+      await unloadLocalOllamaModel(
+        model,
+      );
+
+    if (!unload.success) {
+      log.warn(
+        `[Vision] Failed to unload ${model}: ` +
+          (unload.message ??
+            'unknown error'),
+      );
+    }
+  }
 }
 
 async function analyzeOneImage(

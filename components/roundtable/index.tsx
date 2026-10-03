@@ -53,6 +53,8 @@ interface RoundtableProps {
   readonly thinkingState?: { stage: string; agentId?: string } | null;
   readonly isCueUser?: boolean;
   readonly isTopicPending?: boolean;
+  readonly qaControlsDisabled?: boolean;
+  readonly asrLanguageOverride?: string;
   readonly onMessageSend?: (message: string) => void;
   readonly onDiscussionStart?: (request: DiscussionAction) => void;
   readonly onDiscussionSkip?: () => void;
@@ -114,6 +116,8 @@ export function Roundtable({
   thinkingState,
   isCueUser,
   isTopicPending,
+  qaControlsDisabled = false,
+  asrLanguageOverride,
   onMessageSend,
   onDiscussionStart,
   onDiscussionSkip,
@@ -245,6 +249,7 @@ export function Roundtable({
 
   // Audio recording
   const { isRecording, isProcessing, startRecording, stopRecording } = useAudioRecorder({
+    languageOverride: asrLanguageOverride,
     onTranscription: (text) => {
       if (!text.trim()) {
         toast.info(t('roundtable.noSpeechDetected'));
@@ -272,7 +277,7 @@ export function Roundtable({
   });
 
   const handleSendMessage = () => {
-    if (!inputValue.trim() || isSendCooldown) return;
+    if (qaControlsDisabled || !inputValue.trim() || isSendCooldown) return;
 
     setUserMessage(inputValue);
     onMessageSend?.(inputValue);
@@ -287,7 +292,7 @@ export function Roundtable({
   };
 
   const handleToggleInput = () => {
-    if (isSendCooldown) return;
+    if (qaControlsDisabled || isSendCooldown) return;
     if (!isInputOpen) {
       onInputActivate?.();
     }
@@ -302,7 +307,7 @@ export function Roundtable({
       }
       setIsVoiceOpen(false);
     } else {
-      if (isSendCooldown) return;
+      if (qaControlsDisabled || isSendCooldown) return;
       onVoiceActivate?.();
       setIsVoiceOpen(true);
       setIsInputOpen(false);
@@ -1330,10 +1335,11 @@ export function Roundtable({
                       e.stopPropagation();
                       if (asrEnabled) handleToggleVoice();
                     }}
-                    disabled={!asrEnabled}
+                    disabled={!asrEnabled || qaControlsDisabled}
+                    title={qaControlsDisabled ? 'Preparing speech services...' : undefined}
                     className={cn(
                       'w-8 h-8 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
-                      !asrEnabled
+                      !asrEnabled || qaControlsDisabled
                         ? 'bg-gray-100 dark:bg-gray-800/50 text-gray-300 dark:text-gray-600 border-gray-200 dark:border-gray-700 cursor-not-allowed'
                         : isVoiceOpen
                           ? 'bg-purple-600 dark:bg-purple-500 border-purple-600 dark:border-purple-500 text-white shadow-purple-200 dark:shadow-purple-800'
@@ -1351,11 +1357,15 @@ export function Roundtable({
                       e.stopPropagation();
                       handleToggleInput();
                     }}
+                    disabled={qaControlsDisabled}
+                    title={qaControlsDisabled ? 'Preparing speech services...' : undefined}
                     className={cn(
                       'w-8 h-8 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
-                      isInputOpen
-                        ? 'bg-purple-600 dark:bg-purple-500 border-purple-600 dark:border-purple-500 text-white shadow-purple-200 dark:shadow-purple-800'
-                        : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 hover:text-purple-600 dark:hover:text-purple-400 hover:border-purple-200 dark:hover:border-purple-700',
+                      qaControlsDisabled
+                        ? 'bg-gray-100 dark:bg-gray-800/50 text-gray-300 dark:text-gray-600 border-gray-200 dark:border-gray-700 cursor-not-allowed'
+                        : isInputOpen
+                          ? 'bg-purple-600 dark:bg-purple-500 border-purple-600 dark:border-purple-500 text-white shadow-purple-200 dark:shadow-purple-800'
+                          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 hover:text-purple-600 dark:hover:text-purple-400 hover:border-purple-200 dark:hover:border-purple-700',
                     )}
                   >
                     <MessageSquare className="w-3.5 h-3.5" />

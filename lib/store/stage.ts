@@ -253,7 +253,14 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
 
   // Storage methods
   saveToStorage: async () => {
-    const { stage, scenes, currentSceneId, chats } = get();
+    const {
+      stage,
+      scenes,
+      currentSceneId,
+      chats,
+      outlines,
+      generationStatus,
+    } = get();
     if (!stage?.id) {
       log.warn('Cannot save: stage.id is required');
       return;
@@ -267,6 +274,44 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         currentSceneId,
         chats,
       });
+      const persistenceStatus =
+        generationStatus === 'completed'
+          ? 'completed'
+          : generationStatus === 'error'
+            ? 'failed'
+            : generationStatus === 'generating' ||
+                generationStatus === 'paused'
+              ? 'generating'
+              : undefined;
+
+      try {
+        const response = await fetch('/api/classroom', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            stage,
+            scenes,
+            currentSceneId,
+            chats,
+            outlines,
+            status: persistenceStatus,
+          }),
+        });
+
+        if (!response.ok) {
+          log.warn(
+            'Server classroom persistence returned status:',
+            response.status,
+          );
+        }
+      } catch (serverError) {
+        log.warn(
+          'Failed to persist classroom to server storage:',
+          serverError,
+        );
+      }
     } catch (error) {
       log.error('Failed to save to storage:', error);
     }
@@ -282,13 +327,78 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         return;
       }
 
-      const { loadStageData } = await import('@/lib/utils/stage-storage');
-      const data = await loadStageData(stageId);
+      const {
+        loadStageData,
+        saveStageData,
+      } = await import('@/lib/utils/stage-storage');
+
+      let data = await loadStageData(stageId);
 
       // Load outlines for resume-on-refresh
       const { db } = await import('@/lib/utils/database');
       const outlinesRecord = await db.stageOutlines.get(stageId);
-      const outlines = outlinesRecord?.outlines || [];
+      let outlines = outlinesRecord?.outlines || [];
+
+      // IndexedDB is only a cache. If it was cleared, restore from
+      // the durable server-side classroom copy.
+      if (!data) {
+        try {
+          const response = await fetch(
+            `/api/classroom?id=${encodeURIComponent(stageId)}`,
+            {
+              cache: 'no-store',
+            },
+          );
+
+          if (response.ok) {
+            const payload = await response.json();
+            const classroom = payload.classroom;
+
+            if (
+              payload.success &&
+              classroom?.stage &&
+              Array.isArray(classroom.scenes)
+            ) {
+              outlines = Array.isArray(classroom.outlines)
+                ? classroom.outlines
+                : [];
+
+              data = {
+                stage: classroom.stage,
+                scenes: classroom.scenes,
+                currentSceneId:
+                  classroom.currentSceneId ||
+                  classroom.scenes[0]?.id ||
+                  null,
+                chats: Array.isArray(classroom.chats)
+                  ? classroom.chats
+                  : [],
+              };
+
+              await saveStageData(stageId, data);
+
+              if (outlines.length > 0) {
+                await db.stageOutlines.put({
+                  stageId,
+                  outlines,
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                });
+              }
+
+              log.info(
+                'Restored classroom from server storage:',
+                stageId,
+              );
+            }
+          }
+        } catch (serverError) {
+          log.warn(
+            'Failed to restore classroom from server storage:',
+            serverError,
+          );
+        }
+      }
 
       if (data) {
         set({

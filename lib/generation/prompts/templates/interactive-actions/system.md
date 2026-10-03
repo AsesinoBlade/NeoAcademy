@@ -8,9 +8,9 @@ Based on the interactive scene's concept, key points, and description, generate 
 
 ## Source Evidence Grounding Policy
 
-The user prompt may include a `Source Evidence` section. When it does, that evidence takes precedence over the outline, description, key points, slide wording, or general knowledge for claims about the specific supplied source.
+The user prompt may include a `Source Evidence` section. When it does, that evidence takes precedence over downstream generated wording for claims derived from the supplied source itself. Explicit user/course framing may independently establish a contextual premise and should not be negated merely because the image alone would not prove it.
 
-For the specific source, use a CLOSED-WORLD rule:
+For claims derived from the specific source, use the following grounding rule:
 
 1. Do not introduce any new source-specific observation, interpretation, implication, hypothesis, association, diagnosis, or conclusion that is absent from Source Evidence.
 
@@ -22,7 +22,7 @@ For the specific source, use a CLOSED-WORLD rule:
 
 5. If Source Evidence says something cannot be determined, narration must not offer evidence for it, imply it, or soften that limitation.
 
-6. General educational knowledge is allowed, but keep it general. Do not apply it to the particular source unless Source Evidence already makes that connection.
+6. General educational knowledge is allowed. It may use an explicit user/course premise as context, but must not turn general associations into additional claims about the particular source.
 
 Examples of prohibited narration unless explicitly supported by Source Evidence:
 - "The glossy coat suggests the horse is well-groomed."
@@ -35,10 +35,10 @@ Examples of prohibited narration unless explicitly supported by Source Evidence:
 Allowed:
 - "The source describes a glossy-looking brown coat."
 - "The source says the limb position may be consistent with walking."
-- "The source states that health, age, breed, and exact gait cannot be determined."
+- If a limitation is relevant to the teaching point, state it naturally and narrowly; for example, "This image does not give us enough information to identify the breed." Do not list unrelated limitations.
 - "In general, visual traits can be discussed as examples without claiming that they establish a fact about this particular horse."
 
-Before returning the action sequence, silently check every factual statement about the specific source against Source Evidence and remove or rewrite unsupported claims.
+Before returning the action sequence, silently check every factual statement derived from the specific source against Source Evidence and remove or rewrite unsupported claims. Then keep that checking process silent: do not mention Source Evidence, grounding rules, closed-world reasoning, prompt instructions, or other implementation terminology to the learner. Do not narrate limitations unless they are relevant to the current teaching point.
 
 ---
 ## Output Format

@@ -1202,19 +1202,23 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       };
 
       const currentlyStreamingSession = sessionsRef.current.find((s) => s.id === sessionId);
-      const shouldQueue =
+      const shouldInterrupt =
         !!sessionId &&
         !!abortControllerRef.current &&
         streamingSessionIdRef.current === sessionId &&
         (currentlyStreamingSession?.type === 'qa' ||
           currentlyStreamingSession?.type === 'discussion');
 
-      if (shouldQueue) {
-        pendingUserMessagesRef.current.push(userMessage);
+      if (shouldInterrupt) {
         log.info(
-          `[ChatArea] Queued user message while AI exchange is active: "${content.slice(0, 50)}..."`,
+          `[ChatArea] User interrupted active AI exchange: "${content.slice(0, 50)}..."`,
         );
-        return;
+
+        // A direct user question always takes priority over the current
+        // classroom exchange. Stop the active SSE/playback but keep the
+        // same QA/discussion session alive, then continue below so the
+        // user's message is displayed and processed immediately.
+        await softPauseSession(sessionId!);
       }
 
       // Create a new session when there's no active QA session to append to.
@@ -1370,7 +1374,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         }
       }
     },
-    [activeSessionId, createSession, endSession, runAgentLoop, t],
+    [activeSessionId, createSession, endSession, runAgentLoop, softPauseSession, t],
   );
 
   /**

@@ -5,6 +5,11 @@
  * from scene outlines.
  */
 import { estimateTextHeight, fitTextToHeight } from '@/lib/layout/text-layout';
+import {
+  PRESENTATION_TITLE_FONT_SIZE,
+  PRESENTATION_HEADING_FONT_SIZE,
+  PRESENTATION_TEXT_FONT_SIZE,
+} from '@/lib/config/presentation-fonts';
 import { nanoid } from 'nanoid';
 import katex from 'katex';
 import { MAX_VISION_IMAGES } from '@/lib/constants/generation';
@@ -75,7 +80,7 @@ export async function generateFullScenes(
     currentStage: 3,
     overallProgress: 66,
     stageProgress: 0,
-    statusMessage: `正在并行生成 ${totalScenes} 个场景...`,
+    statusMessage: `æ­£åœ¨å¹¶è¡Œç”Ÿæˆ ${totalScenes} ä¸ªåœºæ™¯...`,
     scenesGenerated: 0,
     totalScenes,
   });
@@ -92,7 +97,7 @@ export async function generateFullScenes(
           currentStage: 3,
           overallProgress: 66 + Math.floor((completedCount / totalScenes) * 34),
           stageProgress: Math.floor((completedCount / totalScenes) * 100),
-          statusMessage: `已完成 ${completedCount}/${totalScenes} 个场景`,
+          statusMessage: `å·²å®Œæˆ ${completedCount}/${totalScenes} ä¸ªåœºæ™¯`,
           scenesGenerated: completedCount,
           totalScenes,
         });
@@ -221,10 +226,10 @@ export async function generateSceneContent(
  * rather than a base64 data URL or actual URL
  *
  * This function distinguishes between:
- * - Image IDs: "img_1", "img_2", etc. → returns true
- * - Base64 data URLs: "data:image/..." → returns false
- * - HTTP URLs: "http://...", "https://..." → returns false
- * - Relative paths: "/images/..." → returns false
+ * - Image IDs: "img_1", "img_2", etc. â†’ returns true
+ * - Base64 data URLs: "data:image/..." â†’ returns false
+ * - HTTP URLs: "http://...", "https://..." â†’ returns false
+ * - Relative paths: "/images/..." â†’ returns false
  */
 function isImageIdReference(value: string): boolean {
   if (!value) return false;
@@ -281,13 +286,13 @@ function resolveImageIds(
           return { ...el, src: imageMapping[src] };
         }
 
-        // Generated image reference — keep as placeholder for async backfill
+        // Generated image reference â€” keep as placeholder for async backfill
         if (isGeneratedImageId(src)) {
           if (generatedMediaMapping && generatedMediaMapping[src]) {
             log.debug(`Resolved generated image ID "${src}" to URL`);
             return { ...el, src: generatedMediaMapping[src] };
           }
-          // Keep element with placeholder ID — frontend renders skeleton
+          // Keep element with placeholder ID â€” frontend renders skeleton
           log.debug(`Keeping generated image placeholder: ${src}`);
           return el;
         }
@@ -304,7 +309,7 @@ function resolveImageIds(
             log.debug(`Resolved generated video ID "${src}" to URL`);
             return { ...el, src: generatedMediaMapping[src] };
           }
-          // Keep element with placeholder ID — frontend renders skeleton
+          // Keep element with placeholder ID â€” frontend renders skeleton
           log.debug(`Keeping generated video placeholder: ${src}`);
           return el;
         }
@@ -313,6 +318,114 @@ function resolveImageIds(
       return el;
     })
     .filter((el): el is NonNullable<typeof el> => el !== null);
+}
+
+/**
+ * Ensure every annotated generated diagram owned by this slide has an
+ * actual image element. The LLM is instructed to insert the placeholder,
+ * but media generation must not depend on the LLM remembering to do so.
+ *
+ * This safeguard applies only to annotationRequest.mode === 'diagram'.
+ */
+function ensureGeneratedDiagramPlaceholders(
+  elements: GeneratedSlideData['elements'],
+  outline: SceneOutline,
+): GeneratedSlideData['elements'] {
+  const diagramRequests =
+    (outline.mediaGenerations || []).filter(
+      (request) =>
+        request.type === 'image' &&
+        request.annotationRequest?.mode === 'diagram' &&
+        request.annotationRequest.features.length > 0,
+    );
+
+  if (diagramRequests.length === 0) {
+    return elements;
+  }
+
+  let result = [...elements];
+
+  for (const request of diagramRequests) {
+    const alreadyPresent =
+      result.some(
+        (element) =>
+          element.type === 'image' &&
+          'src' in element &&
+          element.src === request.elementId,
+      );
+
+    if (alreadyPresent) {
+      continue;
+    }
+
+    log.warn(
+      `Generated diagram placeholder missing for ${request.elementId}; inserting deterministic fallback`,
+    );
+
+    // Preserve title/subtitle material near the top. Clear ordinary
+    // body-layout elements that would otherwise compete with the
+    // deterministic diagram and its native annotation column.
+    result =
+      result.filter(
+        (element) =>
+          element.top < 125,
+      );
+
+    const aspectRatioText =
+      request.aspectRatio || '16:9';
+
+    const ratioParts =
+      aspectRatioText
+        .split(':')
+        .map((value) =>
+          Number(value),
+        );
+
+    const ratio =
+      ratioParts.length === 2 &&
+      Number.isFinite(ratioParts[0]) &&
+      Number.isFinite(ratioParts[1]) &&
+      ratioParts[0] > 0 &&
+      ratioParts[1] > 0
+        ? ratioParts[0] /
+          ratioParts[1]
+        : 16 / 9;
+
+    // Reserve the right side for NeoAcademy's native callout cards.
+    const imageLeft = 45;
+    const imageTop = 140;
+    const imageWidth = 610;
+
+    const maxImageHeight =
+      562.5 -
+      imageTop -
+      35;
+
+    const imageHeight =
+      Math.min(
+        maxImageHeight,
+        imageWidth / ratio,
+      );
+
+    const placeholder = {
+      id:
+        `generated_diagram_${request.elementId}`,
+      type: 'image',
+      left: imageLeft,
+      top: imageTop,
+      width: imageWidth,
+      height: imageHeight,
+      rotate: 0,
+      src: request.elementId,
+      fixedRatio: true,
+    } as GeneratedSlideData['elements'][number];
+
+    result.push(
+      placeholder,
+    );
+  }
+
+  return result;
 }
 
 /**
@@ -410,7 +523,7 @@ function fixElementDefaults(
             // Keep width, correct height
             const newH = Math.round(curW / knownRatio);
             if (newH > 462) {
-              // canvas 562.5 - margins 50×2
+              // canvas 562.5 - margins 50Ã—2
               const newW = Math.round(462 * knownRatio);
               imageEl.width = newW;
               imageEl.height = 462;
@@ -823,7 +936,7 @@ Return valid JSON only in this exact form:
       const newEstimatedHeight = estimateTextHeight({
         html: rewrittenHtml,
         width: candidate.width,
-        defaultFontSize: 14,
+        defaultFontSize: PRESENTATION_TEXT_FONT_SIZE,
         lineHeight: 1.5,
       });
 
@@ -912,6 +1025,178 @@ function processLatexElements(
 /**
  * Generate slide content
  */
+function keepContentElementsInsideCanvas(
+  elements: GeneratedSlideData['elements'],
+): GeneratedSlideData['elements'] {
+  const CANVAS_WIDTH = 1000;
+  const CANVAS_HEIGHT = 562.5;
+  const SAFE_MARGIN = 12;
+
+  const constrainedTypes =
+    new Set([
+      'image',
+      'video',
+      'chart',
+      'text',
+      'latex',
+    ]);
+
+  return elements.map((element) => {
+    if (!constrainedTypes.has(element.type)) {
+      return element;
+    }
+
+    const next = {
+      ...element,
+    } as typeof element;
+
+    let left =
+      typeof next.left === 'number' &&
+      Number.isFinite(next.left)
+        ? next.left
+        : SAFE_MARGIN;
+
+    let top =
+      typeof next.top === 'number' &&
+      Number.isFinite(next.top)
+        ? next.top
+        : SAFE_MARGIN;
+
+    let width =
+      typeof next.width === 'number' &&
+      Number.isFinite(next.width) &&
+      next.width > 0
+        ? next.width
+        : 100;
+
+    let height =
+      typeof next.height === 'number' &&
+      Number.isFinite(next.height) &&
+      next.height > 0
+        ? next.height
+        : 100;
+
+    const maxWidth =
+      CANVAS_WIDTH -
+      SAFE_MARGIN * 2;
+
+    const maxHeight =
+      CANVAS_HEIGHT -
+      SAFE_MARGIN * 2;
+
+    const preserveRatio =
+      next.type === 'image' ||
+      next.type === 'video' ||
+      next.type === 'latex' ||
+      (
+        'fixedRatio' in next &&
+        next.fixedRatio === true
+      );
+
+    if (
+      preserveRatio &&
+      (
+        width > maxWidth ||
+        height > maxHeight
+      )
+    ) {
+      const scale =
+        Math.min(
+          maxWidth / width,
+          maxHeight / height,
+          1,
+        );
+
+      width *= scale;
+      height *= scale;
+    } else {
+      width =
+        Math.min(
+          width,
+          maxWidth,
+        );
+
+      height =
+        Math.min(
+          height,
+          maxHeight,
+        );
+    }
+
+    const maxLeft =
+      Math.max(
+        SAFE_MARGIN,
+        CANVAS_WIDTH -
+          SAFE_MARGIN -
+          width,
+      );
+
+    const maxTop =
+      Math.max(
+        SAFE_MARGIN,
+        CANVAS_HEIGHT -
+          SAFE_MARGIN -
+          height,
+      );
+
+    left =
+      Math.min(
+        Math.max(
+          left,
+          SAFE_MARGIN,
+        ),
+        maxLeft,
+      );
+
+    top =
+      Math.min(
+        Math.max(
+          top,
+          SAFE_MARGIN,
+        ),
+        maxTop,
+      );
+
+    const changed =
+      left !== next.left ||
+      top !== next.top ||
+      width !== next.width ||
+      height !== next.height;
+
+    if (changed) {
+      log.info(
+        'Adjusted generated element to remain inside slide canvas',
+        {
+          type:
+            next.type,
+          before: {
+            left:
+              next.left,
+            top:
+              next.top,
+            width:
+              next.width,
+            height:
+              next.height,
+          },
+          after: {
+            left,
+            top,
+            width,
+            height,
+          },
+        },
+      );
+    }
+
+    next.left = left;
+    next.top = top;
+    next.width = width;
+    next.height = height;
+
+    return next;
+  });
+}
 async function generateSlideContent(
   outline: SceneOutline,
   aiCall: AICallFn,
@@ -924,8 +1209,11 @@ async function generateSlideContent(
 ): Promise<GeneratedSlideContent | null> {
   const lang = outline.language || 'zh-CN';
 
-  // Build assigned images description for the prompt
-  let assignedImagesText = '无可用图片，禁止插入任何 image 元素';
+
+  const allowSlideOverflow =
+    process.env.NEXT_PUBLIC_SLIDE_ALLOW_OVERFLOW === 'true';
+// Build assigned images description for the prompt
+  let assignedImagesText = 'æ— å¯ç”¨å›¾ç‰‡ï¼Œç¦æ­¢æ’å…¥ä»»ä½• image å…ƒç´ ';
   let visionImages: Array<{ id: string; src: string }> | undefined;
 
   if (assignedImages && assignedImages.length > 0) {
@@ -959,7 +1247,19 @@ async function generateSlideContent(
   if (outline.mediaGenerations && outline.mediaGenerations.length > 0) {
     const genImgDescs = outline.mediaGenerations
       .filter((mg) => mg.type === 'image')
-      .map((mg) => `- ${mg.elementId}: "${mg.prompt}" (aspect ratio: ${mg.aspectRatio || '16:9'})`)
+      .map((mg) => {
+        const annotationNote =
+          mg.annotationRequest?.mode === 'diagram'
+            ? `; native annotations will be added after generation for: ${mg.annotationRequest.features
+                .map((feature) => feature.label)
+                .join(', ')}. Reserve a clear callout column of about 230px beside the image. Do NOT create labels, callouts, legends, or explanatory text for those features yourself.`
+            : '';
+
+        return (
+          `- ${mg.elementId}: "${mg.prompt}" ` +
+          `(aspect ratio: ${mg.aspectRatio || '16:9'}${annotationNote})`
+        );
+      })
       .join('\n');
     const genVidDescs = outline.mediaGenerations
       .filter((mg) => mg.type === 'video')
@@ -976,7 +1276,7 @@ async function generateSlideContent(
 
     if (mediaParts.length > 0) {
       const mediaText = mediaParts.join('\n\n');
-      if (assignedImagesText.includes('禁止插入') || assignedImagesText.includes('No images')) {
+      if (assignedImagesText.includes('ç¦æ­¢æ’å…¥') || assignedImagesText.includes('No images')) {
         assignedImagesText = mediaText;
       } else {
         assignedImagesText += `\n\n${mediaText}`;
@@ -994,10 +1294,13 @@ async function generateSlideContent(
     title: outline.title,
     description: outline.description,
     keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
-    elements: '（根据要点自动生成）',
+    elements: 'ï¼ˆæ ¹æ®è¦ç‚¹è‡ªåŠ¨ç”Ÿæˆï¼‰',
     assignedImages: assignedImagesText,
     canvas_width: canvasWidth,
     canvas_height: canvasHeight,
+    presentation_title_font_size: PRESENTATION_TITLE_FONT_SIZE,
+    presentation_heading_font_size: PRESENTATION_HEADING_FONT_SIZE,
+    presentation_text_font_size: PRESENTATION_TEXT_FONT_SIZE,
     teacherContext,
     sourceEvidence: sourceEvidence || 'No source evidence provided.',
   });
@@ -1015,14 +1318,94 @@ async function generateSlideContent(
   }
 
   const response = await aiCall(prompts.system, prompts.user, visionImages);
-  const generatedData = parseJsonResponse<GeneratedSlideData>(response);
+  let generatedData = parseJsonResponse<GeneratedSlideData>(response);
 
   if (!generatedData || !generatedData.elements || !Array.isArray(generatedData.elements)) {
+    const responseText =
+      typeof response === 'string'
+        ? response
+        : JSON.stringify(response);
+
+    const responseExcerpt =
+      responseText
+        .replace(/\s+/g, ' ')
+        .slice(0, 1000);
+
     log.error(`Failed to parse AI response for: ${outline.title}`);
-    return null;
+    log.error(
+      `Scene content raw response: length=${responseText.length}, excerpt="${responseExcerpt}"`,
+    );
+
+    // One narrowly constrained recovery attempt using the SAME teaching LLM
+    // that is already resident. This does not start a second local model.
+    log.warn(`Attempting one JSON syntax repair for: ${outline.title}`);
+
+    const repairSystem = [
+      'You repair malformed JSON produced by another model.',
+      'Return ONLY one complete valid JSON object.',
+      'Do not use Markdown code fences.',
+      'Do not add commentary.',
+      'Preserve the original educational content exactly.',
+      'Preserve all element IDs exactly.',
+      'Preserve all text exactly except where a JSON syntax character must be escaped.',
+      'Preserve all image src values exactly.',
+      'Preserve all coordinates, dimensions, colors, font sizes, and other values.',
+      'Do not add, remove, reorder, redesign, summarize, or rewrite slide elements.',
+      'Fix JSON syntax only: quoting, escaping, commas, brackets, braces, or truncation-related closure.',
+      'The result must be a JSON object containing an elements array.',
+    ].join('\n');
+
+    const repairUser = [
+      'Repair the following malformed slide JSON.',
+      '',
+      'BEGIN MALFORMED JSON',
+      responseText,
+      'END MALFORMED JSON',
+    ].join('\n');
+
+    const repairedResponse =
+      await aiCall(
+        repairSystem,
+        repairUser,
+      );
+
+    generatedData =
+      parseJsonResponse<GeneratedSlideData>(
+        repairedResponse,
+      );
+
+    if (
+      !generatedData ||
+      !generatedData.elements ||
+      !Array.isArray(generatedData.elements)
+    ) {
+      const repairedExcerpt =
+        repairedResponse
+          .replace(/\s+/g, ' ')
+          .slice(0, 1000);
+
+      log.error(
+        `JSON repair failed for: ${outline.title}`,
+      );
+      log.error(
+        `Scene content repaired response: length=${repairedResponse.length}, excerpt="${repairedExcerpt}"`,
+      );
+
+      return null;
+    }
+
+    log.info(
+      `JSON syntax repair succeeded for: ${outline.title}`,
+    );
   }
 
   log.debug(`Got ${generatedData.elements.length} elements for: ${outline.title}`);
+
+  generatedData.elements =
+    ensureGeneratedDiagramPlaceholders(
+      generatedData.elements,
+      outline,
+    );
 
   // Debug: Log image elements before resolution
   const imageElements = generatedData.elements.filter((el) => el.type === 'image');
@@ -1068,7 +1451,18 @@ async function generateSlideContent(
   log.debug(`After image resolution: ${resolvedElements.length} elements`);
 
   // Process elements, assign unique IDs
-  const processedElements: PPTElement[] = resolvedElements.map((el) => ({
+  const boundedElements =
+    allowSlideOverflow
+      ? resolvedElements
+      : keepContentElementsInsideCanvas(
+          resolvedElements,
+        );
+
+  log.debug(
+    `After slide bounds safety: ${boundedElements.length} elements`,
+  );
+
+  const processedElements: PPTElement[] = boundedElements.map((el) => ({
     ...el,
     id: `${el.type}_${nanoid(8)}`,
     rotate: 0,
@@ -1127,7 +1521,21 @@ async function generateQuizContent(
   const generatedQuestions = parseJsonResponse<QuizQuestion[]>(response);
 
   if (!generatedQuestions || !Array.isArray(generatedQuestions)) {
+    const responseText =
+      typeof response === 'string'
+        ? response
+        : JSON.stringify(response);
+
+    const responseExcerpt =
+      responseText
+        .replace(/\s+/g, ' ')
+        .slice(0, 1000);
+
     log.error(`Failed to parse AI response for: ${outline.title}`);
+    log.error(
+      `Quiz content raw response: length=${responseText.length}, excerpt="${responseExcerpt}"`,
+    );
+
     return null;
   }
 
@@ -1202,6 +1610,49 @@ function normalizeQuizAnswer(question: Record<string, unknown>): string[] | unde
  * 1. Scientific modeling -> ScientificModel (with fallback)
  * 2. HTML generation with constraints -> post-processed HTML
  */
+function findForbiddenInteractiveModalApi(
+  html: string,
+): 'alert' | 'confirm' | 'prompt' | null {
+  const scriptRegex =
+    /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+
+  let scriptMatch:
+    RegExpExecArray | null;
+
+  while (
+    (scriptMatch =
+      scriptRegex.exec(html)) !== null
+  ) {
+    const script =
+      scriptMatch[1];
+
+    if (
+      /(?:\bwindow\s*\.\s*)?\balert\s*\(/.test(
+        script,
+      )
+    ) {
+      return 'alert';
+    }
+
+    if (
+      /(?:\bwindow\s*\.\s*)?\bconfirm\s*\(/.test(
+        script,
+      )
+    ) {
+      return 'confirm';
+    }
+
+    if (
+      /(?:\bwindow\s*\.\s*)?\bprompt\s*\(/.test(
+        script,
+      )
+    ) {
+      return 'prompt';
+    }
+  }
+
+  return null;
+}
 async function generateInteractiveContent(
   outline: SceneOutline,
   aiCall: AICallFn,
@@ -1231,7 +1682,7 @@ async function generateInteractiveContent(
 
         const description =
           img.description
-            ? ` — ${img.description}`
+            ? ` â€” ${img.description}`
             : '';
 
         const spatialRegions =
@@ -1255,7 +1706,7 @@ async function generateInteractiveContent(
 
                   const regionDescription =
                     region.description
-                      ? ` — ${region.description}`
+                      ? ` â€” ${region.description}`
                       : '';
 
                   return (
@@ -1369,6 +1820,87 @@ async function generateInteractiveContent(
 
   // Step 4: Syntax-check every executable inline <script> before accepting
   // the interactive. This compiles the JavaScript but never executes it.
+  const forbiddenModalApi =
+    findForbiddenInteractiveModalApi(
+      processedHtml,
+    );
+
+  if (forbiddenModalApi) {
+    log.warn(
+      `Interactive "${outline.title}" uses blocked browser modal API ` +
+        `${forbiddenModalApi}(); attempting in-page feedback repair`,
+    );
+
+    const modalRepairSystem = [
+      'You repair generated interactive HTML for a sandboxed classroom iframe.',
+      'Return ONLY the complete corrected HTML document.',
+      'Do not use Markdown fences.',
+      'Preserve the existing appearance, educational content, data, and interaction intent.',
+      'The browser modal APIs alert(), confirm(), and prompt() are forbidden.',
+      'Replace every browser modal interaction with visible in-page feedback.',
+      'For example, update a feedback panel, tooltip, result card, label, or highlighted selection.',
+      'Every learner click must produce an immediately visible change inside the page.',
+      'Do not remove the interaction.',
+      'Do not add external dependencies.',
+      'Use valid classic browser JavaScript.',
+    ].join('\n');
+
+    const modalRepairUser = [
+      `Interactive title: ${outline.title}`,
+      '',
+      `Forbidden API detected: ${forbiddenModalApi}()`,
+      '',
+      'Replace the blocked modal behavior with visible in-page feedback.',
+      'Keep the same learner interaction and information.',
+      '',
+      'Complete HTML document:',
+      '',
+      processedHtml,
+    ].join('\n');
+
+    const modalRepairResponse =
+      await aiCall(
+        modalRepairSystem,
+        modalRepairUser,
+        undefined,
+        {
+          tokenProfile:
+            'interactive-html',
+        },
+      );
+
+    const modalRepairedRawHtml =
+      extractHtml(
+        modalRepairResponse,
+      );
+
+    if (!modalRepairedRawHtml) {
+      throw new Error(
+        `Interactive modal repair failed: no HTML returned for "${outline.title}"`,
+      );
+    }
+
+    processedHtml =
+      postProcessInteractiveHtml(
+        modalRepairedRawHtml,
+      );
+
+    const remainingModalApi =
+      findForbiddenInteractiveModalApi(
+        processedHtml,
+      );
+
+    if (remainingModalApi) {
+      throw new Error(
+        `Interactive modal repair failed for "${outline.title}": ` +
+          `${remainingModalApi}() remains in generated HTML`,
+      );
+    }
+
+    log.info(
+      `Interactive sandbox modal repair succeeded: "${outline.title}"`,
+    );
+  }
   let validation =
     validateInteractiveHtmlJavaScript(processedHtml);
 
@@ -1397,10 +1929,20 @@ async function generateInteractiveContent(
     const repairUser = [
       `Interactive title: ${outline.title}`,
       '',
+      `Failing inline script index: ${validation.scriptIndex ?? 'unknown'}`,
+      '',
       'JavaScript validation error:',
       validation.error ?? 'Unknown JavaScript syntax error',
       '',
-      'Repair this complete HTML document:',
+      'Exact failing inline script:',
+      '--- BEGIN FAILING SCRIPT ---',
+      validation.script ?? '(failing script unavailable)',
+      '--- END FAILING SCRIPT ---',
+      '',
+      'Find and correct that script in the complete HTML document below.',
+      'Make the smallest syntax-only correction necessary.',
+      '',
+      'Complete HTML document:',
       '',
       rawHtml,
     ].join('\n');
@@ -1756,8 +2298,8 @@ function generateDefaultPBLActions(_outline: SceneOutline): Action[] {
     {
       id: `action_${nanoid(8)}`,
       type: 'speech',
-      title: 'PBL 项目介绍',
-      text: '现在让我们开始一个项目式学习活动。请选择你的角色，查看任务看板，开始协作完成项目。',
+      title: 'PBL é¡¹ç›®ä»‹ç»',
+      text: 'çŽ°åœ¨è®©æˆ‘ä»¬å¼€å§‹ä¸€ä¸ªé¡¹ç›®å¼å­¦ä¹ æ´»åŠ¨ã€‚è¯·é€‰æ‹©ä½ çš„è§’è‰²ï¼ŒæŸ¥çœ‹ä»»åŠ¡çœ‹æ¿ï¼Œå¼€å§‹åä½œå®Œæˆé¡¹ç›®ã€‚',
     },
   ];
 }
@@ -1834,9 +2376,9 @@ function processActions(actions: Action[], elements: PPTElement[], agents?: Agen
     // Validate/fill discussion agentId
     if (processedAction.type === 'discussion' && agents && agents.length > 0) {
       if (processedAction.agentId && agentIds.has(processedAction.agentId)) {
-        // agentId valid — keep it
+        // agentId valid â€” keep it
       } else {
-        // agentId missing or invalid — pick a random student, or non-teacher, or skip
+        // agentId missing or invalid â€” pick a random student, or non-teacher, or skip
         const pool = studentAgents.length > 0 ? studentAgents : nonTeacherAgents;
         if (pool.length > 0) {
           const picked = pool[Math.floor(Math.random() * pool.length)];
@@ -1864,19 +2406,19 @@ function generateDefaultSlideActions(outline: SceneOutline, elements: PPTElement
     actions.push({
       id: `action_${nanoid(8)}`,
       type: 'spotlight',
-      title: '聚焦重点',
+      title: 'èšç„¦é‡ç‚¹',
       elementId: textElements[0].id,
     });
   }
 
   // Add opening speech based on key points
   const speechText = outline.keyPoints?.length
-    ? outline.keyPoints.join('。') + '。'
+    ? outline.keyPoints.join('ã€‚') + 'ã€‚'
     : outline.description || outline.title;
   actions.push({
     id: `action_${nanoid(8)}`,
     type: 'speech',
-    title: '场景讲解',
+    title: 'åœºæ™¯è®²è§£',
     text: speechText,
   });
 
@@ -1891,8 +2433,8 @@ function generateDefaultQuizActions(_outline: SceneOutline): Action[] {
     {
       id: `action_${nanoid(8)}`,
       type: 'speech',
-      title: '测验引导',
-      text: '现在让我们来做一个小测验，检验一下学习成果。',
+      title: 'æµ‹éªŒå¼•å¯¼',
+      text: 'çŽ°åœ¨è®©æˆ‘ä»¬æ¥åšä¸€ä¸ªå°æµ‹éªŒï¼Œæ£€éªŒä¸€ä¸‹å­¦ä¹ æˆæžœã€‚',
     },
   ];
 }
@@ -1905,8 +2447,8 @@ function generateDefaultInteractiveActions(_outline: SceneOutline): Action[] {
     {
       id: `action_${nanoid(8)}`,
       type: 'speech',
-      title: '交互引导',
-      text: '现在让我们通过交互式可视化来探索这个概念。请尝试操作页面中的元素，观察变化。',
+      title: 'äº¤äº’å¼•å¯¼',
+      text: 'çŽ°åœ¨è®©æˆ‘ä»¬é€šè¿‡äº¤äº’å¼å¯è§†åŒ–æ¥æŽ¢ç´¢è¿™ä¸ªæ¦‚å¿µã€‚è¯·å°è¯•æ“ä½œé¡µé¢ä¸­çš„å…ƒç´ ï¼Œè§‚å¯Ÿå˜åŒ–ã€‚',
     },
   ];
 }

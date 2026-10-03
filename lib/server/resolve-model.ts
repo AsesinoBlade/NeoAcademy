@@ -70,3 +70,27 @@ export function resolveModelFromHeaders(req: NextRequest): ResolvedModel {
     requiresApiKey: req.headers.get('x-requires-api-key') === 'true' ? true : undefined,
   });
 }
+
+/**
+ * Resolve the model used while building a classroom.
+ *
+ * This intentionally allows classroom generation to use a larger/slower
+ * model than the model used for live classroom interaction.
+ */
+export function resolveGenerationModelFromHeaders(
+  req: NextRequest,
+): ResolvedModel {
+  return resolveModel({
+    modelString:
+      process.env.CLASSROOM_GENERATION_MODEL ||
+      req.headers.get('x-model') ||
+      undefined,
+    apiKey: req.headers.get('x-api-key') || undefined,
+    baseUrl: req.headers.get('x-base-url') || undefined,
+    providerType: req.headers.get('x-provider-type') || undefined,
+    requiresApiKey:
+      req.headers.get('x-requires-api-key') === 'true'
+        ? true
+        : undefined,
+  });
+}

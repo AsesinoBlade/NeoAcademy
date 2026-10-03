@@ -3,7 +3,9 @@ import { randomUUID } from 'crypto';
 import { apiSuccess, apiError, API_ERROR_CODES } from '@/lib/server/api-response';
 import {
   buildRequestOrigin,
+  deleteClassroom,
   isValidClassroomId,
+  listClassrooms,
   persistClassroom,
   readClassroom,
 } from '@/lib/server/classroom-storage';
@@ -11,9 +13,18 @@ import {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { stage, scenes } = body;
+    const {
+      stage,
+      scenes,
+      currentSceneId,
+      chats,
+      outlines,
+      status,
+      error,
+      requirement,
+    } = body;
 
-    if (!stage || !scenes) {
+    if (!stage || !Array.isArray(scenes)) {
       return apiError(
         API_ERROR_CODES.MISSING_REQUIRED_FIELD,
         400,
@@ -22,22 +33,101 @@ export async function POST(request: NextRequest) {
     }
 
     const id = stage.id || randomUUID();
+
+    if (!isValidClassroomId(id)) {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        400,
+        'Invalid classroom id',
+      );
+    }
+
     const baseUrl = buildRequestOrigin(request);
 
-    const persisted = await persistClassroom({ id, stage: { ...stage, id }, scenes }, baseUrl);
+    const persisted = await persistClassroom(
+      {
+        id,
+        stage: {
+          ...stage,
+          id,
+        },
+        scenes,
+        currentSceneId,
+        chats,
+        outlines,
+        status,
+        error,
+        requirement,
+      },
+      baseUrl,
+    );
 
-    return apiSuccess({ id: persisted.id, url: persisted.url }, 201);
+    return apiSuccess(
+      {
+        id: persisted.id,
+        url: persisted.url,
+        status: persisted.status,
+      },
+      201,
+    );
   } catch (error) {
     return apiError(
       API_ERROR_CODES.INTERNAL_ERROR,
       500,
       'Failed to store classroom',
-      error instanceof Error ? error.message : String(error),
+      error instanceof Error
+        ? error.message
+        : String(error),
     );
   }
 }
 
 export async function GET(request: NextRequest) {
+  try {
+    const id = request.nextUrl.searchParams.get('id');
+
+    if (!id) {
+      const classrooms = await listClassrooms();
+
+      return apiSuccess({
+        classrooms,
+      });
+    }
+
+    if (!isValidClassroomId(id)) {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        400,
+        'Invalid classroom id',
+      );
+    }
+
+    const classroom = await readClassroom(id);
+
+    if (!classroom) {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        404,
+        'Classroom not found',
+      );
+    }
+
+    return apiSuccess({
+      classroom,
+    });
+  } catch (error) {
+    return apiError(
+      API_ERROR_CODES.INTERNAL_ERROR,
+      500,
+      'Failed to retrieve classroom',
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
   try {
     const id = request.nextUrl.searchParams.get('id');
 
@@ -50,21 +140,27 @@ export async function GET(request: NextRequest) {
     }
 
     if (!isValidClassroomId(id)) {
-      return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Invalid classroom id');
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        400,
+        'Invalid classroom id',
+      );
     }
 
-    const classroom = await readClassroom(id);
-    if (!classroom) {
-      return apiError(API_ERROR_CODES.INVALID_REQUEST, 404, 'Classroom not found');
-    }
+    await deleteClassroom(id);
 
-    return apiSuccess({ classroom });
+    return apiSuccess({
+      deleted: true,
+      id,
+    });
   } catch (error) {
     return apiError(
       API_ERROR_CODES.INTERNAL_ERROR,
       500,
-      'Failed to retrieve classroom',
-      error instanceof Error ? error.message : String(error),
+      'Failed to delete classroom',
+      error instanceof Error
+        ? error.message
+        : String(error),
     );
   }
 }
