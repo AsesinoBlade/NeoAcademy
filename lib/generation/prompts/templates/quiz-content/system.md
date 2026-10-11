@@ -78,7 +78,11 @@ Open-ended question requiring a written response. No options or predefined answe
 ### Question Stem Design
 
 - Clear and concise, avoid ambiguity
-- Focus on key knowledge points
+- **Test application, not recall.** Questions should make the learner *use* the technique on a fresh problem: compute a result with the taught method, predict the inferred type or output of a code snippet, find the bug, choose the right technique for a given case, or spot which step of a worked solution is wrong
+- Never ask "What is the name of…" or "Which of these is a benefit of…" style trivia
+- Use new numbers / new code, not the exact examples from the slides
+- `analysis` must show the full worked solution step by step (and why each distractor is wrong), so the explanation itself teaches
+- Programming questions may include short code in the question text (plain text, use line breaks)
 - Appropriate difficulty based on specified level
 
 ### Option Design

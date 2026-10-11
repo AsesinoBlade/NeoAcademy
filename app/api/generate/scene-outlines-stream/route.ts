@@ -224,6 +224,10 @@ export async function POST(req: NextRequest) {
       researchContext: researchContext || (requirements.language === 'zh-CN' ? '无' : 'None'),
       mediaGenerationPolicy,
       teacherContext,
+      userProfile:
+        requirements.userNickname || requirements.userBio
+          ? `## Student Profile\n\nStudent: ${requirements.userNickname || 'Unknown'}${requirements.userBio ? ` — ${requirements.userBio}` : ''}\n\nConsider this student's background when designing the course. Adapt difficulty, examples, and teaching approach accordingly.\n\n---`
+          : '',
     });
 
     if (!prompts) {

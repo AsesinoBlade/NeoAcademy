@@ -182,6 +182,17 @@ export function OutlinesEditor({
                 />
               </div>
 
+              <div className="space-y-2">
+                <Label>Teaching notes (worked examples, code, exercise + solution)</Label>
+                <Textarea
+                  value={outline.teachingNotes || ''}
+                  onChange={(e) => updateOutline(index, { teachingNotes: e.target.value })}
+                  placeholder="Exact rules, fully worked examples with real values or code, pitfalls, and the learner exercise with its solution"
+                  rows={5}
+                  disabled={isLoading}
+                />
+              </div>
+
               {outline.type === 'quiz' && (
                 <div className="p-3 bg-muted/50 rounded-lg space-y-3">
                   <Label className="text-sm font-medium">测验配置</Label>

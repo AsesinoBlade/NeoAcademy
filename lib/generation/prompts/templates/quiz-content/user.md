@@ -1,6 +1,7 @@
 Title: {{title}}
 Description: {{description}}
 Test Points: {{keyPoints}}
+Teaching Notes (what was taught — base questions on applying this): {{teachingNotes}}
 Question Count: {{questionCount}}, Difficulty: {{difficulty}}, Question Types: {{questionTypes}}
 
 ## Source Evidence

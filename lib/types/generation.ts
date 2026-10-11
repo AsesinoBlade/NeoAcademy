@@ -130,7 +130,13 @@ export interface SceneOutline {
   type: 'slide' | 'quiz' | 'interactive' | 'pbl';
   title: string;
   description: string; // 1-2 sentences describing the purpose
-  keyPoints: string[]; // 3-5 core key points
+  keyPoints: string[]; // 4-8 substantive points (actual content, not labels)
+  /**
+   * Detailed teaching brief for this scene: the exact rules, worked examples
+   * (with concrete numbers / real code), pitfalls, and exercise + solution.
+   * Downstream content/speech generators expand this into the full lesson.
+   */
+  teachingNotes?: string;
   teachingObjective?: string;
   estimatedDuration?: number; // seconds
   order: number;

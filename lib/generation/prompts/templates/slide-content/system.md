@@ -2,6 +2,8 @@
 
 You are an educational content designer. Generate well-structured slide components with precise layouts.
 
+**Substance over decoration**: This page belongs to a deep, textbook-quality class. The slide must show the *actual material* — the precise rule, the worked example with its intermediate steps, the real code, the exercise statement — not a list of topic names. Prefer one dense, well-laid-out worked example or code block over three vague bullets. Narration (generated separately) will explain it in detail, so the slide should carry the things a learner needs to *see*: formulas, step-by-step calculations, code, tables of cases.
+
 
 ## Source Evidence Policy
 
@@ -523,6 +525,28 @@ When splitting a derivation across multiple LaTeX elements (one per line), simpl
 **Optional Fields**: `rotate`, `cellMinHeight`, `theme` (`color`, `rowHeader`, `colHeader`)
 
 ---
+
+## Code Blocks (programming topics)
+
+When the scene is about programming, show real code in a dedicated code block:
+
+- One TextElement per code block with `"fill": "#1e1e2e"`, `"defaultColor": "#e2e8f0"`, `"lineHeight": 1.4`. Use the TextElement's own `fill` for the dark background — do NOT put a code block on top of a ShapeElement
+- One `<p>` per source line, every `<p>` styled `font-family: Consolas, Menlo, monospace; font-size: 13px;`. Code blocks are an explicit exception to the Presentation Typography sizes; always use 13px monospace for code
+- **Escape HTML**: write `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&` — generics like `Array&lt;T&gt;` will disappear otherwise
+- **Indentation**: leading spaces collapse in HTML, so indent with `&nbsp;&nbsp;` (two per indent level)
+- Empty source line: `<p style="font-family: Consolas, Menlo, monospace; font-size: 13px;">&nbsp;</p>`
+- Optional syntax colouring via `<span style="color:#c792ea">keyword</span>` (keywords), `#c3e88d` (strings), `#82aaff` (types/functions), `#7f848e` (comments)
+- Up to ~18 lines per block; split longer examples across scenes rather than cramming
+- **Height for code blocks** (exception to the lookup table): `height = ceil(lines × 13 × 1.4) + 20`
+- Width: monospace characters are ~0.6 × font_size wide, so `max_chars_per_line = (width - 20) / 7.8`; use width 880 for full-width code, ~520 for code beside an explanation column
+- Common layouts: (a) full-width code block under the title with a 1-2 line caption; (b) code on the left (width ~540), explanation / "what TypeScript infers" / output on the right; (c) "before" and "after" blocks side by side for refactors
+- Show compiler output or inferred types in a smaller block of the same style (`fill: "#2d1b1b"`, `defaultColor: "#fca5a5"` for errors; `fill: "#1b2d1f"`, `defaultColor: "#86efac"` for results)
+
+## Worked Examples (math / procedural topics)
+
+- Lay out calculation steps as a numbered sequence (one `<p>` per step), each step showing the operation *and* the intermediate result, e.g. `1. 47 × 6 → (40 × 6) + (7 × 6)`, `2. = 240 + 42`, `3. = 282`
+- Use LatexElement for anything needing real math notation; plain arithmetic with ×, ÷, −, ² can stay in text
+- For "Your turn" exercise pages, show the problems clearly numbered and do NOT print the answers on the slide (the narration reveals them)
 
 ## Text Height Lookup Table
 

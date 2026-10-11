@@ -53,6 +53,30 @@ import type {
   GenerationCallbacks,
 } from './pipeline-types';
 import { createLogger } from '@/lib/logger';
+
+const TEACHING_NOTES_FALLBACK =
+  '(none provided — derive concrete rules, fully worked examples and a practice exercise from the key points)';
+
+/**
+ * Code blocks are TextElements whose paragraphs use a monospace font.
+ * They must never be font-shrunk or LLM-"compacted" like prose: changing a
+ * single character can break the code being taught.
+ */
+const CODE_FONT_RE = /font-family\s*:[^;"]*(monospace|consolas|menlo|courier|cascadia|fira code|jetbrains)/i;
+
+function isCodeBlockHtml(html: unknown): boolean {
+  return typeof html === 'string' && CODE_FONT_RE.test(html);
+}
+
+/** Height estimate for a code block: one line per <p>, empty lines included. */
+function estimateCodeBlockHeight(html: string, lineHeight: number): number {
+  const lines = Math.max(1, (html.match(/<p[\s>]/gi) || []).length);
+  const sizes = [...html.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi)].map((m) =>
+    Number.parseFloat(m[1]),
+  );
+  const fontSize = sizes.length > 0 ? Math.max(...sizes) : 13;
+  return Math.ceil(lines * fontSize * lineHeight + 20);
+}
 const log = createLogger('Generation');
 
 // ==================== Stage 2: Full Scenes (Two-Step) ====================
@@ -489,11 +513,14 @@ function fixElementDefaults(
       const currentHeight =
         typeof textEl.height === 'number' && textEl.height > 0 ? textEl.height : 0;
 
-      const estimatedHeight = estimateTextHeight({
-        html: String(textEl.content),
-        width,
-        lineHeight: typeof textEl.lineHeight === 'number' ? textEl.lineHeight : 1.5,
-      });
+      const textLineHeight = typeof textEl.lineHeight === 'number' ? textEl.lineHeight : 1.5;
+      const estimatedHeight = isCodeBlockHtml(textEl.content)
+        ? estimateCodeBlockHeight(String(textEl.content), textLineHeight)
+        : estimateTextHeight({
+            html: String(textEl.content),
+            width,
+            lineHeight: textLineHeight,
+          });
 
       if (estimatedHeight > currentHeight) {
         log.debug(`Expanding text element height from ${currentHeight} to ${estimatedHeight}`);
@@ -591,6 +618,10 @@ function fitTextElementsToShapeContainers(
   for (const element of fitted) {
     if (element.type !== 'text') {
       continue;
+    }
+
+    if ('content' in element && isCodeBlockHtml(element.content)) {
+      continue; // never shrink code
     }
 
     const textLeft = element.left ?? 0;
@@ -758,6 +789,11 @@ async function compactSeverelyOverflowingTextWithAI(
     }
 
     if (!('content' in element) || typeof element.content !== 'string') {
+      continue;
+    }
+
+    // Never let an LLM "compact" code — it would change the program being taught.
+    if (isCodeBlockHtml(element.content)) {
       continue;
     }
 
@@ -1294,6 +1330,7 @@ async function generateSlideContent(
     title: outline.title,
     description: outline.description,
     keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+    teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
     elements: 'ï¼ˆæ ¹æ®è¦ç‚¹è‡ªåŠ¨ç”Ÿæˆï¼‰',
     assignedImages: assignedImagesText,
     canvas_width: canvasWidth,
@@ -1506,6 +1543,7 @@ async function generateQuizContent(
     title: outline.title,
     description: outline.description,
     keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+    teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
     questionCount: quizConfig.questionCount,
     difficulty: quizConfig.difficulty,
     questionTypes: quizConfig.questionTypes.join(', '),
@@ -1740,6 +1778,7 @@ async function generateInteractiveContent(
       conceptName: config.conceptName,
       conceptOverview: config.conceptOverview,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+      teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
       designIdea: config.designIdea,
       sourceEvidence: sourceEvidence || 'No source evidence provided.',
       classRequirement: classRequirement || 'No original class requirement provided.',
@@ -1785,6 +1824,7 @@ async function generateInteractiveContent(
     subject: config.subject || '',
     conceptOverview: config.conceptOverview,
     keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+    teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
     scientificConstraints,
     designIdea: config.designIdea,
     sourceEvidence: sourceEvidence || 'No source evidence provided.',
@@ -2164,6 +2204,7 @@ export async function generateSceneActions(
     const prompts = buildPrompt(PROMPT_IDS.SLIDE_ACTIONS, {
       title: outline.title,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+      teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
       description: outline.description,
       elements: elementsText,
       courseContext: buildCourseContext(ctx),
@@ -2211,6 +2252,7 @@ export async function generateSceneActions(
     const prompts = buildPrompt(PROMPT_IDS.QUIZ_ACTIONS, {
       title: outline.title,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+      teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
       description: outline.description,
       questions: questionsText,
       courseContext: buildCourseContext(ctx),
@@ -2238,6 +2280,7 @@ export async function generateSceneActions(
     const prompts = buildPrompt(PROMPT_IDS.INTERACTIVE_ACTIONS, {
       title: outline.title,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+      teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
       description: outline.description,
       conceptName: config?.conceptName || outline.title,
       designIdea: config?.designIdea || '',
@@ -2266,6 +2309,7 @@ export async function generateSceneActions(
     const prompts = buildPrompt(PROMPT_IDS.PBL_ACTIONS, {
       title: outline.title,
       keyPoints: (outline.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n'),
+      teachingNotes: outline.teachingNotes || TEACHING_NOTES_FALLBACK,
       description: outline.description,
       projectTopic: pblConfig?.projectTopic || outline.title,
       projectDescription: pblConfig?.projectDescription || outline.description,

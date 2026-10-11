@@ -2,6 +2,8 @@ Elements: {{elements}}
 Title: {{title}}
 Key Points: {{keyPoints}}
 Description: {{description}}
+Teaching Notes (substance you must actually teach — expand it, don't summarise it):
+{{teachingNotes}}
 {{courseContext}}
 {{agents}}
 {{userProfile}}
@@ -23,5 +25,5 @@ For claims about a particular uploaded or reference source:
 - These are internal grounding instructions. Never mention "Source Evidence", "Source Evidence Policy", "Grounding Rule", "closed world", "closed-world rule", "grounding policy", or similar implementation terminology in learner-facing content or speech.
 **Language Requirement**: Generated speech content must be in the same language as the key points above.
 
-Output as a JSON array directly (no explanation, no code fences, 5-10 segments):
+Output as a JSON array directly (no explanation, no code fences, 8-20 segments):
 [{"type":"action","name":"spotlight","params":{"elementId":"text_xxx"}},{"type":"text","content":"Opening speech content"}]

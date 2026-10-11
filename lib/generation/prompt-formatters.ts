@@ -42,8 +42,9 @@ export function buildCourseContext(ctx?: SceneGenerationContext): string {
   if (ctx.previousSpeeches.length > 0) {
     lines.push('');
     lines.push('Previous page speech (for transition reference):');
-    const lastSpeech = ctx.previousSpeeches[ctx.previousSpeeches.length - 1];
-    lines.push(`  "...${lastSpeech.slice(-150)}"`);
+    const lastSpeech = ctx.previousSpeeches.join(' ');
+    // Enough of the previous page to continue the thread of a worked example / running project
+    lines.push(`  "...${lastSpeech.slice(-800)}"`);
   }
 
   return lines.join('\n');

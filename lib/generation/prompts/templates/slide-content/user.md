@@ -6,6 +6,8 @@
 - **Description**: {{description}}
 - **Key Points**:
   {{keyPoints}}
+- **Teaching Notes** (the substance this page must show — worked examples, code, rules, exercise):
+  {{teachingNotes}}
 
 {{teacherContext}}
 

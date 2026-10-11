@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -134,13 +134,16 @@ export default function CoursePage() {
           </div>
 
           {/* Scene type renderer */}
-          <SceneRenderer scene={scene} />
+          <SceneRenderer key={scene.id} scene={scene} />
 
           {/* Speaker notes */}
           {scene.speakerNotes && (
             <Card className="bg-muted/50">
-              <CardContent className="py-3">
-                <p className="text-sm text-muted-foreground italic">{scene.speakerNotes}</p>
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm font-medium text-muted-foreground">Lecture</CardTitle>
+              </CardHeader>
+              <CardContent className="pb-4">
+                <p className="text-sm leading-relaxed whitespace-pre-line">{scene.speakerNotes}</p>
               </CardContent>
             </Card>
           )}
@@ -191,39 +194,165 @@ export default function CoursePage() {
 // Scene renderer — handles slides, quiz, and interactive types
 // ---------------------------------------------------------------------------
 
+// Content shapes produced by the pre-generation engine. Older courses only have
+// heading/bullets/example and plain-string steps; everything new is optional.
+interface SlideCode {
+  language?: string;
+  code: string;
+  caption?: string;
+}
+
+interface SlideData {
+  heading: string;
+  explanation?: string;
+  bullets?: string[];
+  steps?: string[];
+  code?: SlideCode | string;
+  output?: string;
+  example?: string;
+}
+
+interface Exercise {
+  prompt: string;
+  starterCode?: string;
+  hints?: string[];
+  solution?: string;
+  solutionCode?: string;
+}
+
+interface LabStep {
+  instruction: string;
+  code?: string;
+  expected?: string;
+}
+
+function CodeBlock({ code, caption, tone = 'code' }: { code: string; caption?: string; tone?: 'code' | 'output' }) {
+  return (
+    <div className="space-y-1">
+      {caption && <p className="text-xs text-muted-foreground">{caption}</p>}
+      <pre
+        className={cn(
+          'rounded-md px-4 py-3 text-[13px] leading-relaxed overflow-x-auto font-mono',
+          tone === 'code' ? 'bg-zinc-900 text-zinc-100' : 'bg-muted text-foreground border',
+        )}
+      >
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function Prose({ text }: { text?: string }) {
+  if (!text) return null;
+  return <p className="text-sm leading-relaxed whitespace-pre-line">{text}</p>;
+}
+
+function Reveal({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-2">
+      <Button variant="outline" size="sm" onClick={() => setOpen((o) => !o)}>
+        {open ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+      </Button>
+      {open && <div className="space-y-2">{children}</div>}
+    </div>
+  );
+}
+
+function ExerciseCard({ exercise, title = 'Your turn' }: { exercise: Exercise; title?: string }) {
+  return (
+    <Card className="border-primary/40">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Prose text={exercise.prompt} />
+        {exercise.starterCode && <CodeBlock code={exercise.starterCode} caption="Starter code" />}
+        {exercise.hints && exercise.hints.length > 0 && (
+          <Reveal label="Hints">
+            <ul className="list-disc pl-5 text-sm space-y-1">
+              {exercise.hints.map((h, i) => (
+                <li key={i}>{h}</li>
+              ))}
+            </ul>
+          </Reveal>
+        )}
+        {(exercise.solution || exercise.solutionCode) && (
+          <Reveal label="Solution">
+            <Prose text={exercise.solution} />
+            {exercise.solutionCode && <CodeBlock code={exercise.solutionCode} />}
+          </Reveal>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function SceneRenderer({ scene }: { scene: Scene }) {
   const content = scene.content;
 
   if (scene.type === 'slides') {
-    const slides =
-      (content.slides as { heading: string; bullets?: string[]; example?: string }[]) || [];
+    const slides = (content.slides as SlideData[]) || [];
+    const exercise = content.exercise as Exercise | undefined;
+    const takeaways = (content.keyTakeaways as string[]) || [];
     return (
       <div className="space-y-4">
-        {slides.map((slide, i) => (
-          <Card key={i}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">{slide.heading}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {slide.bullets && (
-                <ul className="space-y-1">
-                  {slide.bullets.map((b, j) => (
-                    <li key={j} className="flex items-start gap-2 text-sm">
-                      <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                      {b}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {slide.example && (
-                <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                  <span className="font-medium text-muted-foreground text-xs">Example: </span>
-                  {slide.example}
-                </div>
-              )}
+        {slides.map((slide, i) => {
+          const code =
+            typeof slide.code === 'string' ? { code: slide.code } : (slide.code as SlideCode | undefined);
+          return (
+            <Card key={i}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">{slide.heading}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Prose text={slide.explanation} />
+                {slide.bullets && slide.bullets.length > 0 && (
+                  <ul className="space-y-1">
+                    {slide.bullets.map((b, j) => (
+                      <li key={j} className="flex items-start gap-2 text-sm">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {slide.steps && slide.steps.length > 0 && (
+                  <ol className="space-y-1 rounded-md bg-muted px-4 py-3 font-mono text-[13px]">
+                    {slide.steps.map((st, j) => (
+                      <li key={j}>
+                        <span className="text-muted-foreground mr-2">{j + 1}.</span>
+                        {st}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {code?.code && <CodeBlock code={code.code} caption={code.caption} />}
+                {slide.output && <CodeBlock code={slide.output} caption="Result" tone="output" />}
+                {slide.example && (
+                  <div className="rounded-md bg-muted px-3 py-2 text-sm whitespace-pre-line">
+                    <span className="font-medium text-muted-foreground text-xs">Example: </span>
+                    {slide.example}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+        {exercise?.prompt && <ExerciseCard exercise={exercise} />}
+        {takeaways.length > 0 && (
+          <Card className="bg-muted/40">
+            <CardContent className="py-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Remember:</p>
+              {takeaways.map((t, i) => (
+                <p key={i} className="text-sm flex gap-2">
+                  <CheckCircle className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                  {t}
+                </p>
+              ))}
             </CardContent>
           </Card>
-        ))}
+        )}
       </div>
     );
   }
@@ -234,24 +363,36 @@ function SceneRenderer({ scene }: { scene: Scene }) {
 
   if (scene.type === 'interactive') {
     const activity = content.activity as string;
-    const steps = (content.steps as string[]) || [];
+    const steps = (content.steps as (string | LabStep)[]) || [];
     const outcomes = (content.outcomes as string[]) || [];
+    const challenge = content.challenge as
+      | { prompt: string; solution?: string; solutionCode?: string }
+      | undefined;
     return (
       <div className="space-y-4">
-        {activity && <p className="text-base">{activity}</p>}
+        {activity && <Prose text={activity} />}
         {steps.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="font-medium text-sm">Steps:</h3>
-            {steps.map((step, i) => (
-              <div key={i} className="flex items-start gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
-                  {i + 1}
-                </span>
-                <p className="text-sm pt-0.5">{step}</p>
-              </div>
-            ))}
+          <div className="space-y-4">
+            {steps.map((raw, i) => {
+              const step: LabStep = typeof raw === 'string' ? { instruction: raw } : raw;
+              return (
+                <div key={i} className="flex items-start gap-3">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0 space-y-2 pt-0.5">
+                    <Prose text={step.instruction} />
+                    {step.code && <CodeBlock code={step.code} />}
+                    {step.expected && (
+                      <CodeBlock code={step.expected} caption="You should see" tone="output" />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
+        {challenge?.prompt && <ExerciseCard exercise={challenge} title="Stretch challenge" />}
         {outcomes.length > 0 && (
           <Card className="border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/20">
             <CardContent className="py-3 space-y-1">
@@ -281,6 +422,7 @@ function SceneRenderer({ scene }: { scene: Scene }) {
 
 interface QuizQuestion {
   question: string;
+  code?: string;
   options: string[];
   correct: number;
   explanation: string;
@@ -295,11 +437,12 @@ function QuizRenderer({ questions }: { questions: QuizQuestion[] }) {
       {questions.map((q, i) => (
         <Card key={i}>
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium">
+            <CardTitle className="text-sm font-medium whitespace-pre-line">
               {i + 1}. {q.question}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
+            {q.code && <CodeBlock code={q.code} />}
             {q.options.map((opt, j) => {
               const isSelected = answers[i] === j;
               const isSubmitted = submitted[i];
@@ -337,7 +480,7 @@ function QuizRenderer({ questions }: { questions: QuizQuestion[] }) {
             {submitted[i] && (
               <div
                 className={cn(
-                  'mt-2 rounded-lg px-3 py-2 text-sm',
+                  'mt-2 rounded-lg px-3 py-2 text-sm whitespace-pre-line',
                   answers[i] === q.correct
                     ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'
                     : 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400',

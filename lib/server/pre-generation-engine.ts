@@ -21,6 +21,8 @@ import { smartRouter } from '@/lib/ai/smart-router';
 import { retrieveContext, formatContextForPrompt } from '@/lib/rag/retriever';
 import { webSearch, formatSearchResultsForPrompt } from '@/lib/web-search/search';
 import { generateText } from 'ai';
+import { loadSnippet } from '@/lib/generation/prompts';
+import { parseJsonResponse } from '@/lib/generation/json-repair';
 
 const log = createLogger('PreGenEngine');
 
@@ -67,8 +69,20 @@ interface SceneOutline {
   title: string;
   type: 'slides' | 'quiz' | 'interactive';
   keyPoints: string[];
+  /** Detailed teaching brief: exact rules, worked examples, code, pitfalls, exercise + solution */
+  teachingNotes?: string;
   speakerNotes: string;
 }
+
+const OUTLINE_MAX_OUTPUT_TOKENS = Number.parseInt(
+  process.env.COURSE_OUTLINE_MAX_OUTPUT_TOKENS || '16384',
+  10,
+);
+const SCENE_MAX_OUTPUT_TOKENS = Number.parseInt(
+  process.env.SCENE_CONTENT_MAX_OUTPUT_TOKENS || '16384',
+  10,
+);
+const TTS_TIMEOUT_MS = Number.parseInt(process.env.COURSE_TTS_TIMEOUT_MS || '300000', 10);
 
 interface GeneratedScene {
   id: string;
@@ -141,7 +155,7 @@ export async function preGenerateCourse(
 
     // 4. Generate outlines
     progress('generating_outlines', 15, 'Generating course structure…');
-    const numScenes = input.numScenes ?? 8;
+    const numScenes = input.numScenes ?? 16;
     const outlines = await generateOutlines({
       topic: input.topic,
       level: input.level,
@@ -173,6 +187,8 @@ export async function preGenerateCourse(
         batch.map(async (outline, batchIdx) => {
           const sceneIdx = i + batchIdx;
           const scene = await generateScene(outline, {
+            allOutlines: outlines,
+            sceneIndex: sceneIdx,
             topic: input.topic,
             level: input.level,
             language: input.language,
@@ -268,31 +284,53 @@ async function generateOutlines(opts: {
   const { model, keyInfo } = await smartRouter.selectModel({ task });
 
   const contextSections = [opts.ragContext, opts.webContext].filter(Boolean).join('\n\n');
-  const systemPrompt = `You are an expert educational content designer. Create engaging, accurate learning experiences for students.${opts.level ? ` Target level: ${opts.level}.` : ''}`;
+  const systemPrompt = `You are an expert course author and subject-matter specialist who writes deep, rigorous classes — the equivalent of a strong textbook chapter taught by an expert tutor.${opts.level ? ` Target level: ${opts.level}.` : ''}
 
-  const userPrompt = `Create a structured outline for a ${opts.numScenes}-scene interactive lesson about: "${opts.topic}"
+${loadSnippet('teaching-depth')}`;
+
+  const userPrompt = `Design a ${opts.numScenes}-scene deep-dive course on: "${opts.topic}"
 ${contextSections ? `\n${contextSections}\n` : ''}
-Return a JSON array of ${opts.numScenes} scene outlines. Each scene must have:
+## How to plan it
+
+1. First, silently list every concrete sub-skill / technique / feature that mastery of this topic requires. Be complete — don't stop at category names.
+2. Spread them over the ${opts.numScenes} scenes so each scene teaches ONE narrow idea in depth. If there are more sub-skills than scenes, prioritise the most important and go deep on them rather than skimming all of them.
+3. Give each sub-skill a teaching arc: concept (precise rule + why it works) → fully worked example(s) → pitfalls → learner practice. Use "interactive" scenes for hands-on build-along / practice labs and "quiz" scenes (roughly every 4-5 scenes) for applied checks.
+4. For programming topics, pick a running project the learner builds step by step across the course and advance it in the interactive scenes.
+5. First scene: short orientation (what will be mastered, prerequisites, how to practise). Last scene: a mixed practice set or final build step — not a generic summary.
+
+## Output
+
+Return ONLY a JSON array of exactly ${opts.numScenes} objects:
 {
   "id": "scene_N",
-  "title": "Scene title",
+  "title": "Specific title (e.g. 'Multiplying by 11: the split-and-insert rule', not 'Multiplication tricks')",
   "type": "slides" | "quiz" | "interactive",
-  "keyPoints": ["point 1", "point 2", "point 3"],
-  "speakerNotes": "Brief narration for this scene (2-3 sentences)"
+  "keyPoints": ["4-8 points that contain the ACTUAL content: the precise rule, a concrete worked example, a pitfall — never bare topic names"],
+  "teachingNotes": "100-250 words: the exact rule/syntax, 1-2 fully worked examples with real numbers or real code, the main pitfall with a counter-example, and the practice exercise with its full solution. This is what the scene writer will expand, so be specific.",
+  "speakerNotes": "One sentence describing the scene's goal"
 }
 
-Make the first scene introductory, include 1-2 quiz scenes, and end with a summary scene.
+Depth check before answering: could a learner pick up the actual technique from keyPoints + teachingNotes alone? If any keyPoint only names a topic, rewrite it to teach it.
 ${opts.language && opts.language !== 'en' ? `All content must be in language code: ${opts.language}` : ''}`;
 
-  const { text, usage } = await generateText({ model, system: systemPrompt, prompt: userPrompt });
+  const { text, usage } = await generateText({
+    model,
+    system: systemPrompt,
+    prompt: userPrompt,
+    maxOutputTokens: OUTLINE_MAX_OUTPUT_TOKENS,
+  });
   await smartRouter.recordUsage(keyInfo, usage?.inputTokens ?? 0, usage?.outputTokens ?? 0);
 
-  // Extract JSON from response
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) throw new Error('Failed to parse scene outlines from LLM response');
-
-  const parsed = JSON.parse(jsonMatch[0]) as SceneOutline[];
-  return parsed.map((o, i) => ({ ...o, id: o.id || `scene_${i + 1}` }));
+  const parsed = parseJsonResponse<SceneOutline[]>(text);
+  if (!parsed || !Array.isArray(parsed)) {
+    throw new Error('Failed to parse scene outlines from LLM response');
+  }
+  return parsed.map((o, i) => ({
+    ...o,
+    id: o.id || `scene_${i + 1}`,
+    keyPoints: Array.isArray(o.keyPoints) ? o.keyPoints : [],
+    type: (['slides', 'quiz', 'interactive'] as const).includes(o.type) ? o.type : 'slides',
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +340,8 @@ ${opts.language && opts.language !== 'en' ? `All content must be in language cod
 async function generateScene(
   outline: SceneOutline,
   opts: {
+    allOutlines: SceneOutline[];
+    sceneIndex: number;
     topic: string;
     level?: string;
     language?: string;
@@ -313,40 +353,72 @@ async function generateScene(
   const task = opts.highQuality ? 'generation-quality' : 'generation-draft';
   const { model, keyInfo } = await smartRouter.selectModel({ task });
 
+  const courseMap = opts.allOutlines
+    .map((o, i) => `${i + 1}. ${o.title}${i === opts.sceneIndex ? '   ← THIS SCENE' : ''}`)
+    .join('\n');
+  const prev = opts.sceneIndex > 0 ? opts.allOutlines[opts.sceneIndex - 1] : undefined;
+  const prevSummary = prev
+    ? `Previous scene ("${prev.title}") covered:\n- ${prev.keyPoints.join('\n- ')}${prev.teachingNotes ? `\n${prev.teachingNotes}` : ''}`
+    : 'This is the first scene of the course.';
+
   const typeInstructions: Record<string, string> = {
-    slides: 'Create 3-5 content slides with bullet points, examples, and diagrams',
-    quiz: 'Create 3-5 multiple choice questions with explanations',
-    interactive: 'Create an interactive activity with step-by-step instructions',
+    slides: `Teach this scene's idea in depth across 3-8 slides. Typical flow: precise rule/mechanism and why it works → fully worked example(s) with every step → edge cases & pitfalls → a "Your turn" exercise. Each slide needs a real "explanation" (1-3 paragraphs that teach, not tease). Use "code" for any programming content (complete, idiomatic, compilable code, with "output" showing results / inferred types / compiler errors). Use "steps" for worked calculations, one step per entry showing the operation and intermediate result. Always include an "exercise" with a full worked "solution".`,
+    quiz: `Write 4-6 questions that make the learner APPLY what was taught in the preceding scenes to fresh problems: compute with the taught method, predict output/inferred types, find the bug, choose the right technique. No trivia or "which is a benefit of" questions. Use new numbers/code, not the slide examples. Each "explanation" must show the full worked solution and why the distractors are wrong.`,
+    interactive: `Write a hands-on build-along / practice lab. The learner follows along on their own machine or paper. Give 4-10 concrete steps; each step has a precise "instruction", the exact "code" to write or problem to solve (if any), and "expected" — what they should see or get (output, inferred type, compiler error, answer). End with a stretch challenge and its solution. For programming topics, advance the course's running project.`,
   };
 
-  const prompt = `Generate the full content for this educational scene:
+  const system = `You are an expert teacher writing one scene of a deep, rigorous course on "${opts.topic}"${opts.level ? ` (${opts.level} level)` : ''}.
+
+${loadSnippet('teaching-depth')}`;
+
+  const prompt = `## Course map
+${courseMap}
+
+## Continuity
+${prevSummary}
+Build on earlier scenes; don't re-teach them. Don't greet or re-introduce the course unless this is scene 1.
+
+## This scene
 Title: ${outline.title}
 Type: ${outline.type}
-Key points to cover: ${outline.keyPoints.join(', ')}
-Topic context: ${opts.topic}${opts.level ? ` (${opts.level} level)` : ''}
+Key points to teach (expand each fully):
+- ${outline.keyPoints.join('\n- ')}
+Teaching notes:
+${outline.teachingNotes || '(none — derive concrete rules, fully worked examples and an exercise from the key points)'}
+${opts.ragContext ? `\n## Reference material\n${opts.ragContext}\n` : ''}
+## Instructions
+${typeInstructions[outline.type] || typeInstructions.slides}
 
-Instructions: ${typeInstructions[outline.type] || typeInstructions.slides}
+"speakerNotes" is the full spoken lecture for this scene: 300-800 words that walk through the material as an expert tutor would — explain the reasoning, talk through each worked example step by step, call out the pitfalls, tell the learner when to pause and try the exercise, then walk through the solution. No filler.
 
-Return a valid JSON object with this structure:
+## Output
+Return ONLY a valid JSON object (escape newlines inside strings as \\n, escape double quotes inside code):
 {
-  "title": "${outline.title}",
+  "title": "${outline.title.replace(/"/g, '\\"')}",
   "type": "${outline.type}",
-  "speakerNotes": "Full narration script for this scene (3-5 sentences, engaging and educational)",
-  "content": {
-    // For slides: { "slides": [{ "heading": "...", "bullets": [...], "example": "..." }] }
-    // For quiz: { "questions": [{ "question": "...", "options": [...], "correct": 0, "explanation": "..." }] }
-    // For interactive: { "activity": "...", "steps": [...], "outcomes": [...] }
+  "speakerNotes": "...",
+  "content": ${
+    outline.type === 'quiz'
+      ? `{ "questions": [{ "question": "...", "code": "optional code snippet the question refers to", "options": ["...", "...", "...", "..."], "correct": 0, "explanation": "full worked solution" }] }`
+      : outline.type === 'interactive'
+        ? `{ "activity": "what the learner will build/practise and why", "steps": [{ "instruction": "...", "code": "optional exact code or problem", "expected": "what they should see/get" }], "challenge": { "prompt": "...", "solution": "...", "solutionCode": "optional" }, "outcomes": ["concrete skill gained"] }`
+        : `{ "slides": [{ "heading": "...", "explanation": "1-3 paragraphs that actually teach", "bullets": ["optional precise points"], "steps": ["optional worked-calculation steps"], "code": { "language": "ts", "code": "optional complete code", "caption": "optional" }, "output": "optional output / inferred type / compiler error", "example": "optional short example" }], "exercise": { "prompt": "the task", "starterCode": "optional", "hints": ["optional"], "solution": "full worked solution", "solutionCode": "optional" }, "keyTakeaways": ["the precise rules to remember"] }`
   }
 }
 ${opts.language && opts.language !== 'en' ? `All content in language: ${opts.language}` : ''}`;
 
-  const { text, usage } = await generateText({ model, prompt });
+  const { text, usage } = await generateText({
+    model,
+    system,
+    prompt,
+    maxOutputTokens: SCENE_MAX_OUTPUT_TOKENS,
+  });
   await smartRouter.recordUsage(keyInfo, usage?.inputTokens ?? 0, usage?.outputTokens ?? 0);
 
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error(`Failed to parse scene content for ${outline.id}`);
-
-  const parsed = JSON.parse(jsonMatch[0]) as Omit<GeneratedScene, 'id'>;
+  const parsed = parseJsonResponse<Omit<GeneratedScene, 'id'>>(text);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(`Failed to parse scene content for ${outline.id}`);
+  }
 
   return {
     id: outline.id,
@@ -395,7 +467,8 @@ async function renderTTSAudio(
           voice: ttsConfig.defaultVoice,
           response_format: 'mp3',
         }),
-        signal: AbortSignal.timeout(30000),
+        // Long lecture narration takes a while to synthesise locally
+        signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
       });
 
       if (res.ok) {

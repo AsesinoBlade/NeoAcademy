@@ -54,7 +54,7 @@ export default function CoursesPage() {
   // Generation form
   const [topic, setTopic] = useState('');
   const [level, setLevel] = useState('GCSE');
-  const [numScenes, setNumScenes] = useState('8');
+  const [numScenes, setNumScenes] = useState('16');
   const [useKnowledge, setUseKnowledge] = useState(true);
   const [useWebSearch, setUseWebSearch] = useState(true);
   const [highQuality, setHighQuality] = useState(false);
@@ -210,7 +210,7 @@ export default function CoursesPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {[4, 6, 8, 10, 12].map((n) => (
+                            {[8, 12, 16, 20, 30, 40].map((n) => (
                               <SelectItem key={n} value={String(n)}>
                                 {n} scenes
                               </SelectItem>
