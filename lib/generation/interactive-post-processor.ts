@@ -172,6 +172,28 @@ export interface InteractiveJavaScriptValidationResult {
  * not present in the generated HTML. Non-JavaScript script types such as JSON
  * are also ignored.
  */
+/**
+ * Deterministic fix for the most common LLM JavaScript syntax error:
+ * an English contraction or possessive inside a single-quoted string,
+ * e.g. 'Don't move' → the string ends at "Don" and `t` is a stray
+ * identifier ("SyntaxError: Unexpected identifier 't'").
+ *
+ * Escapes an apostrophe that sits between a letter and a contraction
+ * suffix (n't, 's, 're, 'll, 've, 'm, 'd). `\'` is valid inside any JS
+ * string type, so this is safe for double-quoted and template strings
+ * too. Only inline classic scripts are touched; callers should re-validate
+ * and keep the result only if it fixes the error.
+ */
+export function repairCommonJavaScriptQuoteErrors(html: string): string {
+  const contraction = /([A-Za-z])'(t|s|re|ll|ve|m|d)\b/g;
+
+  return html.replace(
+    /(<script\b(?![^>]*\bsrc\s*=)[^>]*>)([\s\S]*?)(<\/script>)/gi,
+    (_match, open: string, body: string, close: string) =>
+      open + body.replace(contraction, "$1\\'$2") + close,
+  );
+}
+
 export function validateInteractiveHtmlJavaScript(
   html: string,
 ): InteractiveJavaScriptValidationResult {

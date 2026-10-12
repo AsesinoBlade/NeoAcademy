@@ -31,6 +31,7 @@ Generate a complete, self-contained HTML document that provides an interactive v
 ### Math Formulas
 
 - Use standard LaTeX format for math: inline `\(...\)`, display `\[...\]`
+- **JavaScript strings containing learner-facing text**: use template literals (`` `Don't move the 5` ``) or double quotes. NEVER put English text with apostrophes (don't, it's, you're, the cell's) inside single-quoted strings — `'Don't'` is a syntax error that breaks the whole interactive.
 - When generating LaTeX in JavaScript strings, use double backslash escaping:
   - Correct: `"\\(x^2\\)"` in JS string
   - Wrong: `"\(x^2\)"` in JS string

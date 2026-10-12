@@ -30,12 +30,14 @@ import { generatePBLContent } from '@/lib/pbl/generate-pbl';
 import { buildPrompt, PROMPT_IDS } from './prompts';
 import {
   postProcessInteractiveHtml,
+  repairCommonJavaScriptQuoteErrors,
   validateInteractiveHtmlJavaScript,
 } from './interactive-post-processor';
 import { parseActionsFromStructuredOutput } from './action-parser';
 import { parseJsonResponse } from './json-repair';
 import {
   buildCourseContext,
+  isDiscussionAllowed,
   formatAgentsForPrompt,
   formatTeacherPersonaForPrompt,
   formatImageDescription,
@@ -589,6 +591,100 @@ function fixElementDefaults(
 
     return el;
   });
+}
+
+/**
+ * Before shrinking fonts or asking the LLM to cut text, give overflowing
+ * text more room: grow its card (shape container) downward into free space.
+ * Cards sharing a row (same top and height) grow together so the layout
+ * stays symmetrical. Growth never overlaps another element below the card
+ * and never leaves the canvas. Whatever overflow remains is handled by the
+ * existing font fitting / compaction passes.
+ */
+function growShapeContainersToFitText(
+  elements: GeneratedSlideData['elements'],
+): GeneratedSlideData['elements'] {
+  const CANVAS_BOTTOM = 562.5 - 15;
+  const GAP = 12;
+  const PADDING = 10;
+
+  const result = elements.map((el) => ({ ...el }));
+
+  const isCard = (el: (typeof result)[number]) => {
+    if (el.type !== 'shape') return false;
+    const w = el.width ?? 0;
+    const h = el.height ?? 0;
+    return w >= 100 && h >= 40 && !(w >= 950 && h >= 500);
+  };
+
+  const shapes = result.filter(isCard);
+  if (shapes.length === 0) return result;
+
+  const bottom = (el: (typeof result)[number]) => (el.top ?? 0) + (el.height ?? 0);
+  const right = (el: (typeof result)[number]) => (el.left ?? 0) + (el.width ?? 0);
+
+  const findContainer = (text: (typeof result)[number]) => {
+    const candidates = shapes.filter(
+      (s) =>
+        (text.top ?? 0) >= (s.top ?? 0) &&
+        (text.top ?? 0) < bottom(s) &&
+        (text.left ?? 0) >= (s.left ?? 0) - 2 &&
+        right(text) <= right(s) + 2,
+    );
+    if (candidates.length === 0) return null;
+    return candidates.reduce((a, b) =>
+      (a.width ?? 0) * (a.height ?? 0) <= (b.width ?? 0) * (b.height ?? 0) ? a : b,
+    );
+  };
+
+  // Free vertical space below a card before it would touch another element.
+  const roomBelow = (card: (typeof result)[number]): number => {
+    const cardBottom = bottom(card);
+    let limit = CANVAS_BOTTOM;
+    for (const other of result) {
+      if (other === card) continue;
+      const otherTop = other.top ?? 0;
+      // Elements inside the card move with it conceptually; ignore them.
+      if (otherTop >= (card.top ?? 0) && otherTop < cardBottom) continue;
+      if (otherTop < cardBottom) continue;
+      const overlapsHorizontally = (other.left ?? 0) < right(card) && right(other) > (card.left ?? 0);
+      if (!overlapsHorizontally) continue;
+      limit = Math.min(limit, otherTop - GAP);
+    }
+    return Math.max(0, limit - cardBottom);
+  };
+
+  for (const text of result) {
+    if (text.type !== 'text') continue;
+
+    const container = findContainer(text);
+    if (!container) continue;
+
+    const needed = (text.top ?? 0) + (text.height ?? 0) + PADDING - bottom(container);
+    if (needed <= 0) continue;
+
+    const rowPeers = shapes.filter(
+      (s) =>
+        Math.abs((s.top ?? 0) - (container.top ?? 0)) <= 2 &&
+        Math.abs((s.height ?? 0) - (container.height ?? 0)) <= 2,
+    );
+
+    const growBy = Math.floor(Math.min(needed, ...rowPeers.map(roomBelow)));
+    if (growBy < 1) continue;
+
+    for (const peer of rowPeers) {
+      peer.height = (peer.height ?? 0) + growBy;
+    }
+
+    log.info('Grew card to fit text', {
+      textTop: text.top,
+      grewBy: growBy,
+      stillShort: Math.max(0, Math.ceil(needed - growBy)),
+      cards: rowPeers.length,
+    });
+  }
+
+  return result;
 }
 
 function fitTextElementsToShapeContainers(
@@ -1484,7 +1580,9 @@ async function generateSlideContent(
   const fixedElements = fixElementDefaults(generatedData.elements, assignedImages);
   log.debug(`After element fixing: ${fixedElements.length} elements`);
 
-  const containerFittedElements = fitTextElementsToShapeContainers(fixedElements);
+  const grownElements = growShapeContainersToFitText(fixedElements);
+
+  const containerFittedElements = fitTextElementsToShapeContainers(grownElements);
 
   log.debug(`After container text fitting: ${containerFittedElements.length} elements`);
 
@@ -1965,6 +2063,27 @@ async function generateInteractiveContent(
   let validation =
     validateInteractiveHtmlJavaScript(processedHtml);
 
+  // Cheap deterministic fix first: apostrophes in single-quoted strings
+  // ('Don't') are the most common failure and an LLM repair pass costs
+  // minutes on a local model.
+  if (!validation.valid) {
+    const quoteRepairedHtml =
+      repairCommonJavaScriptQuoteErrors(processedHtml);
+
+    if (quoteRepairedHtml !== processedHtml) {
+      const quoteValidation =
+        validateInteractiveHtmlJavaScript(quoteRepairedHtml);
+
+      if (quoteValidation.valid) {
+        log.info(
+          `Interactive JavaScript fixed deterministically (escaped apostrophes) for: "${outline.title}"`,
+        );
+        processedHtml = quoteRepairedHtml;
+        validation = quoteValidation;
+      }
+    }
+  }
+
   if (!validation.valid) {
     log.warn(
       `Interactive JavaScript validation failed for "${outline.title}" ` +
@@ -2203,7 +2322,35 @@ function extractHtml(response: string): string | null {
 /**
  * Step 3.2: Generate Actions based on content and script
  */
+/**
+ * Generate actions, then enforce the course-wide discussion cap. The model
+ * ignores the per-page "at most 1-2 discussions" instruction because it
+ * never sees the other pages' actions, so the cap is applied here.
+ */
 export async function generateSceneActions(
+  ...args: Parameters<typeof generateSceneActionsUncapped>
+): Promise<Action[]> {
+  const actions = await generateSceneActionsUncapped(...args);
+  const ctx = args[3];
+
+  if (isDiscussionAllowed(ctx)) {
+    // Keep at most one, and only as the final action.
+    const lastDiscussion = actions.map((a) => a.type).lastIndexOf('discussion');
+    return actions.filter(
+      (a, i) => a.type !== 'discussion' || (i === lastDiscussion && i === actions.length - 1),
+    );
+  }
+
+  const capped = actions.filter((a) => a.type !== 'discussion');
+  if (capped.length !== actions.length) {
+    log.info(
+      `Removed ${actions.length - capped.length} discussion action(s) from "${args[0].title}" (course-wide cap)`,
+    );
+  }
+  return capped;
+}
+
+async function generateSceneActionsUncapped(
   outline: SceneOutline,
   content:
     | GeneratedSlideContent

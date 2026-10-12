@@ -6,6 +6,17 @@ import type { PdfImage } from '@/lib/types/generation';
 import type { AgentInfo, SceneGenerationContext } from './pipeline-types';
 
 /** Build a course context string for injection into action prompts */
+/**
+ * Discussion actions are generated per page, so the model can't enforce a
+ * course-wide cap on its own. Allow them only at the midpoint and on the
+ * final page (at most two per course).
+ */
+export function isDiscussionAllowed(ctx?: SceneGenerationContext): boolean {
+  if (!ctx || !ctx.totalPages || ctx.totalPages < 1) return false;
+  if (ctx.pageIndex === ctx.totalPages) return true;
+  return ctx.totalPages >= 8 && ctx.pageIndex === Math.ceil(ctx.totalPages / 2);
+}
+
 export function buildCourseContext(ctx?: SceneGenerationContext): string {
   if (!ctx) return '';
 
@@ -37,6 +48,12 @@ export function buildCourseContext(ctx?: SceneGenerationContext): string {
       'Transition: Continue naturally from the previous page. Do NOT greet or re-introduce.',
     );
   }
+
+  lines.push(
+    isDiscussionAllowed(ctx)
+      ? 'Discussion: You MAY end this page with one discussion action if the content genuinely invites reflection.'
+      : 'Discussion: Do NOT include any discussion action on this page.',
+  );
 
   // Previous page speech for transition reference
   if (ctx.previousSpeeches.length > 0) {

@@ -526,6 +526,15 @@ When splitting a derivation across multiple LaTeX elements (one per line), simpl
 
 ---
 
+## Sizing Cards for Dense Content
+
+Deep-dive slides carry real explanations, so containers must be sized to their text — never the other way round:
+
+- Write the text first, compute its height (Rule 2), then make the background shape `text.height + 30` tall (15px padding top and bottom). Never shrink the text to fit a pre-chosen card height.
+- A card holding more than ~3 lines of body text needs a width of at least 400px; prefer 2 cards per row over 3 when each card has a full sentence or more.
+- Small cards (height < 70) are for short labels only (a few words). Put sentences in full-size cards.
+- If the cards would not fit on the canvas at the correct height, drop the card shapes and use plain text columns instead, or move material to the narration — do not cram.
+
 ## Code Blocks (programming topics)
 
 When the scene is about programming, show real code in a dedicated code block:

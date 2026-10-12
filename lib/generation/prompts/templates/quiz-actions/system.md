@@ -100,6 +100,7 @@ Initiate classroom discussion, suitable for post-quiz reflection.
 - `prompt`: Prompt to guide student thinking (optional)
 - `agentId`: ID of the student agent who initiates the discussion. Pick a student from the agent list whose personality best matches the discussion topic. If no student agents are available, omit this field.
 - **IMPORTANT**: discussion MUST be the **last** action in the array. Do NOT place any text or action objects after a discussion. Wrap up your speech BEFORE the discussion action.
+- **PAGE RULE (overrides everything else)**: The course context contains a `Discussion:` line. If it says discussion is NOT allowed on this page, do not output any discussion action.
 - **FREQUENCY**: Discussion is optional and should be used sparingly. Only add one when the quiz content genuinely invites deeper reflection. Most quiz pages should have NO discussion.
 
 ---
