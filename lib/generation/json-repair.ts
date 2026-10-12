@@ -6,6 +6,84 @@ import { jsonrepair } from 'jsonrepair';
 import { createLogger } from '@/lib/logger';
 const log = createLogger('Generation');
 
+/**
+ * Escape straight double quotes that an LLM left unescaped inside JSON string
+ * values, e.g. "content": "<p>Mastering the "trap" to avoid errors</p>".
+ *
+ * Walks the text tracking whether we're inside a string. A `"` inside a
+ * string is treated as the real closing quote only if what follows (after
+ * whitespace) is structurally valid JSON: `:` / `}` / `]` / end of text, or a
+ * `,` that is itself followed by the start of another JSON value or key.
+ * Anything else is an inner quote and gets escaped.
+ */
+export function escapeUnescapedInnerQuotes(json: string): string {
+  const isWs = (c: string) => c === ' ' || c === '\n' || c === '\r' || c === '\t';
+
+  const skipWs = (from: number): number => {
+    let j = from;
+    while (j < json.length && isWs(json[j])) j++;
+    return j;
+  };
+
+  const startsValueOrKey = (from: number): boolean => {
+    const j = skipWs(from);
+    if (j >= json.length) return true;
+    const c = json[j];
+    if (c === '"' || c === '{' || c === '[' || c === ']' || c === '}' || c === '-') return true;
+    if (c >= '0' && c <= '9') return true;
+    return /^(true|false|null)\b/.test(json.slice(j, j + 6));
+  };
+
+  const isClosingQuote = (quoteIndex: number): boolean => {
+    const j = skipWs(quoteIndex + 1);
+    if (j >= json.length) return true;
+    const c = json[j];
+    if (c === ':' || c === '}' || c === ']') return true;
+    if (c === ',') return startsValueOrKey(j + 1);
+    return false;
+  };
+
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+
+    if (!inString) {
+      if (c === '"') inString = true;
+      out += c;
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      out += c;
+      continue;
+    }
+
+    if (c === '\\') {
+      escaped = true;
+      out += c;
+      continue;
+    }
+
+    if (c === '"') {
+      if (isClosingQuote(i)) {
+        inString = false;
+        out += c;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+
+    out += c;
+  }
+
+  return out;
+}
+
 export function parseJsonResponse<T>(response: string): T | null {
   // Strategy 1: Try to extract JSON from markdown code blocks (may have multiple)
   const codeBlockMatches = response.matchAll(/```(?:json)?\s*([\s\S]*?)```/g);
@@ -81,6 +159,29 @@ export function parseJsonResponse<T>(response: string): T | null {
     }
   }
 
+  // Strategy 2b: The bracket matcher above is fooled by unescaped inner
+  // quotes, so retry from the first bracket to the last matching closer
+  // with inner quotes escaped.
+  {
+    const firstObject = response.indexOf('{');
+    const firstArray = response.indexOf('[');
+    const start =
+      firstObject === -1 ? firstArray : firstArray === -1 ? firstObject : Math.min(firstObject, firstArray);
+
+    if (start !== -1) {
+      const closer = response[start] === '{' ? '}' : ']';
+      const end = response.lastIndexOf(closer);
+      if (end > start) {
+        const sanitized = escapeUnescapedInnerQuotes(response.substring(start, end + 1));
+        const result = tryParseJson<T>(sanitized);
+        if (result !== null) {
+          log.warn('Parsed JSON after escaping unescaped inner quotes');
+          return result;
+        }
+      }
+    }
+  }
+
   // Strategy 3: Last resort - try the whole response
   const result = tryParseJson<T>(response.trim());
   if (result !== null) {
@@ -101,6 +202,13 @@ export function tryParseJson<T>(jsonStr: string): T | null {
   // Attempt 1: Try parsing as-is
   try {
     return JSON.parse(jsonStr) as T;
+  } catch {
+    // Continue to fix attempts
+  }
+
+  // Attempt 1b: Escape straight double quotes left unescaped inside strings
+  try {
+    return JSON.parse(escapeUnescapedInnerQuotes(jsonStr)) as T;
   } catch {
     // Continue to fix attempts
   }

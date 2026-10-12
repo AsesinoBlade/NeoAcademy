@@ -1025,3 +1025,5 @@ Before outputting JSON, verify:
 ## Output Format
 
 Output valid JSON only. No explanations, no code blocks, no additional text.
+
+**Quoting inside text content**: never use straight double quotes (") inside a string value for emphasis or quoted terms — they break the JSON. Write 'trap' or “trap” instead. HTML attributes must stay escaped (`style=\"...\"`). Inside code blocks, write string literals with single quotes where the language allows, otherwise escape them as `\"`.

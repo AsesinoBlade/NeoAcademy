@@ -1390,6 +1390,8 @@ async function generateSlideContent(
       'Do not add, remove, reorder, redesign, summarize, or rewrite slide elements.',
       'Fix JSON syntax only: quoting, escaping, commas, brackets, braces, or truncation-related closure.',
       'The result must be a JSON object containing an elements array.',
+      'The most common defect is a straight double quote used inside a string value (e.g. "Mastering the "trap"..."); fix it by writing \\" or replacing it with single quotes.',
+      'Do NOT explain the errors. Your entire response must begin with { and end with }.',
     ].join('\n');
 
     const repairUser = [
@@ -1428,12 +1430,31 @@ async function generateSlideContent(
         `Scene content repaired response: length=${repairedResponse.length}, excerpt="${repairedExcerpt}"`,
       );
 
-      return null;
-    }
+      // Last resort: regenerate the slide once from scratch with an explicit
+      // quoting reminder, rather than failing the whole class on one slide.
+      log.warn(`Regenerating slide content from scratch for: ${outline.title}`);
 
-    log.info(
-      `JSON syntax repair succeeded for: ${outline.title}`,
-    );
+      const retrySystem =
+        prompts.system +
+        '\n\n## CRITICAL — previous attempt produced invalid JSON\n' +
+        'Your previous output could not be parsed because straight double quotes were used inside string values. ' +
+        'Never put a straight " inside text content: use single quotes (\'term\') or curly quotes (“term”). ' +
+        'Keep HTML attributes escaped as style=\\"...\\". Output only the JSON object.';
+
+      const retryResponse = await aiCall(retrySystem, prompts.user, visionImages);
+      generatedData = parseJsonResponse<GeneratedSlideData>(retryResponse);
+
+      if (!generatedData || !generatedData.elements || !Array.isArray(generatedData.elements)) {
+        log.error(`Slide regeneration also failed for: ${outline.title}`);
+        return null;
+      }
+
+      log.info(`Slide regeneration succeeded for: ${outline.title}`);
+    } else {
+      log.info(
+        `JSON syntax repair succeeded for: ${outline.title}`,
+      );
+    }
   }
 
   log.debug(`Got ${generatedData.elements.length} elements for: ${outline.title}`);
