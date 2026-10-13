@@ -1599,8 +1599,12 @@ function ClassroomCard({
             ? 'Failed'
             : isGenerating
               ? 'Generating'
-              : `${classroom.sceneCount} ${t('classroom.slides')}`}
-          {' Â· '}
+              : isPaused
+                ? 'Paused'
+                : isEbook
+                  ? 'Ebook'
+                  : `${classroom.sceneCount} ${t('classroom.slides')}`}
+          {' · '}
           {formatDate(classroom.updatedAt)}
         </span>
         <Tooltip>
@@ -1614,13 +1618,21 @@ function ClassroomCard({
             sideOffset={4}
             className="!max-w-[min(90vw,32rem)] break-words whitespace-normal"
           >
-            <div className="flex items-center gap-1.5">
-              <span className="break-all">{classroom.name}</span>
+            {/* Books are named by their generated title, so show the title and
+                the original prompt; classes are named by the prompt itself. */}
+            {isEbook && classroom.requirement && classroom.requirement !== classroom.name && (
+              <p className="mb-1 font-semibold">{classroom.name}</p>
+            )}
+            <div className="flex items-start gap-1.5">
+              <span className="break-words whitespace-pre-wrap">
+                {classroom.requirement || classroom.name}
+              </span>
               <button
                 className="shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors"
+                aria-label="Copy prompt"
                 onClick={(e) => {
                   e.stopPropagation();
-                  navigator.clipboard.writeText(classroom.name);
+                  navigator.clipboard.writeText(classroom.requirement || classroom.name);
                   toast.success(t('classroom.nameCopied'));
                 }}
               >

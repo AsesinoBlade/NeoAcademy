@@ -28,7 +28,7 @@ Plan figures in each chapter brief. The author can produce:
 
 ## Output format
 
-Output ONLY a JSON array of chapter objects (no prose, no code fences):
+Output ONLY one JSON array containing **every chapter of the book — typically 14 to 22 chapter objects** — with no prose and no code fences. The example below shows the shape of the first two chapters only; your array continues with chapter 3, 4, 5 ... through the final chapter:
 
 ```json
 [
@@ -46,11 +46,22 @@ Output ONLY a JSON array of chapter objects (no prose, no code fences):
     ],
     "teachingNotes": "Chapter brief (120-250 words): the learning goals, how the ideas build across the sections, the specific worked examples / data / cases to use, the planned figures (e.g. 'line chart of X vs Y', 'flowchart of the Z process', 'illustration of ...'), common misconceptions to address, and the exercises to set.",
     "order": 1
+  },
+  {
+    "id": "ch_2",
+    "type": "chapter",
+    "title": "Second chapter title",
+    "description": "...",
+    "keyPoints": ["Section title — ...", "Section title — ...", "Summary and exercises — ..."],
+    "teachingNotes": "...",
+    "order": 2
   }
 ]
 ```
 
 Rules:
+- **Output the complete book plan in this one array.** Do not stop after the first chapter or the first few chapters; the array must end with the final chapter.
+- Inside string values, do not use straight double quotes for emphasis — write 'Given' or “Given” instead.
 - `type` is always `"chapter"`; `keyPoints` lists the chapter's sections in order (5–9 entries), each one a substantive section spec, never a bare label.
 - `bookTitle` / `bookSubtitle` appear only on the first chapter.
 - Do not number titles yourself (no "Chapter 3:" / "3.2" prefixes) — numbering is added automatically.

@@ -28,4 +28,4 @@ Plan a complete, expert-level book based on the following request.
 
 **Depth check before you output**: could an expert author write each section from its spec alone? If a section spec only names a topic, rewrite it to state what must be explained, demonstrated and illustrated. If anything the user explicitly asked for is missing, add it.
 
-Output the JSON array of chapters now.
+Output the JSON array containing ALL chapters of the book now (typically 14–22), from chapter 1 through the final chapter.

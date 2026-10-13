@@ -33,6 +33,9 @@ import type {
 import { apiError } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
 import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
+import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 const log = createLogger('Outlines Stream');
 
 export const maxDuration = 300;
@@ -136,6 +139,43 @@ function extractNewOutlines(buffer: string, alreadyParsed: number): SceneOutline
 
   return results;
 }
+/**
+ * Second pass over a finished stream. The incremental parser tracks string
+ * boundaries character by character, so a stray unescaped quote in one
+ * outline makes it drop that outline (or everything after it). Re-parse the
+ * whole text with the repairing JSON parser and return any valid outlines
+ * whose titles we don't already have.
+ */
+function recoverMissedOutlines(text: string, knownTitles: Set<string>): SceneOutline[] {
+  const parsed = parseJsonResponse<unknown>(text);
+  const list = Array.isArray(parsed) ? parsed : [];
+  const recovered: SceneOutline[] = [];
+  for (const item of list) {
+    if (!isSceneOutlineCandidate(item)) continue;
+    const key = item.title.trim().toLowerCase();
+    if (knownTitles.has(key)) continue;
+    knownTitles.add(key);
+    recovered.push(item);
+  }
+  return recovered;
+}
+
+/** Keep the raw model output when an outline comes back suspiciously small. */
+async function saveOutlineDebug(text: string, label: string): Promise<string | null> {
+  try {
+    const dir = path.join(process.cwd(), 'data', 'classroom-logs');
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `outline-${label}-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
+    await fs.writeFile(file, text, 'utf-8');
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/** A deep-dive book needs many chapters; fewer means the model stopped early. */
+const MIN_BOOK_CHAPTERS = 8;
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -234,7 +274,7 @@ export async function POST(req: NextRequest) {
             researchContext: researchContext || 'None',
             userProfile: userProfileText,
             imagePolicy: imageGenerationEnabled
-              ? 'available — generated illustrations and photo-realistic pictures. Plan them where a picture genuinely helps (equipment, settings, historical scenes, conceptual illustrations). Also give the FIRST chapter a "coverImagePrompt": a description of an elegant, text-free cover illustration for the book.'
+              ? 'available — generated illustrations and photo-realistic pictures, for things that need no readable text or exact detail (equipment, settings, people, historical scenes, conceptual illustrations). Image models cannot render text, so never plan pictures of screenshots, user interfaces, file/directory trees, code, diagrams, grids, tables or anything with numbers or labels — plan code blocks, Mermaid diagrams, tables or charts for those. Also give the FIRST chapter a "coverImagePrompt": a description of an elegant, text-free cover illustration for the book.'
               : 'NOT available (image generation is disabled) — do not plan pictures; rely on charts, diagrams and tables.',
           })
         : buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_OUTLINES, {
@@ -381,6 +421,21 @@ export async function POST(req: NextRequest) {
                 }
               }
 
+              // Recover outlines the incremental parser missed (stray quotes).
+              {
+                const known = new Set(parsedOutlines.map((o) => o.title.trim().toLowerCase()));
+                for (const outline of recoverMissedOutlines(fullText, known)) {
+                  const enriched = { ...outline, id: outline.id || nanoid(), order: parsedOutlines.length + 1 };
+                  parsedOutlines.push(enriched);
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({ type: 'outline', data: enriched, index: parsedOutlines.length - 1 })}\n\n`,
+                    ),
+                  );
+                  log.warn(`Recovered outline missed by the stream parser: "${enriched.title}"`);
+                }
+              }
+
               lastFullText = fullText;
               try {
                 lastFinishReason = String(await result.finishReason);
@@ -432,9 +487,23 @@ export async function POST(req: NextRequest) {
           // JSON array never closed (or the model reports a length stop), ask
           // it to continue from the next scene instead of silently shipping
           // a course with no ending.
-          const MAX_CONTINUATIONS = 2;
+          // Books may need several continuations if the model writes a few
+          // chapters per response; classes only ever need to finish a cut-off.
+          const MAX_CONTINUATIONS = mode === 'ebook' ? 6 : 2;
           const looksTruncated = (text: string, finishReason?: string) =>
-            finishReason === 'length' || !/\]\s*(```)?\s*$/.test(text.trim());
+            finishReason === 'length' ||
+            !/\]\s*(```)?\s*$/.test(text.trim()) ||
+            // A closed array is not proof of completeness for a book: a model
+            // that copies a one-item example will close the array after it.
+            (mode === 'ebook' && parsedOutlines.length < MIN_BOOK_CHAPTERS);
+
+          if (mode === 'ebook' && parsedOutlines.length > 0 && parsedOutlines.length < MIN_BOOK_CHAPTERS) {
+            const debugFile = await saveOutlineDebug(lastFullText, 'book-short');
+            log.warn(
+              `Book outline has only ${parsedOutlines.length} chapter(s); asking the model to continue` +
+                (debugFile ? ` (raw output saved to ${debugFile})` : ''),
+            );
+          }
 
           for (
             let continuation = 1;
@@ -451,11 +520,16 @@ export async function POST(req: NextRequest) {
             const soFar = parsedOutlines
               .map((o) => `${o.order}. [${o.type}] ${o.title}`)
               .join('\n');
+            const unit = mode === 'ebook' ? 'chapters' : 'scenes';
             const continuationPrompt =
               prompts.user +
               `\n\n## CONTINUATION REQUEST\n` +
-              `Your previous output was cut off. These scenes already exist:\n${soFar}\n\n` +
-              `Output ONLY a JSON array containing the REMAINING scenes, starting at scene ${parsedOutlines.length + 1} ` +
+              (mode === 'ebook' && parsedOutlines.length < MIN_BOOK_CHAPTERS
+                ? `Your previous output stopped after only ${parsedOutlines.length} chapter(s), but this book needs ` +
+                  `14–22 chapters covering everything the request asks for (every named technique/topic must get its own section). `
+                : `Your previous output was cut off. `) +
+              `These ${unit} already exist:\n${soFar}\n\n` +
+              `Output ONLY a JSON array containing the REMAINING ${unit}, starting at ${mode === 'ebook' ? 'chapter' : 'scene'} ${parsedOutlines.length + 1} ` +
               `and continuing the same plan through to the course's final synthesis / capstone scene ` +
               `(including finishing any running project). Do not repeat any existing scene. ` +
               `Keep each teachingNotes concise (under 150 words) so the output completes.`;
@@ -500,6 +574,17 @@ export async function POST(req: NextRequest) {
                   });
                   controller.enqueue(encoder.encode(`data: ${event}\n\n`));
                 }
+              }
+
+              for (const outline of recoverMissedOutlines(contText, existingTitles)) {
+                const enriched = { ...outline, id: outline.id || nanoid(), order: parsedOutlines.length + 1 };
+                parsedOutlines.push(enriched);
+                added++;
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify({ type: 'outline', data: enriched, index: parsedOutlines.length - 1 })}\n\n`,
+                  ),
+                );
               }
 
               lastFullText = contText;

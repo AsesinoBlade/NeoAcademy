@@ -30,6 +30,32 @@ export interface ImageSpec {
   aspect?: '16:9' | '4:3' | '1:1';
 }
 
+/**
+ * Image models can't produce readable text or exact detail. A picture whose
+ * prompt asks for screenshots, UIs, file trees, code, diagrams, grids, data
+ * or lettering would come out as convincing-looking nonsense (garbled file
+ * names, fake menus), so such image figures are dropped. The prompt tells the
+ * author to use code blocks, Mermaid, tables or charts for these instead.
+ */
+const TEXT_DEPENDENT_IMAGE_RE = new RegExp(
+  [
+    'screen ?shots?', 'screen captures?', 'user interfaces?', '\\bui\\b', '\\bgui\\b', 'dialog(ue)? box',
+    'file (browser|explorer|manager|tree|listing|structure)', 'folder (tree|structure|view)',
+    'director(y|ies) (tree|layout|structure|listing)', 'project (layout|structure|tree)',
+    'terminal', 'command[- ]?(line|prompt)', 'console (output|window)', '\\bshell\\b', '\\bide\\b',
+    'source code', 'code (snippet|listing|editor|sample|block)', 'text editor', 'spreadsheet',
+    'diagram', 'flow ?chart', 'infographic', 'schematic', 'chart', '\\bgraph\\b', 'table of',
+    'sudoku (grid|board|puzzle)', 'grid (of|with) (numbers|digits|cells)', 'pencil marks',
+    'labell?ed', 'with labels', 'lettering', 'typography', 'with (the )?(text|words|title|caption|numbers)',
+    'written (text|words)', 'equation', 'formula',
+  ].join('|'),
+  'i',
+);
+
+export function isTextDependentImagePrompt(prompt: string): boolean {
+  return TEXT_DEPENDENT_IMAGE_RE.test(prompt);
+}
+
 const FENCE_RE = /^```[ \t]*(chart|mermaid|image)[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm;
 
 function normaliseChart(raw: unknown): ChartSpec | null {
@@ -110,7 +136,12 @@ export function sanitiseSectionFigures(
 
     // image
     const spec = (parsed ?? {}) as Partial<ImageSpec>;
-    if (!options.imagesEnabled || !spec.prompt || typeof spec.prompt !== 'string') {
+    if (
+      !options.imagesEnabled ||
+      !spec.prompt ||
+      typeof spec.prompt !== 'string' ||
+      isTextDependentImagePrompt(spec.prompt)
+    ) {
       dropped++;
       return '';
     }

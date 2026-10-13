@@ -11,7 +11,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { ChartSpec, ImageSpec } from './figures';
-import { renderChartSvg } from './figures';
+import { isTextDependentImagePrompt, renderChartSvg } from './figures';
 import {
   type BookRecord,
   fileExists,
@@ -42,14 +42,30 @@ async function renderSectionBody(markdown: string, ctx: RenderContext): Promise<
   };
 
   // 1. Fenced code / figure blocks (before math, so `$` in code is untouched).
+  // Fences may be indented (e.g. a code block inside a numbered list item);
+  // keep the indentation so the list structure survives, and strip it from
+  // the code itself.
   const fences: Array<{ lang: string; body: string }> = [];
   let md = markdown.replace(
-    /^```[ \t]*([\w+-]*)[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm,
-    (_m, lang: string, body: string) => {
-      fences.push({ lang, body });
-      return `@@FENCEZ${fences.length - 1}@@`;
+    /^([ \t]*)```[ \t]*([\w+-]*)[^\n]*\n([\s\S]*?)\n[ \t]*```[ \t]*$/gm,
+    (_m, indent: string, lang: string, body: string) => {
+      const dedented = indent
+        ? body
+            .split('\n')
+            .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line.trimStart()))
+            .join('\n')
+        : body;
+      fences.push({ lang, body: dedented });
+      return `${indent}@@FENCEZ${fences.length - 1}@@`;
     },
   );
+
+  // Inline code spans are literal text: protect them from math detection
+  // (CMake generator expressions like `$<BUILD_INTERFACE:${DIR}>`, `$HOME`).
+  md = md.replace(/(`+)([^`\n]|[^`\n][\s\S]*?[^`\n])\1(?!`)/g, (_m, _ticks: string, code: string) => {
+    blocks.push(`<code>${escapeHtml(code.trim())}</code>`);
+    return `@@INLINEZ${blocks.length - 1}@@`;
+  });
 
   // 2. Demote headings so the shallowest section heading becomes <h3>.
   const levels = [...md.matchAll(/^(#{1,6})\s/gm)].map((m) => m[1].length);
@@ -68,7 +84,9 @@ async function renderSectionBody(markdown: string, ctx: RenderContext): Promise<
       return hold(`<pre>${escapeHtml(tex)}</pre>`);
     }
   });
-  md = md.replace(/(?<![\\$\w])\$(?![\s$])([^$\n]{1,300}?)(?<!\s)\$(?![\w$])/g, (_m, tex: string) => {
+  // Inline math: the opening $ must not start a shell/CMake construct
+  // ($<...>, ${...}, $(...)) and the closing $ must not open one either.
+  md = md.replace(/(?<![\\$\w])\$(?![\s$<{(])([^$\n]{1,300}?)(?<!\s)\$(?![\w$<{(])/g, (_m, tex: string) => {
     try {
       blocks.push(katex.renderToString(tex, { displayMode: false, throwOnError: false }));
       return `@@INLINEZ${blocks.length - 1}@@`;
@@ -140,6 +158,9 @@ async function renderFence(lang: string, body: string, ctx: RenderContext): Prom
   if (lang === 'image') {
     try {
       const spec = JSON.parse(body) as ImageSpec;
+      // Older sections may still hold pictures of text-dependent subjects
+      // (screenshots, file trees...) — those render as nonsense, so skip them.
+      if (isTextDependentImagePrompt(spec.prompt || '')) return '';
       const file = path.join(imagesDir(ctx.bookId), `${spec.id}.png`);
       if (!(await fileExists(file))) {
         ctx.missingImages++;

@@ -19,7 +19,7 @@ import { IMAGE_PROVIDERS, aspectRatioToDimensions, generateImage } from '@/lib/m
 import type { ImageProviderId } from '@/lib/media/types';
 import type { ComfyUiImageGenerationResult } from '@/lib/media/adapters/comfyui-adapter';
 import { deleteLocalComfyUiAsset } from '@/lib/server/local-comfyui-media';
-import { extractImageSpecs, type ImageSpec } from '@/lib/book/figures';
+import { extractImageSpecs, isTextDependentImagePrompt, type ImageSpec } from '@/lib/book/figures';
 import {
   fileExists,
   imagesDir,
@@ -61,7 +61,11 @@ async function pendingImages(bookId: string): Promise<ImageSpec[]> {
   const written = await listWrittenSectionIds(bookId);
   for (const ref of listSectionRefs(book.outline)) {
     if (!written.has(ref.id)) continue;
-    specs.push(...extractImageSpecs((await readSection(bookId, ref.id)) ?? ''));
+    specs.push(
+      ...extractImageSpecs((await readSection(bookId, ref.id)) ?? '').filter(
+        (spec) => !isTextDependentImagePrompt(spec.prompt),
+      ),
+    );
   }
 
   const pending: ImageSpec[] = [];
