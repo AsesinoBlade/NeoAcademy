@@ -14,7 +14,9 @@ export type PromptId =
   | 'interactive-scientific-model'
   | 'interactive-html'
   | 'interactive-actions'
-  | 'pbl-actions';
+  | 'pbl-actions'
+  | 'requirements-to-book-outline'
+  | 'book-section';
 
 /**
  * Snippet identifier

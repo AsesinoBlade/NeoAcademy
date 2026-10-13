@@ -30,4 +30,6 @@ export const PROMPT_IDS = {
   INTERACTIVE_HTML: 'interactive-html',
   INTERACTIVE_ACTIONS: 'interactive-actions',
   PBL_ACTIONS: 'pbl-actions',
+  REQUIREMENTS_TO_BOOK_OUTLINE: 'requirements-to-book-outline',
+  BOOK_SECTION: 'book-section',
 } as const;

@@ -48,7 +48,7 @@ function isSceneOutlineCandidate(value: unknown): value is SceneOutline {
     typeof candidate.description === 'string' &&
     Array.isArray(candidate.keyPoints) &&
     candidate.keyPoints.length > 0 &&
-    ['slide', 'quiz', 'interactive', 'pbl'].includes(candidate.type || '')
+    ['slide', 'quiz', 'interactive', 'pbl', 'chapter'].includes(candidate.type || '')
   );
 }
 
@@ -147,8 +147,10 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Requirements are required');
     }
 
-    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision } =
+    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision, mode } =
       body as {
+        /** 'ebook' plans a book (chapters → sections) instead of a class. */
+        mode?: 'class' | 'ebook';
         requirements: UserRequirements;
         pdfText?: string;
         pdfImages?: PdfImage[];
@@ -218,7 +220,24 @@ export async function POST(req: NextRequest) {
     // Build teacher context from agents (if available)
     const teacherContext = formatTeacherPersonaForPrompt(agents);
 
-    const prompts = buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_OUTLINES, {
+    const userProfileText =
+      requirements.userNickname || requirements.userBio
+        ? `## Reader Profile\n\nReader: ${requirements.userNickname || 'Unknown'}${requirements.userBio ? ` — ${requirements.userBio}` : ''}\n\nAdapt depth, examples and assumed background to this reader.\n\n---`
+        : '';
+
+    const prompts =
+      mode === 'ebook'
+        ? buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_BOOK_OUTLINE, {
+            requirement: requirements.requirement,
+            language: requirements.language,
+            pdfContent: pdfText ? pdfText.substring(0, MAX_SOURCE_TEXT_CHARS) : 'None',
+            researchContext: researchContext || 'None',
+            userProfile: userProfileText,
+            imagePolicy: imageGenerationEnabled
+              ? 'available — generated illustrations and photo-realistic pictures. Plan them where a picture genuinely helps (equipment, settings, historical scenes, conceptual illustrations). Also give the FIRST chapter a "coverImagePrompt": a description of an elegant, text-free cover illustration for the book.'
+              : 'NOT available (image generation is disabled) — do not plan pictures; rely on charts, diagrams and tables.',
+          })
+        : buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_OUTLINES, {
       requirement: requirements.requirement,
       language: requirements.language,
       pdfContent: pdfText
@@ -252,6 +271,9 @@ export async function POST(req: NextRequest) {
         keyPoints: outline.keyPoints,
         teachingNotes: outline.teachingNotes,
         ...(outline.quizConfig ? { quizConfig: outline.quizConfig } : {}),
+        ...(outline.bookTitle ? { bookTitle: outline.bookTitle } : {}),
+        ...(outline.bookSubtitle ? { bookSubtitle: outline.bookSubtitle } : {}),
+        ...(outline.coverImagePrompt ? { coverImagePrompt: outline.coverImagePrompt } : {}),
         ...(outline.mediaGenerations?.length ? { mediaGenerations: outline.mediaGenerations } : {}),
       }));
 

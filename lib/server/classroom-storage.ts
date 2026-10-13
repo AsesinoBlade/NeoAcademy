@@ -64,6 +64,8 @@ export interface PersistedClassroomData {
    * browser or the computer has been closed. Cleared once completed.
    */
   resumeSession?: unknown;
+  /** 'ebook' records point at data/books/<id> rather than a playable class. */
+  outputMode?: 'class' | 'ebook';
   createdAt: string;
   updatedAt: string;
 }
@@ -82,6 +84,7 @@ export interface ClassroomHistoryItem {
   /** True when an unfinished class has enough saved state to be resumed. */
   resumable: boolean;
   totalScenes: number;
+  outputMode: 'class' | 'ebook';
 }
 
 export function isValidClassroomId(id: string): boolean {
@@ -125,6 +128,7 @@ export async function persistClassroom(
     error?: string;
     requirement?: string;
     resumeSession?: unknown;
+    outputMode?: 'class' | 'ebook';
   },
   baseUrl: string,
 ): Promise<PersistedClassroomData & { url: string }> {
@@ -156,6 +160,7 @@ export async function persistClassroom(
       data.status === 'completed'
         ? undefined
         : data.resumeSession ?? existing?.resumeSession,
+    outputMode: data.outputMode ?? existing?.outputMode,
     createdAt:
       existing?.createdAt ||
       new Date(data.stage.createdAt || Date.now()).toISOString(),
@@ -223,6 +228,7 @@ export async function listClassrooms(): Promise<ClassroomHistoryItem[]> {
         thumbnail,
         resumable: classroom.status !== 'completed' && !!classroom.resumeSession,
         totalScenes: classroom.outlines?.length ?? 0,
+        outputMode: classroom.outputMode ?? 'class',
       });
     } catch (error) {
       console.warn(

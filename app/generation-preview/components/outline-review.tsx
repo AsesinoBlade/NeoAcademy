@@ -38,7 +38,33 @@ const TYPE_STYLES: Record<string, string> = {
   quiz: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   interactive: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
   pbl: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
+  chapter: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
 };
+
+const LABELS = {
+  class: {
+    heading: 'Review the outline',
+    unit: 'scenes',
+    keyPoints: 'Key points (one per line)',
+    notes: 'Teaching notes (rules, worked examples, code, exercise + solution)',
+    notesPlaceholder: 'What this scene must actually teach, with concrete examples',
+    revisePlaceholder:
+      'Notes for a revision, e.g. "Crane is missing — add it after Two-String Kite. ' +
+      'Split Swordfish into concept and worked example. End with building the project using make."',
+    generate: 'Generate class',
+  },
+  ebook: {
+    heading: 'Review the book outline',
+    unit: 'chapters',
+    keyPoints: 'Sections (one per line: Title — what it covers)',
+    notes: 'Chapter brief (goals, worked examples, planned charts/diagrams/pictures, exercises)',
+    notesPlaceholder: 'What this chapter must cover, the examples and figures it should include',
+    revisePlaceholder:
+      'Notes for a revision, e.g. "Add a chapter on Crane after Two-String Kite. Merge chapters 3 and 4. ' +
+      'Every technique chapter needs a fully worked puzzle walkthrough and practice puzzles."',
+    generate: 'Write the book',
+  },
+} as const;
 
 export function OutlineReviewPanel({
   outlines,
@@ -46,6 +72,7 @@ export function OutlineReviewPanel({
   onDecision,
   onPause,
   isPausing,
+  mode = 'class',
 }: {
   outlines: SceneOutline[];
   /** Called on every edit so the parent can keep the latest draft. */
@@ -53,7 +80,9 @@ export function OutlineReviewPanel({
   onDecision: (decision: OutlineReviewDecision) => void;
   onPause: () => void;
   isPausing: boolean;
+  mode?: 'class' | 'ebook';
 }) {
+  const labels = LABELS[mode];
   const [draft, setDraft] = useState<SceneOutline[]>(outlines);
   const [feedback, setFeedback] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -104,13 +133,23 @@ export function OutlineReviewPanel({
       <div className="border-b bg-white/80 dark:bg-slate-900/80">
         <div className="mx-auto w-full max-w-4xl px-4 py-4 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">Review the outline</h2>
+            <h2 className="text-lg font-semibold">{labels.heading}</h2>
             <p className="text-sm text-muted-foreground">
-              {draft.length} scenes
-              {Object.entries(counts).length > 0 &&
-                ` · ${Object.entries(counts)
-                  .map(([type, n]) => `${n} ${type}`)
-                  .join(', ')}`}
+              {draft.length} {labels.unit}
+              {mode === 'ebook'
+                ? ` · ${draft.reduce(
+                    (sum, o) => sum + (o.keyPoints || []).filter((p) => p.trim()).length,
+                    0,
+                  )} sections (~${Math.round(
+                    draft.reduce(
+                      (sum, o) => sum + (o.keyPoints || []).filter((p) => p.trim()).length,
+                      0,
+                    ) * 4.5,
+                  )} pages)`
+                : Object.entries(counts).length > 0 &&
+                  ` · ${Object.entries(counts)
+                    .map(([type, n]) => `${n} ${type}`)
+                    .join(', ')}`}
               . Edit anything directly, or write notes below and let the model revise it.
             </p>
           </div>
@@ -201,7 +240,7 @@ export function OutlineReviewPanel({
                   <div className="space-y-3 border-t px-4 py-3">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">
-                        Key points (one per line)
+                        {labels.keyPoints}
                       </label>
                       <Textarea
                         value={(outline.keyPoints || []).join('\n')}
@@ -215,14 +254,14 @@ export function OutlineReviewPanel({
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">
-                        Teaching notes (rules, worked examples, code, exercise + solution)
+                        {labels.notes}
                       </label>
                       <Textarea
                         value={outline.teachingNotes || ''}
                         onChange={(e) => update(index, { teachingNotes: e.target.value })}
                         rows={6}
                         className="text-sm"
-                        placeholder="What this scene must actually teach, with concrete examples"
+                        placeholder={labels.notesPlaceholder}
                       />
                     </div>
                   </div>
@@ -240,10 +279,7 @@ export function OutlineReviewPanel({
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={3}
-            placeholder={
-              'Notes for a revision, e.g. "Crane is missing — add it after Two-String Kite. ' +
-              'Split Swordfish into concept and worked example. End with building the project using make."'
-            }
+            placeholder={labels.revisePlaceholder}
             className="text-sm"
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -267,7 +303,7 @@ export function OutlineReviewPanel({
                 onClick={() => onDecision({ action: 'generate', outlines: draft })}
               >
                 <Play className="size-4 mr-1.5" />
-                Generate class
+                {labels.generate}
               </Button>
             </div>
           </div>

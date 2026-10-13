@@ -108,6 +108,8 @@ export interface UserRequirements {
    * Undefined (older sessions) behaves as enabled.
    */
   reviewOutline?: boolean;
+  /** What to produce: an interactive class (default) or a full ebook PDF. */
+  outputMode?: 'class' | 'ebook';
 }
 
 /**
@@ -133,9 +135,14 @@ export interface LegacyUserRequirements {
  */
 export interface SceneOutline {
   id: string;
-  type: 'slide' | 'quiz' | 'interactive' | 'pbl';
+  /** 'chapter' is used by ebook outlines (keyPoints = the chapter's sections). */
+  type: 'slide' | 'quiz' | 'interactive' | 'pbl' | 'chapter';
   title: string;
   description: string; // 1-2 sentences describing the purpose
+  /** Ebook outlines only, on the first chapter. */
+  bookTitle?: string;
+  bookSubtitle?: string;
+  coverImagePrompt?: string;
   keyPoints: string[]; // 4-8 substantive points (actual content, not labels)
   /**
    * Detailed teaching brief for this scene: the exact rules, worked examples

@@ -22,6 +22,8 @@ import {
   ChevronUp,
   Pause,
   Play,
+  BookOpen,
+  GraduationCap,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -56,6 +58,7 @@ const log = createLogger('Home');
 
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
 const REVIEW_OUTLINE_STORAGE_KEY = 'outlineReviewEnabled';
+const OUTPUT_MODE_STORAGE_KEY = 'generationOutputMode';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -74,6 +77,7 @@ interface ClassroomHistoryItem
   /** Server reports enough saved state to continue generation. */
   resumable?: boolean;
   totalScenes?: number;
+  outputMode?: 'class' | 'ebook';
 }
 
 /**
@@ -105,6 +109,7 @@ interface FormState {
   language: 'en-US';
   webSearch: boolean;
   reviewOutline: boolean;
+  outputMode: 'class' | 'ebook';
 }
 
 const initialFormState: FormState = {
@@ -113,6 +118,7 @@ const initialFormState: FormState = {
   language: 'en-US',
   webSearch: false,
   reviewOutline: true,
+  outputMode: 'class',
 };
 
 function HomePage() {
@@ -170,6 +176,9 @@ function HomePage() {
       if (savedWebSearch === 'true') updates.webSearch = true;
       if (localStorage.getItem(REVIEW_OUTLINE_STORAGE_KEY) === 'false') {
         updates.reviewOutline = false;
+      }
+      if (localStorage.getItem(OUTPUT_MODE_STORAGE_KEY) === 'ebook') {
+        updates.outputMode = 'ebook';
       }
       updates.language = 'en-US';
       if (Object.keys(updates).length > 0) {
@@ -454,6 +463,9 @@ function HomePage() {
       if (field === 'reviewOutline') {
         localStorage.setItem(REVIEW_OUTLINE_STORAGE_KEY, String(value));
       }
+      if (field === 'outputMode') {
+        localStorage.setItem(OUTPUT_MODE_STORAGE_KEY, String(value));
+      }
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -483,6 +495,7 @@ function HomePage() {
         userBio: userProfile.bio || undefined,
         webSearch: form.webSearch || undefined,
         reviewOutline: form.reviewOutline,
+        outputMode: form.outputMode,
       };
 
       let pdfDocuments:
@@ -702,19 +715,58 @@ function HomePage() {
           transition={{ delay: 0.35 }}
           className="w-full"
         >
+          {/* ── Create Class / Create Ebook ── */}
+          <div className="mb-3 flex justify-center">
+            <div
+              role="radiogroup"
+              aria-label="What to create"
+              className="inline-flex rounded-full border border-border/60 bg-white/70 dark:bg-slate-900/70 p-1 shadow-sm backdrop-blur"
+            >
+              {(
+                [
+                  { value: 'class', label: 'Create Class', icon: GraduationCap },
+                  { value: 'ebook', label: 'Create Ebook', icon: BookOpen },
+                ] as const
+              ).map(({ value, label, icon: Icon }) => {
+                const active = form.outputMode === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => updateForm('outputMode', value)}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-medium transition-colors',
+                      active
+                        ? 'bg-primary text-primary-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="size-3.5" />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="w-full rounded-2xl border border-border/60 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-xl shadow-black/[0.03] dark:shadow-black/20 transition-shadow focus-within:shadow-2xl focus-within:shadow-violet-500/[0.06]">
             {/* ── Greeting + Profile + Agents ── */}
             <div className="relative z-20 flex items-start justify-between">
               <GreetingBar />
               <div className="pr-3 pt-3.5 shrink-0">
-                <AgentBar />
+                {form.outputMode === 'class' && <AgentBar />}
               </div>
             </div>
 
             {/* Textarea */}
             <textarea
               ref={textareaRef}
-              placeholder={t('upload.requirementPlaceholder')}
+              placeholder={
+                form.outputMode === 'ebook'
+                  ? 'Describe the book you want: the topic, your level, what it must cover in depth, any sources to build on...'
+                  : t('upload.requirementPlaceholder')
+              }
               className="w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[13px] leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none min-h-[140px] max-h-[300px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
@@ -762,7 +814,9 @@ function HomePage() {
                     : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
                 )}
               >
-                <span className="text-xs font-medium">{t('toolbar.enterClassroom')}</span>
+                <span className="text-xs font-medium">
+                  {form.outputMode === 'ebook' ? 'Write ebook' : t('toolbar.enterClassroom')}
+                </span>
                 <ArrowUp className="size-3.5" />
               </button>
             </div>
@@ -856,7 +910,11 @@ function HomePage() {
                             classroom.status === 'completed' ||
                             !classroom.status
                           ) {
-                            router.push(`/classroom/${classroom.id}`);
+                            router.push(
+                              classroom.outputMode === 'ebook'
+                                ? `/book/${classroom.id}`
+                                : `/classroom/${classroom.id}`,
+                            );
                           } else if (
                             classroom.status === 'paused' &&
                             canResume(classroom)
@@ -1198,6 +1256,7 @@ function ClassroomCard({
   const isFailed = classroom.status === 'failed';
   const interrupted = isInterrupted(classroom);
   const isPaused = classroom.status === 'paused' || interrupted;
+  const isEbook = classroom.outputMode === 'ebook';
   const isGenerating = classroom.status === 'generating' && !interrupted;
   const resumable = canResume(classroom);
   const progressLabel =
@@ -1320,6 +1379,14 @@ function ClassroomCard({
             <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
               Generating
             </span>
+          </div>
+        ) : isEbook ? (
+          <div className="absolute inset-0 flex flex-col items-start justify-end gap-1 bg-gradient-to-br from-blue-700 to-slate-900 p-4 text-left">
+            <BookOpen className="size-6 text-white/70 mb-auto" />
+            <span className="text-sm font-semibold leading-snug text-white line-clamp-3">
+              {classroom.name}
+            </span>
+            <span className="text-[10px] uppercase tracking-widest text-white/60">Ebook · PDF</span>
           </div>
         ) : slide && thumbWidth > 0 ? (
           <ThumbnailSlide

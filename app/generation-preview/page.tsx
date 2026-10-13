@@ -54,6 +54,7 @@ import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { applyDiagramAnnotationsToScene } from '@/lib/generation/diagram-annotations';
 import type { MediaGenerationRequest } from '@/lib/media/types';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
+import { runEbookGeneration } from './ebook-runner';
 import {
   OutlineReviewPanel,
   renumberOutlines,
@@ -3361,6 +3362,7 @@ function GenerationPreviewContent() {
 
   // Outline review step: generation awaits the learner's decision.
   const [outlineReview, setOutlineReview] = useState<SceneOutline[] | null>(null);
+  const [reviewMode, setReviewMode] = useState<'class' | 'ebook'>('class');
   const outlineReviewResolveRef = useRef<((decision: OutlineReviewDecision) => void) | null>(
     null,
   );
@@ -3516,6 +3518,8 @@ function GenerationPreviewContent() {
     // Use a local mutable copy so we can update it after PDF parsing
     let currentSession = session;
     const isResume = !!currentSession.resume;
+    const isEbook = currentSession.requirements.outputMode === 'ebook';
+    setReviewMode(isEbook ? 'ebook' : 'class');
     pauseRequestedRef.current = false;
     setIsPausing(false);
 
@@ -3625,6 +3629,7 @@ function GenerationPreviewContent() {
           error: options?.error,
           requirement:
             currentSession.requirements.requirement,
+          outputMode: currentSession.requirements.outputMode ?? 'class',
           resumeSession:
             status === 'completed' ? undefined : buildResumeSnapshot(),
         }),
@@ -4696,7 +4701,7 @@ function GenerationPreviewContent() {
 
       // Resume: reuse the agents generated for this class before the pause,
       // so voices and personas stay consistent across the whole course.
-      const resumedAgentIds = isResume
+      const resumedAgentIds = isResume && !isEbook
         ? await (await import('@/lib/orchestration/registry/store')).loadGeneratedAgentsForStage(stage.id)
         : [];
 
@@ -4712,7 +4717,8 @@ function GenerationPreviewContent() {
             persona: a!.persona,
           }));
         log.info(`[Generation] Resume: reusing ${agents.length} saved agent(s)`);
-      } else if (settings.agentMode === 'auto') {
+      } else if (settings.agentMode === 'auto' && !isEbook) {
+        // (Ebooks have no classroom teachers, so agent generation is skipped.)
         const agentStepIdx = activeSteps.findIndex((s) => s.id === 'agent-generation');
         if (agentStepIdx >= 0) setCurrentStepIndex(agentStepIdx);
 
@@ -4814,6 +4820,7 @@ function GenerationPreviewContent() {
               researchContext: currentSession.researchContext,
               agents,
               revision,
+              mode: isEbook ? 'ebook' : 'class',
             }),
             signal,
           })
@@ -4912,10 +4919,21 @@ function GenerationPreviewContent() {
       // Stop and let the learner check, hand-edit, or revise the outline
       // (with notes) before the long scene-generation run. Skipped when
       // resuming a class that already has completed scenes.
+      // An ebook that already has written sections resumes straight into
+      // writing (editing the outline under finished sections would desync).
+      const resumeHasBookProgress =
+        isEbook && isResume
+          ? await fetch(`/api/books?id=${encodeURIComponent(stage.id)}`, { cache: 'no-store', signal })
+              .then((r) => (r.ok ? r.json() : null))
+              .then((d) => (d?.progress?.writtenSections ?? 0) > 0)
+              .catch(() => false)
+          : false;
+
       const resumeHasScenes =
-        isResume &&
-        useStageStore.getState().stage?.id === stage.id &&
-        useStageStore.getState().scenes.length > 0;
+        resumeHasBookProgress ||
+        (isResume &&
+          useStageStore.getState().stage?.id === stage.id &&
+          useStageStore.getState().scenes.length > 0);
 
       const saveOutlinesToSession = (next: SceneOutline[]) => {
         currentSession = { ...currentSession, sceneOutlines: next };
@@ -4950,6 +4968,57 @@ function GenerationPreviewContent() {
           });
           saveOutlinesToSession(outlines);
         }
+      }
+
+      // ── Ebook: write the book instead of building a class ────────────
+      if (isEbook && outlines && outlines.length > 0) {
+        const bookTitle = outlines[0]?.bookTitle?.trim();
+        if (bookTitle) stage.name = bookTitle;
+        if (outlines[0]?.bookSubtitle) stage.description = outlines[0].bookSubtitle;
+        await persistGenerationState('generating');
+
+        const writingStepIdx = activeSteps.findIndex((s) => s.id === 'slide-content');
+        if (writingStepIdx >= 0) setCurrentStepIndex(writingStepIdx);
+
+        const referenceMaterial = [
+          currentSession.pdfText
+            ? `### Source documents (excerpt)\n${currentSession.pdfText.slice(0, 12000)}`
+            : '',
+          currentSession.researchContext
+            ? `### Web research\n${currentSession.researchContext.slice(0, 8000)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        await runEbookGeneration({
+          bookId: stage.id,
+          outline: outlines,
+          requirement: currentSession.requirements.requirement,
+          language: currentSession.requirements.language || 'en-US',
+          fallbackTitle: stage.name,
+          referenceMaterial: referenceMaterial || undefined,
+          userProfile:
+            currentSession.requirements.userNickname || currentSession.requirements.userBio
+              ? `Reader: ${currentSession.requirements.userNickname || 'Unknown'}${
+                  currentSession.requirements.userBio ? ` — ${currentSession.requirements.userBio}` : ''
+                }`
+              : undefined,
+          imageGenerationEnabled: !!useSettingsStore.getState().imageGenerationEnabled,
+          signal,
+          apiHeaders: getApiHeaders,
+          setStatus: setStatusMessage,
+          logProgress: logGenerationProgress,
+        });
+
+        stopHeartbeat();
+        setIsComplete(true);
+        sessionStorage.removeItem('generationSession');
+        sessionStorage.removeItem('generationParams');
+        await persistGenerationState('completed', { requireSuccess: true });
+        logGenerationProgress('[Ebook] Book complete');
+        router.push(`/book/${stage.id}`);
+        return;
       }
 
       // Move to scene generation step
@@ -6023,6 +6092,7 @@ function GenerationPreviewContent() {
           onDecision={(decision) => outlineReviewResolveRef.current?.(decision)}
           onPause={pauseGeneration}
           isPausing={isPausing}
+          mode={reviewMode}
         />
       )}
 
