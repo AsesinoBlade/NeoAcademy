@@ -26,6 +26,13 @@ export interface BookRecord {
   /** Chapters (type 'chapter'); keyPoints = section specs in order. */
   outline: SceneOutline[];
   coverImagePrompt?: string;
+  /**
+   * The running project ("ledger"). undefined = not planned yet,
+   * null = planned, and this book has no hands-on project.
+   */
+  projectSpec?: import('./project').ProjectSpec | null;
+  /** Verify claims against local docs / web and run a technical review per section. */
+  factCheck?: boolean;
   createdAt: string;
   updatedAt: string;
 }

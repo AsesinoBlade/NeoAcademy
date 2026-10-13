@@ -59,6 +59,7 @@ const log = createLogger('Home');
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
 const REVIEW_OUTLINE_STORAGE_KEY = 'outlineReviewEnabled';
 const OUTPUT_MODE_STORAGE_KEY = 'generationOutputMode';
+const FACT_CHECK_STORAGE_KEY = 'ebookFactCheck';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -110,6 +111,7 @@ interface FormState {
   webSearch: boolean;
   reviewOutline: boolean;
   outputMode: 'class' | 'ebook';
+  factCheck: boolean;
 }
 
 const initialFormState: FormState = {
@@ -119,6 +121,7 @@ const initialFormState: FormState = {
   webSearch: false,
   reviewOutline: true,
   outputMode: 'class',
+  factCheck: true,
 };
 
 function HomePage() {
@@ -179,6 +182,9 @@ function HomePage() {
       }
       if (localStorage.getItem(OUTPUT_MODE_STORAGE_KEY) === 'ebook') {
         updates.outputMode = 'ebook';
+      }
+      if (localStorage.getItem(FACT_CHECK_STORAGE_KEY) === 'false') {
+        updates.factCheck = false;
       }
       updates.language = 'en-US';
       if (Object.keys(updates).length > 0) {
@@ -466,6 +472,9 @@ function HomePage() {
       if (field === 'outputMode') {
         localStorage.setItem(OUTPUT_MODE_STORAGE_KEY, String(value));
       }
+      if (field === 'factCheck') {
+        localStorage.setItem(FACT_CHECK_STORAGE_KEY, String(value));
+      }
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -496,6 +505,7 @@ function HomePage() {
         webSearch: form.webSearch || undefined,
         reviewOutline: form.reviewOutline,
         outputMode: form.outputMode,
+        factCheck: form.outputMode === 'ebook' ? form.factCheck : undefined,
       };
 
       let pdfDocuments:
@@ -784,6 +794,9 @@ function HomePage() {
                   onWebSearchChange={(v) => updateForm('webSearch', v)}
                   reviewOutline={form.reviewOutline}
                   onReviewOutlineChange={(v) => updateForm('reviewOutline', v)}
+                  showFactCheck={form.outputMode === 'ebook'}
+                  factCheck={form.factCheck}
+                  onFactCheckChange={(v) => updateForm('factCheck', v)}
                   onSettingsOpen={() => {}}
                   pdfFiles={form.pdfFiles}
                   onPdfFilesChange={(files) => updateForm('pdfFiles', files)}

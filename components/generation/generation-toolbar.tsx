@@ -11,6 +11,7 @@ import {
   X,
   Globe2,
   ListChecks,
+  ShieldCheck,
 } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -46,6 +47,10 @@ export interface GenerationToolbarProps {
   /** Pause after the outline for review / revision before generating scenes. */
   reviewOutline: boolean;
   onReviewOutlineChange: (v: boolean) => void;
+  /** Shown for ebooks only: fact-check every section against docs / web. */
+  showFactCheck?: boolean;
+  factCheck?: boolean;
+  onFactCheckChange?: (v: boolean) => void;
   onSettingsOpen: (section?: SettingsSection) => void;
   // PDF
   pdfFiles: File[];
@@ -61,6 +66,9 @@ export function GenerationToolbar({
   onWebSearchChange,
   reviewOutline,
   onReviewOutlineChange,
+  showFactCheck,
+  factCheck,
+  onFactCheckChange,
   onSettingsOpen,
   pdfFiles,
   onPdfFilesChange,
@@ -553,6 +561,33 @@ export function GenerationToolbar({
           revise it with notes before the class is built. Turn off for unattended generation.
         </TooltipContent>
       </Tooltip>
+
+      {/* ── Fact-check (ebooks) ── */}
+      {showFactCheck && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <label
+              htmlFor="fact-check-switch"
+              className={cn(factCheck ? pillActive : pillMuted, 'cursor-pointer select-none')}
+            >
+              <ShieldCheck className="size-3.5" />
+              <span>Fact-check</span>
+              <Switch
+                id="fact-check-switch"
+                checked={!!factCheck}
+                onCheckedChange={(v) => onFactCheckChange?.(v)}
+                className="scale-75 -mr-1"
+                aria-label="Fact-check every section"
+              />
+            </label>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-72">
+            Verify each section's commands, options and APIs against the installed tools' own
+            documentation (and web search if enabled), then have a technical editor fix errors.
+            Roughly doubles writing time.
+          </TooltipContent>
+        </Tooltip>
+      )}
 
       {/* ── Separator ── */}
       <div className="w-px h-4 bg-border/60 mx-1" />

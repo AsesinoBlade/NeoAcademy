@@ -23,6 +23,12 @@ export interface EbookRunContext {
   referenceMaterial?: string;
   userProfile?: string;
   imageGenerationEnabled: boolean;
+  /** Verify claims against local docs / web and run a technical review per section. */
+  factCheck: boolean;
+  /** Allow web search during fact-checking (local tool docs are always used). */
+  webSearch: boolean;
+  /** Called once the book has a real title (from the outline or the planner). */
+  onTitle?: (title: string, subtitle?: string) => void | Promise<void>;
   signal: AbortSignal;
   /** Model + media provider headers (same as class generation). */
   apiHeaders: () => Record<string, string>;
@@ -78,20 +84,38 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
     signal,
   );
 
+  // Plan: a proper title (never the prompt) and, for hands-on books, the
+  // canonical project spec every section must follow.
+  ctx.setStatus('Planning the book and its running project...');
+  ctx.logProgress('[Ebook] Planning title and project specification');
+  const plan = await postJson<{
+    title: string;
+    subtitle?: string;
+    hasProject: boolean;
+    skipped?: boolean;
+  }>('/api/generate/book-plan', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+  if (!plan.skipped) {
+    ctx.logProgress(
+      `[Ebook] "${plan.title}"${plan.hasProject ? ' — running project planned' : ''}`,
+    );
+  }
+  await ctx.onTitle?.(plan.title, plan.subtitle);
+
   const statusResponse = await fetch(`/api/books?id=${encodeURIComponent(ctx.bookId)}`, {
     cache: 'no-store',
     signal,
   });
   const statusData = await statusResponse.json();
   const written = new Set<string>(statusData?.progress?.writtenSectionIds ?? []);
+  const reviewed = new Set<string>(statusData?.progress?.reviewedSectionIds ?? []);
 
   // 2. Sections, in book order.
-  const plan: Array<{ id: string; chapter: number; section: number; title: string }> = [];
+  const sectionPlan: Array<{ id: string; chapter: number; section: number; title: string }> = [];
   ctx.outline.forEach((chapter, ci) =>
     (chapter.keyPoints || [])
       .filter((p) => p.trim())
       .forEach((point, si) =>
-        plan.push({
+        sectionPlan.push({
           id: `c${String(ci + 1).padStart(2, '0')}s${String(si + 1).padStart(2, '0')}`,
           chapter: ci + 1,
           section: si + 1,
@@ -100,41 +124,72 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       ),
   );
 
-  const total = plan.length;
-  let done = plan.filter((p) => written.has(p.id)).length;
+  const total = sectionPlan.length;
+  let done = sectionPlan.filter((p) => written.has(p.id)).length;
   if (done > 0) ctx.logProgress(`[Ebook] Resuming: ${done} of ${total} sections already written`);
-  ctx.logProgress(`[Ebook] Writing ${total - done} section(s) across ${ctx.outline.length} chapters`);
+  ctx.logProgress(
+    `[Ebook] Writing ${total - done} section(s) across ${ctx.outline.length} chapters`,
+  );
 
   let words = 0;
-  for (const item of plan) {
-    if (written.has(item.id)) continue;
+  for (const item of sectionPlan) {
+    const needsWriting = !written.has(item.id);
+    const needsReview = ctx.factCheck && !reviewed.has(item.id);
+    if (!needsWriting && !needsReview) continue;
     if (signal.aborted) throw abortError();
-
     const label = `${item.chapter}.${item.section} ${item.title}`;
-    ctx.setStatus(`Writing section ${done + 1} of ${total} — ${label}`);
-    ctx.logProgress(`[Ebook] Writing section ${done + 1} of ${total}: ${label}`);
 
-    const body = {
-      bookId: ctx.bookId,
-      sectionId: item.id,
-      referenceMaterial: ctx.referenceMaterial,
-      userProfile: ctx.userProfile,
-    };
+    if (needsWriting) {
+      ctx.setStatus(`Writing section ${done + 1} of ${total} — ${label}`);
+      ctx.logProgress(`[Ebook] Writing section ${done + 1} of ${total}: ${label}`);
 
-    let result: { words?: number };
-    try {
-      result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
-    } catch (error) {
-      if (signal.aborted) throw abortError();
-      log.warn(`Section ${item.id} failed, retrying once:`, error);
-      result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
+      const body = {
+        bookId: ctx.bookId,
+        sectionId: item.id,
+        referenceMaterial: ctx.referenceMaterial,
+        userProfile: ctx.userProfile,
+        factCheck: ctx.factCheck,
+        webSearch: ctx.webSearch,
+      };
+
+      let result: { words?: number };
+      try {
+        result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
+      } catch (error) {
+        if (signal.aborted) throw abortError();
+        log.warn(`Section ${item.id} failed, retrying once:`, error);
+        result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
+      }
+
+      done++;
+      words += result.words ?? 0;
+      ctx.logProgress(`[Ebook] Completed section ${done} of ${total} (${result.words ?? 0} words)`);
     }
 
-    done++;
-    words += result.words ?? 0;
-    ctx.logProgress(`[Ebook] Completed section ${done} of ${total} (${result.words ?? 0} words)`);
+    // Fact-check + technical review (separate request, so pause/resume works
+    // between writing and reviewing).
+    if (needsReview) {
+      if (signal.aborted) throw abortError();
+      ctx.setStatus(`Fact-checking ${label}`);
+      const reviewBody = { bookId: ctx.bookId, sectionId: item.id, webSearch: ctx.webSearch };
+      let review: { claims?: number; notFound?: number; corrections?: number; accepted?: boolean };
+      try {
+        review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
+      } catch (error) {
+        if (signal.aborted) throw abortError();
+        log.warn(`Review of ${item.id} failed, retrying once:`, error);
+        review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
+      }
+      if (review.corrections) {
+        ctx.logProgress(
+          `[Ebook] Reviewed ${label}: ${review.claims ?? 0} claims checked, ${review.notFound ?? 0} not found, ` +
+            `${review.corrections} correction(s)${review.accepted ? ' applied' : ' (kept original)'}`,
+        );
+      }
+    }
   }
-  if (words > 0) ctx.logProgress(`[Ebook] Writing complete (+${words.toLocaleString()} words this run)`);
+  if (words > 0)
+    ctx.logProgress(`[Ebook] Writing complete (+${words.toLocaleString()} words this run)`);
 
   // 3. Pictures — separate phase so the LLM and ComfyUI never share VRAM.
   await fetch('/api/unload-local-llm', { method: 'POST' }).catch(() => undefined);
@@ -164,7 +219,8 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
             signal,
           );
           if (step.generated) generated++;
-          if (step.failed) ctx.logProgress(`[Ebook] Picture ${step.failed} failed; will retry once`);
+          if (step.failed)
+            ctx.logProgress(`[Ebook] Picture ${step.failed} failed; will retry once`);
           if (step.remaining === 0) break;
           ctx.setStatus(`Generating pictures — ${generated} done, ${step.remaining} to go`);
         }

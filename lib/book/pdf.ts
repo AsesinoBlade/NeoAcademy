@@ -77,7 +77,8 @@ export async function printHtmlToPdf(options: {
     await page.goto(pathToFileURL(options.htmlPath).href, { waitUntil: 'load', timeout: 0 });
     await page.waitForFunction('window.__bookReady === true', { timeout: 10 * 60 * 1000, polling: 500 });
 
-    const escapedTitle = options.title.replace(/[<>&"]/g, '');
+    const shortTitle = options.title.length > 90 ? `${options.title.slice(0, 87).trimEnd()}...` : options.title;
+    const escapedTitle = shortTitle.replace(/[<>&"]/g, '');
     const pdf = await page.pdf({
       path: options.pdfPath,
       format: 'A4',

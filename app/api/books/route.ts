@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import {
+  bookDir,
   bookPdfPath,
   countWords,
   fileExists,
@@ -82,6 +83,10 @@ export async function GET(request: NextRequest) {
     }
 
     const pdfStat = await fs.stat(bookPdfPath(id)).catch(() => null);
+    const reviewedSectionIds = await fs
+      .readdir(path.join(bookDir(id), 'reviews'))
+      .then((files) => files.filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5)))
+      .catch(() => [] as string[]);
 
     return apiSuccess({
       book,
@@ -89,6 +94,7 @@ export async function GET(request: NextRequest) {
         totalSections: refs.length,
         writtenSections: refs.filter((r) => written.has(r.id)).length,
         writtenSectionIds: refs.filter((r) => written.has(r.id)).map((r) => r.id),
+        reviewedSectionIds,
         words,
         imagesTotal,
         imagesDone,

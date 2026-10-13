@@ -33,6 +33,12 @@ Sections already written in this chapter (do not repeat their material):
 
 {{referenceMaterial}}
 
+## Reference notes (checked against official documentation)
+
+{{referenceNotes}}
+
+{{projectContext}}
+
 ---
 
 ## WRITE THIS SECTION NOW

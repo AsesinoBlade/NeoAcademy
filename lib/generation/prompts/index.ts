@@ -32,4 +32,7 @@ export const PROMPT_IDS = {
   PBL_ACTIONS: 'pbl-actions',
   REQUIREMENTS_TO_BOOK_OUTLINE: 'requirements-to-book-outline',
   BOOK_SECTION: 'book-section',
+  BOOK_PLAN: 'book-plan',
+  BOOK_CLAIMS: 'book-claims',
+  BOOK_REVIEW: 'book-review',
 } as const;

@@ -17,6 +17,9 @@ import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
 import { sanitiseSectionFigures } from '@/lib/book/figures';
+import { extractClaims } from '@/lib/book/llm';
+import { buildProjectContext, extractProjectFiles, recordProjectFiles } from '@/lib/book/project';
+import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
   countWords,
   listSectionRefs,
@@ -80,6 +83,9 @@ export async function POST(req: NextRequest) {
       sectionId: string;
       referenceMaterial?: string;
       userProfile?: string;
+      /** Look up the section's key identifiers in local docs / web before writing. */
+      factCheck?: boolean;
+      webSearch?: boolean;
     };
     if (!body.bookId || !body.sectionId) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'bookId and sectionId are required');
@@ -125,6 +131,36 @@ export async function POST(req: NextRequest) {
       .join('\n');
 
     const imagesEnabled = req.headers.get('x-image-generation-enabled') === 'true';
+
+    // Running project: canonical spec + current files (bigger budget for the
+    // final chapter, which assembles the whole project).
+    const isFinalChapter = ref.chapterIndex === book.outline.length - 1;
+    const projectContext = book.projectSpec
+      ? await buildProjectContext(
+          book.id,
+          book.projectSpec,
+          `${ref.spec}\n${chapter.teachingNotes || ''}`,
+          isFinalChapter ? 26000 : 14000,
+        )
+      : '';
+
+    // Grounding before writing: verify the identifiers this section is about
+    // (from its spec and the chapter brief) so the author doesn't build a
+    // section around something that doesn't exist.
+    let referenceNotes = 'None.';
+    if (body.factCheck) {
+      const claims = await extractClaims(
+        req,
+        `Section: ${ref.title}\n${ref.spec}\n\nChapter brief:\n${chapter.teachingNotes || ''}`,
+        8,
+      ).catch(() => []);
+      if (claims.length > 0) {
+        const evidence = await gatherEvidence(claims, { webSearch: !!body.webSearch });
+        referenceNotes = formatEvidence(evidence);
+        const missing = evidence.filter((e) => e.verdict === 'not-found').map((e) => e.claim.identifier);
+        if (missing.length) log.warn(`${ref.sectionNumber}: spec mentions non-existent ${missing.join(', ')}`);
+      }
+    }
     const targetWords = isSummary ? '900-1,400' : '1,600-2,300';
 
     const prompts = buildPrompt(PROMPT_IDS.BOOK_SECTION, {
@@ -143,6 +179,10 @@ export async function POST(req: NextRequest) {
       previousSectionsInChapter: previousInChapter || '(none — this is the first section of the chapter)',
       previousSectionTail,
       referenceMaterial: body.referenceMaterial?.trim() || 'None provided — rely on your expert knowledge.',
+      referenceNotes,
+      projectContext: projectContext
+        ? `## The running project (follow exactly)\n\n${projectContext}`
+        : '',
       sectionNumber: ref.sectionNumber,
       sectionTitle: ref.title,
       sectionSpec: ref.spec,
@@ -181,11 +221,15 @@ export async function POST(req: NextRequest) {
 
     const cleaned = sanitiseSectionFigures(markdown, ref.id, { imagesEnabled });
     await writeSection(book.id, ref.id, cleaned.markdown);
+    const projectFiles = book.projectSpec
+      ? await recordProjectFiles(book.id, ref.id, extractProjectFiles(cleaned.markdown))
+      : 0;
 
     const words = countWords(cleaned.markdown);
     log.info(
       `Wrote ${ref.sectionNumber}: ${words} words, ${cleaned.charts} chart(s), ${cleaned.diagrams} diagram(s), ` +
-        `${cleaned.images} image(s)${cleaned.dropped ? `, dropped ${cleaned.dropped} invalid figure(s)` : ''}`,
+        `${cleaned.images} image(s)${cleaned.dropped ? `, dropped ${cleaned.dropped} invalid figure(s)` : ''}` +
+        (projectFiles ? `, updated ${projectFiles} project file(s)` : ''),
     );
 
     return apiSuccess({
@@ -194,6 +238,7 @@ export async function POST(req: NextRequest) {
       charts: cleaned.charts,
       diagrams: cleaned.diagrams,
       images: cleaned.images,
+      projectFiles,
     });
   } catch (error) {
     log.error('Book section generation failed:', error);

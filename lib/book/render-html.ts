@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 
 import type { ChartSpec, ImageSpec } from './figures';
 import { isTextDependentImagePrompt, renderChartSvg } from './figures';
+import { listProjectFiles } from './project';
 import {
   type BookRecord,
   fileExists,
@@ -251,6 +252,54 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
     );
   }
 
+  // Appendix: the complete running project as it stands at the end of the
+  // book, plus the exact build commands — so the reader can check their files.
+  const projectFiles = book.projectSpec ? await listProjectFiles(book.id) : [];
+  if (book.projectSpec && projectFiles.length > 0) {
+    const spec = book.projectSpec;
+    const langFor = (file: string) => {
+      const ext = path.extname(file).slice(1).toLowerCase();
+      const base = path.basename(file).toLowerCase();
+      if (base === 'cmakelists.txt' || ext === 'cmake') return 'cmake';
+      if (base === 'makefile') return 'makefile';
+      return (
+        ({ h: 'cpp', hpp: 'cpp', hh: 'cpp', cc: 'cpp', cxx: 'cpp', py: 'python', js: 'javascript',
+           ts: 'typescript', json: 'json', yml: 'yaml', yaml: 'yaml', sh: 'bash', md: 'markdown',
+           cs: 'csharp', rs: 'rust', go: 'go', java: 'java', toml: 'toml' } as Record<string, string>)[ext] ||
+        ext ||
+        'text'
+      );
+    };
+    const tree = projectFiles.map((f) => f.path).join('\n');
+    const fileBlocks: string[] = [];
+    for (const file of projectFiles) {
+      fileBlocks.push(
+        `<h3 id="file-${escapeHtml(file.path.replace(/[^\w]+/g, '-'))}"><code>${escapeHtml(file.path)}</code></h3>` +
+          (await renderFence(langFor(file.path), file.content.replace(/\n$/, ''), ctx)),
+      );
+    }
+    toc.push(
+      `<li class="toc-chapter"><a href="#appendix-project"><span class="toc-num">A</span>Complete project: ${escapeHtml(spec.name)}</a></li>`,
+    );
+    chapters.push(
+      `<article class="chapter appendix" id="appendix-project" data-chapter="A">
+        <header class="chapter-opener">
+          <div class="chapter-kicker">Appendix A</div>
+          <h1>Complete project: ${escapeHtml(spec.name)}</h1>
+          <p class="chapter-intro">${escapeHtml(spec.summary)}</p>
+        </header>
+        <section class="book-section">
+          <h2>Build and run</h2>
+          <p>${escapeHtml(spec.buildSystem)}. From the project root:</p>
+          ${await renderFence('bash', spec.buildCommands.join('\n'), ctx)}
+          <h2>Files</h2>
+          ${await renderFence('text', tree, ctx)}
+          ${fileBlocks.join('\n')}
+        </section>
+      </article>`,
+    );
+  }
+
   const coverFile = path.join(imagesDir(book.id), 'cover.png');
   const coverImage = (await fileExists(coverFile))
     ? `<img class="cover-image" src="${pathToFileURL(coverFile).href}" alt="">`
@@ -301,8 +350,11 @@ ${chapters.join('\n')}
   });
   try {
     if (window.mermaid) {
+      // No drop shadows: Chromium rasterises SVG filters when printing, which
+      // bloats the PDF (each shadow becomes an image).
       mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose',
-        fontFamily: 'Segoe UI, Arial, sans-serif', flowchart: { useMaxWidth: true } });
+        fontFamily: 'Segoe UI, Arial, sans-serif', flowchart: { useMaxWidth: true },
+        themeCSS: '* { filter: none !important; }' });
       const nodes = Array.from(document.querySelectorAll('pre.mermaid'));
       for (const node of nodes) {
         try {
@@ -384,6 +436,8 @@ figcaption { font-size: 8.8pt; color: #4b5563; margin-top: 2mm; text-align: cent
 .fig-source { color: #9ca3af; font-style: italic; }
 pre.mermaid { background: none; border: 0; text-align: center; white-space: pre; font-size: 0; }
 pre.mermaid svg { font-size: 12px; }
+pre.mermaid svg * { filter: none !important; }
+.appendix h3 code { font-size: 10pt; background: none; padding: 0; }
 
 /* Code */
 .code { margin: 0.8em 0 1em; break-inside: avoid; }

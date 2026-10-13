@@ -5005,6 +5005,13 @@ function GenerationPreviewContent() {
                 }`
               : undefined,
           imageGenerationEnabled: !!useSettingsStore.getState().imageGenerationEnabled,
+          factCheck: !!currentSession.requirements.factCheck,
+          webSearch: !!currentSession.requirements.webSearch,
+          onTitle: async (title, subtitle) => {
+            stage.name = title;
+            if (subtitle) stage.description = subtitle;
+            await persistGenerationState('generating');
+          },
           signal,
           apiHeaders: getApiHeaders,
           setStatus: setStatusMessage,

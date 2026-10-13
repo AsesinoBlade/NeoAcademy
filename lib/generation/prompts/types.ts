@@ -16,7 +16,10 @@ export type PromptId =
   | 'interactive-actions'
   | 'pbl-actions'
   | 'requirements-to-book-outline'
-  | 'book-section';
+  | 'book-section'
+  | 'book-plan'
+  | 'book-claims'
+  | 'book-review';
 
 /**
  * Snippet identifier

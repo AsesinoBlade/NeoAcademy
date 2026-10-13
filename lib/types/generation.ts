@@ -110,6 +110,8 @@ export interface UserRequirements {
   reviewOutline?: boolean;
   /** What to produce: an interactive class (default) or a full ebook PDF. */
   outputMode?: 'class' | 'ebook';
+  /** Ebooks: verify claims against local docs / web and review each section. */
+  factCheck?: boolean;
 }
 
 /**
