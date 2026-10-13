@@ -6,7 +6,16 @@ import { generateTTSForScene, useSceneGenerator } from '@/lib/hooks/use-scene-ge
 import { logGenerationProgress } from '@/lib/generation/progress-log';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
-import { CheckCircle2, Sparkles, AlertCircle, AlertTriangle, ArrowLeft, Bot } from 'lucide-react';
+import {
+  CheckCircle2,
+  Sparkles,
+  AlertCircle,
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  Pause,
+  Loader2,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -3340,6 +3349,10 @@ function GenerationPreviewContent() {
   const { generateRemaining, stop: stopSceneGeneration } = useSceneGenerator();
   const hasStartedRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Set by the Pause button. The generation run sees its requests aborted and
+  // saves a resumable 'paused' state instead of treating the abort as failure.
+  const pauseRequestedRef = useRef(false);
+  const [isPausing, setIsPausing] = useState(false);
 
   const [session, setSession] = useState<GenerationSessionState | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
@@ -3444,6 +3457,9 @@ function GenerationPreviewContent() {
 
     // Use a local mutable copy so we can update it after PDF parsing
     let currentSession = session;
+    const isResume = !!currentSession.resume;
+    pauseRequestedRef.current = false;
+    setIsPausing(false);
 
     // Use the generation session id as the durable classroom id.
     // This exists before source parsing, so early failures still get
@@ -3466,8 +3482,50 @@ function GenerationPreviewContent() {
       updatedAt: Date.now(),
     };
 
+    // On resume, load the saved class (IndexedDB, falling back to server
+    // storage) BEFORE anything is persisted — the first persist below sends
+    // the in-memory scenes, and an empty store would wipe completed work.
+    if (isResume) {
+      await useStageStore.getState().loadFromStorage(stageId);
+      const loaded = useStageStore.getState();
+      if (loaded.stage?.id === stageId) {
+        Object.assign(stage, loaded.stage, { updatedAt: Date.now() });
+      }
+      log.info(
+        `[Generation] Resuming class ${stageId}: ${loaded.scenes.length}/${loaded.outlines.length} scenes already generated`,
+      );
+      logGenerationProgress(
+        `[Generation] Resuming: ${loaded.scenes.length} of ${loaded.outlines.length} scenes already done`,
+      );
+    }
+
+    /**
+     * Durable copy of the generation session for resume after a restart.
+     * sessionStorage always holds the latest version (it is updated after
+     * source parsing, web search and outline generation). Image data lives
+     * in IndexedDB, so the inline mapping is dropped when storage IDs exist.
+     */
+    const buildResumeSnapshot = (): GenerationSessionState | undefined => {
+      try {
+        const raw = sessionStorage.getItem('generationSession');
+        const latest = (raw ? JSON.parse(raw) : currentSession) as GenerationSessionState;
+        const snapshot: GenerationSessionState = { ...latest, resume: undefined };
+        if (snapshot.imageStorageIds?.length) {
+          snapshot.imageMapping = undefined;
+        }
+        const storedOutlines = useStageStore.getState().outlines;
+        if ((!snapshot.sceneOutlines || snapshot.sceneOutlines.length === 0) && storedOutlines.length) {
+          snapshot.sceneOutlines = storedOutlines;
+        }
+        return snapshot;
+      } catch (snapshotError) {
+        log.warn('[Generation] Could not build resume snapshot:', snapshotError);
+        return undefined;
+      }
+    };
+
     const persistGenerationState = async (
-      status: 'generating' | 'completed' | 'failed',
+      status: 'generating' | 'paused' | 'completed' | 'failed',
       options?: {
         error?: string;
         requireSuccess?: boolean;
@@ -3509,6 +3567,8 @@ function GenerationPreviewContent() {
           error: options?.error,
           requirement:
             currentSession.requirements.requirement,
+          resumeSession:
+            status === 'completed' ? undefined : buildResumeSnapshot(),
         }),
       });
 
@@ -3527,6 +3587,18 @@ function GenerationPreviewContent() {
     setError(null);
     setCurrentStepIndex(0);
 
+    // Heartbeat: the TTS and media phases can run a long time without any
+    // scene completing, so refresh the durable record periodically. The home
+    // page treats a 'generating' record that stops updating as interrupted
+    // (computer shut down mid-run) and offers Resume for it.
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    };
+
     try {
       await persistGenerationState(
         'generating',
@@ -3534,6 +3606,10 @@ function GenerationPreviewContent() {
           requireSuccess: true,
         },
       );
+      heartbeatTimer = setInterval(() => {
+        if (signal.aborted || pauseRequestedRef.current) return;
+        void persistGenerationState('generating').catch(() => undefined);
+      }, 5 * 60 * 1000);
       // Compute active steps for this session (recomputed after session mutations)
 
       // Keep Docker/Kokoro/Whisper out of memory while Ollama performs
@@ -4491,7 +4567,11 @@ function GenerationPreviewContent() {
 
       // Step: Web Search (if enabled)
       const webSearchStepIdx = activeSteps.findIndex((s) => s.id === 'web-search');
-      if (currentSession.requirements.webSearch && webSearchStepIdx >= 0) {
+      if (
+        currentSession.requirements.webSearch &&
+        webSearchStepIdx >= 0 &&
+        !(isResume && currentSession.researchContext)
+      ) {
         setCurrentStepIndex(webSearchStepIdx);
         setWebSearchSources([]);
 
@@ -4556,7 +4636,25 @@ function GenerationPreviewContent() {
       // Stage was created before source parsing so its durable history
       // record exists even when generation fails early.
 
-      if (settings.agentMode === 'auto') {
+      // Resume: reuse the agents generated for this class before the pause,
+      // so voices and personas stay consistent across the whole course.
+      const resumedAgentIds = isResume
+        ? await (await import('@/lib/orchestration/registry/store')).loadGeneratedAgentsForStage(stage.id)
+        : [];
+
+      if (resumedAgentIds.length > 0) {
+        settings.setSelectedAgentIds(resumedAgentIds);
+        agents = resumedAgentIds
+          .map((id) => useAgentRegistry.getState().getAgent(id))
+          .filter(Boolean)
+          .map((a) => ({
+            id: a!.id,
+            name: a!.name,
+            role: a!.role,
+            persona: a!.persona,
+          }));
+        log.info(`[Generation] Resume: reusing ${agents.length} saved agent(s)`);
+      } else if (settings.agentMode === 'auto') {
         const agentStepIdx = activeSteps.findIndex((s) => s.id === 'agent-generation');
         if (agentStepIdx >= 0) setCurrentStepIndex(agentStepIdx);
 
@@ -4639,6 +4737,10 @@ function GenerationPreviewContent() {
 
       // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Generate outlines (with agent personas for teacher context) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
       let outlines = currentSession.sceneOutlines;
+      if (isResume && (!outlines || outlines.length === 0)) {
+        const storedOutlines = useStageStore.getState().outlines;
+        if (storedOutlines.length > 0) outlines = storedOutlines;
+      }
 
       const outlineStepIdx = activeSteps.findIndex((s) => s.id === 'outline');
       setCurrentStepIndex(outlineStepIdx >= 0 ? outlineStepIdx : 0);
@@ -4763,9 +4865,14 @@ function GenerationPreviewContent() {
       logGenerationProgress(`[Generation] Images planned: ${plannedImageCount}`);
       logGenerationProgress(`[Generation] Videos planned: ${plannedVideoCount}`);
 
-      // Store stage and outlines
+      // Store stage and outlines. setStage() clears scenes, so a resumed
+      // class keeps the stage and scenes already loaded from storage.
       const store = useStageStore.getState();
-      store.setStage(stage);
+      const resumedScenes =
+        isResume && store.stage?.id === stage.id ? store.scenes : [];
+      if (resumedScenes.length === 0) {
+        store.setStage(stage);
+      }
       store.setOutlines(outlines);
 
       // Advance to slide-content step
@@ -4785,83 +4892,97 @@ function GenerationPreviewContent() {
           ? `Student: ${currentSession.requirements.userNickname || 'Unknown'}${currentSession.requirements.userBio ? ` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${currentSession.requirements.userBio}` : ''}`
           : undefined;
 
-      // Generate ONLY the first scene
-      store.setGeneratingOutlines(outlines);
+      let resumeRemaining: SceneOutline[] | null = null;
+      if (resumedScenes.length > 0) {
+        // Resume: skip everything already generated and continue with the
+        // first unfinished scene.
+        const completedOrders = new Set(resumedScenes.map((scene) => scene.order));
+        resumeRemaining = outlines.filter((outline) => !completedOrders.has(outline.order));
+        store.setGeneratingOutlines(resumeRemaining);
+        if (!store.currentSceneId && resumedScenes[0]) store.setCurrentSceneId(resumedScenes[0].id);
+      } else {
+        // Generate ONLY the first scene
+        store.setGeneratingOutlines(outlines);
 
-      const firstOutline = outlines[0];
+        const firstOutline = outlines[0];
 
-      logGenerationProgress(
-        `[Generation] Generating slide 1 of ${outlines.length}: ${firstOutline.title}`,
-      );
+        logGenerationProgress(
+          `[Generation] Generating slide 1 of ${outlines.length}: ${firstOutline.title}`,
+        );
 
-      // Step 2: Generate content (currentStepIndex is already 2)
-      const contentResp = await fetch('/api/generate/scene-content', {
-        method: 'POST',
-        headers: getApiHeaders(),
-        body: JSON.stringify({
-          outline: firstOutline,
-          allOutlines: outlines,
-          pdfImages: currentSession.pdfImages,
-          sourceEvidence: currentSession.pdfText,
-          classRequirement: currentSession.requirements.requirement,
-          imageMapping,
-          stageInfo,
-          stageId: stage.id,
-          agents,
-        }),
-        signal,
-      });
+        // Step 2: Generate content (currentStepIndex is already 2)
+        const contentResp = await fetch('/api/generate/scene-content', {
+          method: 'POST',
+          headers: getApiHeaders(),
+          body: JSON.stringify({
+            outline: firstOutline,
+            allOutlines: outlines,
+            pdfImages: currentSession.pdfImages,
+            sourceEvidence: currentSession.pdfText,
+            classRequirement: currentSession.requirements.requirement,
+            imageMapping,
+            stageInfo,
+            stageId: stage.id,
+            agents,
+          }),
+          signal,
+        });
 
-      if (!contentResp.ok) {
-        const errorData = await contentResp.json().catch(() => ({ error: 'Request failed' }));
-        throw new Error(errorData.error || t('generation.sceneGenerateFailed'));
+        if (!contentResp.ok) {
+          const errorData = await contentResp.json().catch(() => ({ error: 'Request failed' }));
+          throw new Error(errorData.error || t('generation.sceneGenerateFailed'));
+        }
+
+        const contentData = await contentResp.json();
+        if (!contentData.success || !contentData.content) {
+          throw new Error(contentData.error || t('generation.sceneGenerateFailed'));
+        }
+
+        // Generate actions (activate actions step indicator)
+        const actionsStepIdx = activeSteps.findIndex((s) => s.id === 'actions');
+        setCurrentStepIndex(actionsStepIdx >= 0 ? actionsStepIdx : currentStepIndex + 1);
+
+        const actionsResp = await fetch('/api/generate/scene-actions', {
+          method: 'POST',
+          headers: getApiHeaders(),
+          body: JSON.stringify({
+            outline: contentData.effectiveOutline || firstOutline,
+            allOutlines: outlines,
+            content: contentData.content,
+            sourceEvidence: currentSession.pdfText,
+            stageId: stage.id,
+            agents,
+            previousSpeeches: [],
+            userProfile,
+          }),
+          signal,
+        });
+
+        if (!actionsResp.ok) {
+          const errorData = await actionsResp.json().catch(() => ({ error: 'Request failed' }));
+          throw new Error(errorData.error || t('generation.sceneGenerateFailed'));
+        }
+
+        const data = await actionsResp.json();
+        if (!data.success || !data.scene) {
+          throw new Error(data.error || t('generation.sceneGenerateFailed'));
+        }
+
+        // Add the first completed scene.
+        store.addScene(data.scene);
+        store.setCurrentSceneId(data.scene.id);
+
+        logGenerationProgress(
+          `[Generation] Completed slide 1 of ${outlines.length}: ${firstOutline.title}`,
+        );
+
       }
 
-      const contentData = await contentResp.json();
-      if (!contentData.success || !contentData.content) {
-        throw new Error(contentData.error || t('generation.sceneGenerateFailed'));
-      }
-
-      // Generate actions (activate actions step indicator)
-      const actionsStepIdx = activeSteps.findIndex((s) => s.id === 'actions');
-      setCurrentStepIndex(actionsStepIdx >= 0 ? actionsStepIdx : currentStepIndex + 1);
-
-      const actionsResp = await fetch('/api/generate/scene-actions', {
-        method: 'POST',
-        headers: getApiHeaders(),
-        body: JSON.stringify({
-          outline: contentData.effectiveOutline || firstOutline,
-          allOutlines: outlines,
-          content: contentData.content,
-          sourceEvidence: currentSession.pdfText,
-          stageId: stage.id,
-          agents,
-          previousSpeeches: [],
-          userProfile,
-        }),
-        signal,
-      });
-
-      if (!actionsResp.ok) {
-        const errorData = await actionsResp.json().catch(() => ({ error: 'Request failed' }));
-        throw new Error(errorData.error || t('generation.sceneGenerateFailed'));
-      }
-
-      const data = await actionsResp.json();
-      if (!data.success || !data.scene) {
-        throw new Error(data.error || t('generation.sceneGenerateFailed'));
-      }
-
-      // Add the first completed scene.
-      store.addScene(data.scene);
-      store.setCurrentSceneId(data.scene.id);
-
-      logGenerationProgress(
-        `[Generation] Completed slide 1 of ${outlines.length}: ${firstOutline.title}`,
-      );
-
-      // Mark the remaining outlines as pending.
-      const remaining = outlines.filter((o) => o.order !== data.scene.order);
+      // Mark the remaining outlines as pending (works for both a fresh run and
+      // a resume: anything without a completed scene is still to do).
+      const completedOrderSet = new Set(useStageStore.getState().scenes.map((scene) => scene.order));
+      const remaining =
+        resumeRemaining ?? outlines.filter((o) => !completedOrderSet.has(o.order));
       store.setGeneratingOutlines(remaining);
 
       // Generate every remaining scene before entering the classroom.
@@ -5418,6 +5539,7 @@ function GenerationPreviewContent() {
       }
 
       // Everything is complete. Persist the full class before navigating.
+      stopHeartbeat();
       setIsComplete(true);
       sessionStorage.removeItem('generationSession');
       sessionStorage.removeItem('generationParams');
@@ -5436,6 +5558,7 @@ function GenerationPreviewContent() {
 
       router.push(`/classroom/${stage.id}`);
     } catch (err) {
+      stopHeartbeat();
       // Generation may fail before the normal post-LLM cleanup point.
       // Always make a best-effort attempt to release the local Ollama
       // model so a failed or cancelled classroom does not leave VRAM occupied.
@@ -5460,6 +5583,36 @@ function GenerationPreviewContent() {
           '[Generation] Failed to release local LLM after generation failure:',
           cleanupError,
         );
+      }
+
+      // User pressed Pause: this abort is intentional. Save everything that
+      // is complete as a resumable 'paused' class and return home (the home
+      // page's idle cleanup then stops Ollama / ComfyUI / speech services).
+      if (pauseRequestedRef.current) {
+        try {
+          const pausedStore = useStageStore.getState();
+          if (pausedStore.stage?.id === stage.id) {
+            pausedStore.setGenerationStatus('paused');
+            await pausedStore.saveToStorage();
+          }
+          await persistGenerationState('paused', { requireSuccess: true });
+
+          const done = useStageStore.getState().scenes.length;
+          const total = useStageStore.getState().outlines.length;
+          logGenerationProgress(`[Generation] Paused with ${done} of ${total} scenes complete`);
+          log.info(`[Generation] Generation paused for classroom ${stage.id} (${done}/${total})`);
+
+          sessionStorage.removeItem('generationSession');
+          router.push('/');
+        } catch (pauseError) {
+          log.error('[Generation] Failed to save paused state:', pauseError);
+          setIsPausing(false);
+          setError(
+            'Pausing failed while saving progress. Completed scenes are still stored; ' +
+              'you can resume from the home page.',
+          );
+        }
+        return;
       }
 
       // AbortError is expected when navigating away ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â don't show as error
@@ -5679,6 +5832,21 @@ function GenerationPreviewContent() {
       return trimmed;
     }
     return trimmed.substring(0, 500).trim() + '...';
+  };
+
+  /**
+   * Pause: stop the current request right away and save a resumable state.
+   * Only the scene that was mid-generation is lost; everything completed is
+   * kept, and "Resume" on the home page continues from the next scene.
+   */
+  const pauseGeneration = () => {
+    if (pauseRequestedRef.current) return;
+    pauseRequestedRef.current = true;
+    setIsPausing(true);
+    setStatusMessage('Pausing — saving progress...');
+    useStageStore.getState().setGenerationStatus('paused');
+    stopSceneGeneration();
+    abortControllerRef.current?.abort();
   };
 
   const goBackToHome = () => {
@@ -5923,6 +6091,27 @@ function GenerationPreviewContent() {
                 animate={{ opacity: 1 }}
                 className="flex items-center gap-3 text-sm text-muted-foreground/50 font-medium uppercase tracking-widest"
               >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="normal-case tracking-normal"
+                      onClick={pauseGeneration}
+                      disabled={isPausing}
+                    >
+                      {isPausing ? (
+                        <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                      ) : (
+                        <Pause className="size-3.5 mr-1.5" />
+                      )}
+                      {isPausing ? 'Pausing...' : 'Pause'}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    Save progress and stop. Resume later from the home page.
+                  </TooltipContent>
+                </Tooltip>
                 <Sparkles className="size-3 animate-pulse" />
                 {t('generation.aiWorking')}
                 {generatedAgents.length > 0 && !showAgentReveal && (

@@ -19,6 +19,30 @@ interface ManagedDockerState {
   startedAt: number;
 }
 
+/*
+ * Start/stop coordination shared across route handlers. Next.js may load
+ * this module once per route bundle, so the state lives on globalThis.
+ *
+ * - `lastStartRequestedAt` lets the idle cleanup detect that a classroom
+ *   asked for speech while the (slow) cleanup was running, and skip the stop.
+ * - `queue` serialises start/stop so a stop can never interleave with a
+ *   start that is halfway through bringing the containers up.
+ */
+interface SpeechLifecycleState {
+  lastStartRequestedAt: number;
+  queue: Promise<unknown>;
+}
+
+const speechLifecycle: SpeechLifecycleState = ((
+  globalThis as typeof globalThis & { __neoacademySpeechLifecycle?: SpeechLifecycleState }
+).__neoacademySpeechLifecycle ??= { lastStartRequestedAt: 0, queue: Promise.resolve() });
+
+function runExclusive<T>(task: () => Promise<T>): Promise<T> {
+  const run = speechLifecycle.queue.then(task, task);
+  speechLifecycle.queue = run.catch(() => undefined);
+  return run;
+}
+
 function readManagedDockerState(): ManagedDockerState | null {
   try {
     return JSON.parse(fs.readFileSync(DOCKER_STATE_FILE, 'utf8')) as ManagedDockerState;
@@ -245,6 +269,60 @@ export async function getLocalSpeechServicesStatus() {
 }
 
 export async function startLocalSpeechServices() {
+  speechLifecycle.lastStartRequestedAt = Date.now();
+  return runExclusive(startLocalSpeechServicesUnlocked);
+}
+
+/**
+ * Stop speech for idle cleanup — unless something (a classroom, live Q&A)
+ * requested speech after `cleanupStartedAt`. The idle cleanup takes tens of
+ * seconds, and the user can open a classroom while it is still running.
+ */
+export async function stopLocalSpeechServicesIfIdle(cleanupStartedAt: number) {
+  return runExclusive(async () => {
+    if (speechLifecycle.lastStartRequestedAt >= cleanupStartedAt) {
+      return {
+        success: true,
+        stopped: false,
+        reason: 'speech-requested-during-cleanup',
+      };
+    }
+    return stopLocalSpeechServicesUnlocked();
+  });
+}
+
+/**
+ * True when `baseUrl` points at the Kokoro container this module manages:
+ * the Kokoro port on loopback or on one of this machine's own IP addresses
+ * (e.g. TTS_OPENAI_BASE_URL=http://192.168.x.x:8880/v1 on the same PC).
+ * A Kokoro running on another machine is not ours to restart.
+ */
+export function isManagedLocalTtsUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  if (Number(url.port) !== KOKORO_PORT) return false;
+
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+
+  const ownAddresses = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((iface): iface is os.NetworkInterfaceInfo => !!iface)
+    .map((iface) => iface.address);
+  return ownAddresses.includes(host);
+}
+
+/** True when the Kokoro TTS endpoint answers. Cheap; used before retrying TTS. */
+export async function isLocalTtsHealthy(): Promise<boolean> {
+  return checkHttp(`http://127.0.0.1:${KOKORO_PORT}/v1/models`);
+}
+
+async function startLocalSpeechServicesUnlocked() {
   // The Docker engine is the authoritative readiness check. On some Windows /
   // Docker Desktop versions, `docker desktop status` may report "stopped" even
   // while the Linux engine is fully reachable through `docker info`.
@@ -285,6 +363,10 @@ export async function startLocalSpeechServices() {
 }
 
 export async function stopLocalSpeechServices() {
+  return runExclusive(stopLocalSpeechServicesUnlocked);
+}
+
+async function stopLocalSpeechServicesUnlocked() {
   if (!dockerDesktopIsRunning()) {
     return {
       success: true,

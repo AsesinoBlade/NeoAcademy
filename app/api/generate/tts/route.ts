@@ -14,10 +14,27 @@ import type { TTSProviderId } from '@/lib/audio/types';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import {
+  isLocalTtsHealthy,
+  isManagedLocalTtsUrl,
+  startLocalSpeechServices,
+} from '@/lib/server/local-speech-services';
 
 const log = createLogger('TTS API');
 
-export const maxDuration = 30;
+// Allows time to restart the local speech containers on a cold call.
+export const maxDuration = 180;
+
+function isConnectionFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const cause = (error as Error & { cause?: { code?: string } }).cause;
+  return (
+    error.message === 'fetch failed' ||
+    cause?.code === 'ECONNREFUSED' ||
+    cause?.code === 'ECONNRESET' ||
+    cause?.code === 'UND_ERR_SOCKET'
+  );
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -74,8 +91,22 @@ export async function POST(req: NextRequest) {
       `Generating TTS: provider=${ttsProviderId}, voice=${ttsVoice}, audioId=${audioId}, textLen=${text.length}`,
     );
 
-    // Generate audio
-    const { audio, format } = await generateTTS(config, text);
+    // Generate audio. If the local speech server was stopped behind our back
+    // (idle cleanup, Docker restart), bring it back up once and retry rather
+    // than failing every live sentence.
+    let result: Awaited<ReturnType<typeof generateTTS>>;
+    try {
+      result = await generateTTS(config, text);
+    } catch (error) {
+      if (!isManagedLocalTtsUrl(baseUrl) || !isConnectionFailure(error) || (await isLocalTtsHealthy())) {
+        throw error;
+      }
+      log.warn('Local TTS server unreachable — restarting local speech services and retrying');
+      await startLocalSpeechServices();
+      result = await generateTTS(config, text);
+      log.info('Local TTS recovered after restarting speech services');
+    }
+    const { audio, format } = result;
 
     // Convert to base64
     const base64 = Buffer.from(audio).toString('base64');

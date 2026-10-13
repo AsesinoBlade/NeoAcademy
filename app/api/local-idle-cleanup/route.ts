@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { unloadAllLocalOllamaModels } from '@/lib/server/local-llm';
 import { stopLocalComfyUi } from '@/lib/server/local-comfyui';
-import { stopLocalSpeechServices } from '@/lib/server/local-speech-services';
+import { stopLocalSpeechServicesIfIdle } from '@/lib/server/local-speech-services';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,6 +15,9 @@ interface CleanupResult {
 }
 
 export async function POST() {
+  // Anything that requests speech after this moment (e.g. a classroom opened
+  // while this slow cleanup is still running) wins over the cleanup.
+  const cleanupStartedAt = Date.now();
   const results: CleanupResult[] = [];
 
   try {
@@ -54,7 +57,7 @@ export async function POST() {
    * when Docker was originally started and is owned by NeoAcademy.
    */
   try {
-    const result = await stopLocalSpeechServices();
+    const result = await stopLocalSpeechServicesIfIdle(cleanupStartedAt);
 
     results.push({
       service: 'speech',

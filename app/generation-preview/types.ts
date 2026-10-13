@@ -36,6 +36,12 @@ export interface GenerationSessionState {
   // Web search context
   researchContext?: string;
   researchSources?: Array<{ title: string; url: string }>;
+  /**
+   * Set when continuing a paused / interrupted class: the existing stage,
+   * agents, outlines and completed scenes are reused and generation picks
+   * up at the first unfinished scene.
+   */
+  resume?: boolean;
 }
 
 export type GenerationStep = {

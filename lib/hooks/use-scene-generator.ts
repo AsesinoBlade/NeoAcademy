@@ -144,6 +144,30 @@ function getApiHeaders(): HeadersInit {
   };
 }
 
+/**
+ * Run a scene-generation request, retrying once on failure. Local models
+ * occasionally emit an unusable response for one scene (malformed JSON, an
+ * invented error object); a fresh sample almost always succeeds, and one
+ * retry is far cheaper than discarding a 20+ minute class generation.
+ */
+async function withOneRetry<T extends { success: boolean; error?: string }>(
+  label: string,
+  attempt: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await attempt();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    result = { success: false, error: error instanceof Error ? error.message : String(error) } as T;
+  }
+  if (result.success || signal?.aborted) return result;
+
+  log.warn(`[SceneGenerator] ${label} failed (${result.error ?? 'unknown error'}) — retrying once`);
+  return attempt();
+}
+
 /** Call POST /api/generate/scene-content (step 1) */
 async function fetchSceneContent(
   params: {
@@ -164,19 +188,25 @@ async function fetchSceneContent(
   },
   signal?: AbortSignal,
 ): Promise<SceneContentResult> {
-  const response = await fetch('/api/generate/scene-content', {
-    method: 'POST',
-    headers: getApiHeaders(),
-    body: JSON.stringify(params),
+  return withOneRetry(
+    `Content for "${params.outline.title}"`,
+    async () => {
+      const response = await fetch('/api/generate/scene-content', {
+        method: 'POST',
+        headers: getApiHeaders(),
+        body: JSON.stringify(params),
+        signal,
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({ error: 'Request failed' }));
+        return { success: false, error: data.error || `HTTP ${response.status}` };
+      }
+
+      return response.json();
+    },
     signal,
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({ error: 'Request failed' }));
-    return { success: false, error: data.error || `HTTP ${response.status}` };
-  }
-
-  return response.json();
+  );
 }
 
 /** Call POST /api/generate/scene-actions (step 2) */
@@ -193,19 +223,25 @@ async function fetchSceneActions(
   },
   signal?: AbortSignal,
 ): Promise<SceneActionsResult> {
-  const response = await fetch('/api/generate/scene-actions', {
-    method: 'POST',
-    headers: getApiHeaders(),
-    body: JSON.stringify(params),
+  return withOneRetry(
+    `Actions for "${params.outline.title}"`,
+    async () => {
+      const response = await fetch('/api/generate/scene-actions', {
+        method: 'POST',
+        headers: getApiHeaders(),
+        body: JSON.stringify(params),
+        signal,
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({ error: 'Request failed' }));
+        return { success: false, error: data.error || `HTTP ${response.status}` };
+      }
+
+      return response.json();
+    },
     signal,
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({ error: 'Request failed' }));
-    return { success: false, error: data.error || `HTTP ${response.status}` };
-  }
-
-  return response.json();
+  );
 }
 
 /** Generate TTS for one speech action and store in IndexedDB */
@@ -282,6 +318,8 @@ export async function generateTTSForScene(
   for (const action of speechActions) {
     const audioId = `tts_${action.id}`;
     action.audioId = audioId;
+    // A resumed generation may already have this clip from before the pause.
+    if (await db.audioFiles.get(audioId)) continue;
     try {
       await generateAndStoreTTS(audioId, action.text, signal, teacherVoiceId);
     } catch (error) {

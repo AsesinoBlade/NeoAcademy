@@ -20,6 +20,8 @@ import {
   Monitor,
   LogOut,
   ChevronUp,
+  Pause,
+  Play,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -58,6 +60,7 @@ const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
 type ClassroomHistoryStatus =
   | 'generating'
+  | 'paused'
   | 'completed'
   | 'failed';
 
@@ -67,6 +70,32 @@ interface ClassroomHistoryItem
   error?: string;
   requirement?: string;
   thumbnail?: Slide;
+  /** Server reports enough saved state to continue generation. */
+  resumable?: boolean;
+  totalScenes?: number;
+}
+
+/**
+ * A 'generating' record that hasn't been updated for a while was cut off
+ * (browser closed, computer shut down) rather than still running. Each
+ * completed scene updates the record, and no scene takes this long.
+ */
+const INTERRUPTED_AFTER_MS = 15 * 60 * 1000;
+
+function isInterrupted(classroom: ClassroomHistoryItem): boolean {
+  return (
+    classroom.status === 'generating' &&
+    Date.now() - classroom.updatedAt > INTERRUPTED_AFTER_MS
+  );
+}
+
+function canResume(classroom: ClassroomHistoryItem): boolean {
+  return (
+    !!classroom.resumable &&
+    (classroom.status === 'paused' ||
+      classroom.status === 'failed' ||
+      isInterrupted(classroom))
+  );
 }
 
 interface FormState {
@@ -315,6 +344,33 @@ function HomePage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Store hydration on mount
     loadClassrooms();
   }, []);
+
+  /**
+   * Continue an unfinished class. The server keeps a snapshot of the
+   * generation session; hand it back to the generation page flagged as a
+   * resume so it reuses the saved outlines, agents and completed scenes.
+   */
+  const resumeClassroom = async (id: string) => {
+    try {
+      const response = await fetch(`/api/classroom?id=${encodeURIComponent(id)}`, {
+        cache: 'no-store',
+      });
+      const json = await response.json();
+      const resumeSession = json?.classroom?.resumeSession;
+
+      if (!response.ok || !resumeSession) {
+        throw new Error('This class has no saved generation state to resume from.');
+      }
+
+      sessionStorage.setItem(
+        'generationSession',
+        JSON.stringify({ ...resumeSession, sessionId: id, resume: true }),
+      );
+      router.push('/generation-preview');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resume class');
+    }
+  };
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -782,12 +838,18 @@ function HomePage() {
                         confirmingDelete={pendingDeleteId === classroom.id}
                         onConfirmDelete={() => confirmDelete(classroom.id)}
                         onCancelDelete={() => setPendingDeleteId(null)}
+                        onResume={() => resumeClassroom(classroom.id)}
                         onClick={() => {
                           if (
                             classroom.status === 'completed' ||
                             !classroom.status
                           ) {
                             router.push(`/classroom/${classroom.id}`);
+                          } else if (
+                            classroom.status === 'paused' &&
+                            canResume(classroom)
+                          ) {
+                            void resumeClassroom(classroom.id);
                           }
                         }}
                       />
@@ -1108,6 +1170,7 @@ function ClassroomCard({
   onConfirmDelete,
   onCancelDelete,
   onClick,
+  onResume,
 }: {
   classroom: ClassroomHistoryItem;
   slide?: Slide;
@@ -1117,10 +1180,18 @@ function ClassroomCard({
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
   onClick: () => void;
+  onResume: () => void;
 }) {
   const { t } = useI18n();
   const isFailed = classroom.status === 'failed';
-  const isGenerating = classroom.status === 'generating';
+  const interrupted = isInterrupted(classroom);
+  const isPaused = classroom.status === 'paused' || interrupted;
+  const isGenerating = classroom.status === 'generating' && !interrupted;
+  const resumable = canResume(classroom);
+  const progressLabel =
+    classroom.totalScenes && classroom.totalScenes > 0
+      ? `${classroom.sceneCount} of ${classroom.totalScenes} scenes`
+      : `${classroom.sceneCount} scenes`;
   const [failureLogOpen, setFailureLogOpen] = useState(false);
   const [failureLogText, setFailureLogText] = useState('');
   const [failureLogLoading, setFailureLogLoading] = useState(false);
@@ -1221,6 +1292,16 @@ function ClassroomCard({
               </span>
             )}
           </div>
+        ) : isPaused ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-sky-50 dark:bg-sky-950/20 px-4 text-center">
+            <Pause className="size-8 text-sky-500" />
+            <span className="text-xs font-semibold text-sky-700 dark:text-sky-300">
+              {interrupted ? 'Interrupted' : 'Paused'}
+            </span>
+            <span className="text-[10px] text-sky-600/80 dark:text-sky-400/80">
+              {progressLabel}
+            </span>
+          </div>
         ) : isGenerating ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-amber-50 dark:bg-amber-950/20">
             <Clock className="size-8 text-amber-500 animate-pulse" />
@@ -1266,6 +1347,22 @@ function ClassroomCard({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {resumable && !confirmingDelete && (
+          <div
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 z-[6]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Button
+              size="sm"
+              className="h-7 rounded-full px-3 text-xs shadow-md"
+              onClick={onResume}
+            >
+              <Play className="size-3 mr-1" />
+              Resume
+            </Button>
+          </div>
+        )}
 
         {isFailed && !confirmingDelete && (
           <div

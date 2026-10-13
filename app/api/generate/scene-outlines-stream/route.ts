@@ -288,6 +288,8 @@ export async function POST(req: NextRequest) {
 
           let parsedOutlines: SceneOutline[] = [];
           let lastError: string | undefined;
+          let lastFullText = '';
+          let lastFinishReason: string | undefined;
 
           for (let attempt = 1; attempt <= MAX_STREAM_RETRIES + 1; attempt++) {
             try {
@@ -317,6 +319,13 @@ export async function POST(req: NextRequest) {
                   });
                   controller.enqueue(encoder.encode(`data: ${event}\n\n`));
                 }
+              }
+
+              lastFullText = fullText;
+              try {
+                lastFinishReason = String(await result.finishReason);
+              } catch {
+                lastFinishReason = undefined;
               }
 
               // Validate: got outlines?
@@ -355,6 +364,96 @@ export async function POST(req: NextRequest) {
                 controller.enqueue(encoder.encode(`data: ${retryEvent}\n\n`));
                 continue;
               }
+            }
+          }
+
+          // Truncation recovery: deep courses produce long outlines, and a
+          // local model can hit its output/context limit mid-course. If the
+          // JSON array never closed (or the model reports a length stop), ask
+          // it to continue from the next scene instead of silently shipping
+          // a course with no ending.
+          const MAX_CONTINUATIONS = 2;
+          const looksTruncated = (text: string, finishReason?: string) =>
+            finishReason === 'length' || !/\]\s*(```)?\s*$/.test(text.trim());
+
+          for (
+            let continuation = 1;
+            continuation <= MAX_CONTINUATIONS &&
+            parsedOutlines.length > 0 &&
+            looksTruncated(lastFullText, lastFinishReason);
+            continuation++
+          ) {
+            log.warn(
+              `Outline looks truncated after ${parsedOutlines.length} scenes ` +
+                `(finishReason=${lastFinishReason ?? 'unknown'}); requesting continuation ${continuation}/${MAX_CONTINUATIONS}`,
+            );
+
+            const soFar = parsedOutlines
+              .map((o) => `${o.order}. [${o.type}] ${o.title}`)
+              .join('\n');
+            const continuationPrompt =
+              prompts.user +
+              `\n\n## CONTINUATION REQUEST\n` +
+              `Your previous output was cut off. These scenes already exist:\n${soFar}\n\n` +
+              `Output ONLY a JSON array containing the REMAINING scenes, starting at scene ${parsedOutlines.length + 1} ` +
+              `and continuing the same plan through to the course's final synthesis / capstone scene ` +
+              `(including finishing any running project). Do not repeat any existing scene. ` +
+              `Keep each teachingNotes concise (under 150 words) so the output completes.`;
+
+            try {
+              const contResult = streamLLM(
+                {
+                  model: languageModel,
+                  system: prompts.system,
+                  prompt: continuationPrompt,
+                  maxOutputTokens: modelInfo?.outputWindow,
+                },
+                'scene-outlines-stream-continuation',
+              );
+
+              const existingTitles = new Set(parsedOutlines.map((o) => o.title.trim().toLowerCase()));
+              let contText = '';
+              let contParsed = 0;
+              let added = 0;
+
+              for await (const chunk of contResult.textStream) {
+                contText += chunk;
+                const newOutlines = extractNewOutlines(contText, contParsed);
+                contParsed += newOutlines.length;
+
+                for (const outline of newOutlines) {
+                  if (existingTitles.has(String(outline.title).trim().toLowerCase())) continue;
+                  existingTitles.add(String(outline.title).trim().toLowerCase());
+
+                  const enriched = {
+                    ...outline,
+                    id: outline.id || nanoid(),
+                    order: parsedOutlines.length + 1,
+                  };
+                  parsedOutlines.push(enriched);
+                  added++;
+
+                  const event = JSON.stringify({
+                    type: 'outline',
+                    data: enriched,
+                    index: parsedOutlines.length - 1,
+                  });
+                  controller.enqueue(encoder.encode(`data: ${event}\n\n`));
+                }
+              }
+
+              lastFullText = contText;
+              try {
+                lastFinishReason = String(await contResult.finishReason);
+              } catch {
+                lastFinishReason = undefined;
+              }
+
+              log.info(`Outline continuation ${continuation} added ${added} scene(s)`);
+              if (added === 0) break;
+            } catch (error) {
+              log.warn('Outline continuation failed; keeping the scenes generated so far', error);
+              break;
             }
           }
 

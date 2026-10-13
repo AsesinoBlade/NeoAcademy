@@ -279,10 +279,12 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
           ? 'completed'
           : generationStatus === 'error'
             ? 'failed'
-            : generationStatus === 'generating' ||
-                generationStatus === 'paused'
+            : generationStatus === 'generating'
               ? 'generating'
-              : undefined;
+              : // 'paused' is set by the scene loop on both user pause and
+                // failure; the generation page persists the real outcome
+                // ('paused' or 'failed') itself, so keep the stored status.
+                undefined;
 
       try {
         const response = await fetch('/api/classroom', {

@@ -22,6 +22,7 @@ export async function POST(request: NextRequest) {
       status,
       error,
       requirement,
+      resumeSession,
     } = body;
 
     if (!stage || !Array.isArray(scenes)) {
@@ -58,6 +59,7 @@ export async function POST(request: NextRequest) {
         status,
         error,
         requirement,
+        resumeSession,
       },
       baseUrl,
     );

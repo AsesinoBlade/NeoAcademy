@@ -44,6 +44,7 @@ export function buildRequestOrigin(req: NextRequest): string {
 
 export type ClassroomPersistenceStatus =
   | 'generating'
+  | 'paused'
   | 'completed'
   | 'failed';
 
@@ -57,6 +58,12 @@ export interface PersistedClassroomData {
   status: ClassroomPersistenceStatus;
   error?: string;
   requirement?: string;
+  /**
+   * Snapshot of the generation session (requirements, parsed sources,
+   * outlines, research) so an unfinished class can be resumed after the
+   * browser or the computer has been closed. Cleared once completed.
+   */
+  resumeSession?: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +79,9 @@ export interface ClassroomHistoryItem {
   error?: string;
   requirement?: string;
   thumbnail?: Slide;
+  /** True when an unfinished class has enough saved state to be resumed. */
+  resumable: boolean;
+  totalScenes: number;
 }
 
 export function isValidClassroomId(id: string): boolean {
@@ -114,6 +124,7 @@ export async function persistClassroom(
     status?: ClassroomPersistenceStatus;
     error?: string;
     requirement?: string;
+    resumeSession?: unknown;
   },
   baseUrl: string,
 ): Promise<PersistedClassroomData & { url: string }> {
@@ -141,6 +152,10 @@ export async function persistClassroom(
         ? undefined
         : data.error ?? existing?.error,
     requirement: data.requirement ?? existing?.requirement,
+    resumeSession:
+      data.status === 'completed'
+        ? undefined
+        : data.resumeSession ?? existing?.resumeSession,
     createdAt:
       existing?.createdAt ||
       new Date(data.stage.createdAt || Date.now()).toISOString(),
@@ -206,6 +221,8 @@ export async function listClassrooms(): Promise<ClassroomHistoryItem[]> {
         error: classroom.error,
         requirement: classroom.requirement,
         thumbnail,
+        resumable: classroom.status !== 'completed' && !!classroom.resumeSession,
+        totalScenes: classroom.outlines?.length ?? 0,
       });
     } catch (error) {
       console.warn(

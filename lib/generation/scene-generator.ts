@@ -1674,10 +1674,47 @@ async function generateQuizContent(
   }
 
   log.debug(`Generating quiz content for: ${outline.title}`);
-  const response = await aiCall(prompts.system, prompts.user);
-  const generatedQuestions = parseJsonResponse<QuizQuestion[]>(response);
 
-  if (!generatedQuestions || !Array.isArray(generatedQuestions)) {
+  // Accept a bare array or a { questions: [...] } wrapper, and require at
+  // least one question with real text. Anything else (including the model
+  // inventing an error object such as {"status":"error",...}) is a miss.
+  const extractQuestions = (raw: string): QuizQuestion[] | null => {
+    const parsed = parseJsonResponse<unknown>(raw);
+    const list = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { questions?: unknown }).questions)
+        ? (parsed as { questions: unknown[] }).questions
+        : null;
+    if (!list) return null;
+    const valid = list.filter(
+      (q): q is QuizQuestion =>
+        !!q &&
+        typeof q === 'object' &&
+        typeof (q as { question?: unknown }).question === 'string' &&
+        (q as { question: string }).question.trim().length > 0,
+    );
+    return valid.length > 0 ? valid : null;
+  };
+
+  let response = await aiCall(prompts.system, prompts.user);
+  let generatedQuestions = extractQuestions(response);
+
+  if (!generatedQuestions) {
+    log.warn(
+      `Quiz response unusable for "${outline.title}" — retrying once. Excerpt: ` +
+        String(response).replace(/\s+/g, ' ').slice(0, 200),
+    );
+    const retrySystem =
+      prompts.system +
+      '\n\n## CRITICAL — previous attempt was rejected\n' +
+      'Your previous output was not a usable quiz. Do not output status or error objects, ' +
+      'and do not comment on the format. Output ONLY the JSON array of question objects ' +
+      'exactly as shown in the format section above.';
+    response = await aiCall(retrySystem, prompts.user);
+    generatedQuestions = extractQuestions(response);
+  }
+
+  if (!generatedQuestions) {
     const responseText =
       typeof response === 'string'
         ? response
@@ -2330,7 +2367,7 @@ function extractHtml(response: string): string | null {
 export async function generateSceneActions(
   ...args: Parameters<typeof generateSceneActionsUncapped>
 ): Promise<Action[]> {
-  const actions = await generateSceneActionsUncapped(...args);
+  const actions = removeRepeatedSpeech(await generateSceneActionsUncapped(...args), args[0].title);
   const ctx = args[3];
 
   if (isDiscussionAllowed(ctx)) {
@@ -2348,6 +2385,35 @@ export async function generateSceneActions(
     );
   }
   return capped;
+}
+
+/**
+ * Local models sometimes fall into a repetition loop, emitting the same one
+ * or two speech segments over and over (seen as 16 near-identical segments
+ * on one slide). Drop any speech whose opening matches an earlier speech on
+ * the same page — it would otherwise be narrated verbatim, repeatedly.
+ */
+function removeRepeatedSpeech(actions: Action[], title: string): Action[] {
+  const seen = new Set<string>();
+  let removed = 0;
+
+  const kept = actions.filter((action) => {
+    if (action.type !== 'speech') return true;
+    const text = (action as Action & { text?: string }).text ?? '';
+    const key = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!key) return true;
+    if (seen.has(key)) {
+      removed++;
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  if (removed > 0) {
+    log.warn(`Removed ${removed} repeated speech segment(s) from "${title}" (model repetition loop)`);
+  }
+  return kept;
 }
 
 async function generateSceneActionsUncapped(

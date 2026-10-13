@@ -169,6 +169,8 @@ These rules apply to the **primary learning objective** identified in the Requir
 
 Silently decide the full list of concrete sub-skills/techniques/features the course must actually teach (for "mental math": e.g. left-to-right addition, complements to 100/1000, subtraction by adding up, ×5/×25/×9/×11 shortcuts, doubling-halving, rounding-and-compensating, cross-multiplication for 2-digit × 2-digit, squaring numbers ending in 5, squaring near 50/100, difference of squares, divisibility rules, estimation and checking with casting out nines, memory/chunking strategies, a progressive drill plan). Go wide enough to be complete and then go deep on each item. Do not stop at naming categories.
 
+**Everything the user explicitly names is mandatory.** If the requirement lists specific techniques, features, tools, or deliverables (e.g. "X-Wing, Skyscraper, Crane, Finned Swordfish", or "build a multi-file C++ program with a Makefile"), each named item must get its own scene(s) with a full teaching arc — never merge two named items into one scene, never drop one to save space. Before outputting, check the requirement's list against your scene titles; if anything named is missing, add scenes for it. If the user asks for a project to be finished, the final scenes must actually finish and build it.
+
 ### Step 2 — Give each sub-skill a teaching arc
 
 Use these scene roles (the role is reflected in the title/description; the scene `type` is still `slide`, `quiz`, `interactive`, or `pbl`):
