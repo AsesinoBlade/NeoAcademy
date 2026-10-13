@@ -35,4 +35,5 @@ export const PROMPT_IDS = {
   BOOK_PLAN: 'book-plan',
   BOOK_CLAIMS: 'book-claims',
   BOOK_REVIEW: 'book-review',
+  BOOK_FIX_BUILD: 'book-fix-build',
 } as const;

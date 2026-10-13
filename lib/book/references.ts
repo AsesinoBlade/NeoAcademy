@@ -254,37 +254,140 @@ async function checkPython(claim: Claim): Promise<Evidence | null> {
   };
 }
 
-// ── Web search (cached) ────────────────────────────────────────────────────
+// ── Web search: official docs first, then the full page (cached) ─────────
+
+/** Official documentation sites, so web lookups hit the authoritative source. */
+const OFFICIAL_DOCS: Record<string, string> = {
+  cmake: 'cmake.org/cmake/help',
+  ctest: 'cmake.org/cmake/help',
+  cpack: 'cmake.org/cmake/help',
+  make: 'gnu.org/software/make/manual',
+  ninja: 'ninja-build.org',
+  git: 'git-scm.com/docs',
+  python: 'docs.python.org',
+  python3: 'docs.python.org',
+  pip: 'pip.pypa.io',
+  node: 'nodejs.org/docs',
+  npm: 'docs.npmjs.com',
+  gcc: 'gcc.gnu.org/onlinedocs',
+  'g++': 'gcc.gnu.org/onlinedocs',
+  clang: 'clang.llvm.org/docs',
+  'clang++': 'clang.llvm.org/docs',
+  docker: 'docs.docker.com',
+  cpp: 'en.cppreference.com',
+  'c++': 'en.cppreference.com',
+  typescript: 'typescriptlang.org/docs',
+  javascript: 'developer.mozilla.org',
+  rust: 'doc.rust-lang.org',
+  go: 'pkg.go.dev',
+  java: 'docs.oracle.com',
+  csharp: 'learn.microsoft.com/dotnet',
+  powershell: 'learn.microsoft.com/powershell',
+};
+
+async function cached<T>(key: string, producer: () => Promise<T>): Promise<T> {
+  const file = path.join(CACHE_DIR, `${createHash('sha1').update(key).digest('hex')}.json`);
+  try {
+    return JSON.parse(await fs.readFile(file, 'utf-8')) as T;
+  } catch {
+    const value = await producer();
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    await fs.writeFile(file, JSON.stringify(value), 'utf-8').catch(() => undefined);
+    return value;
+  }
+}
+
+async function search(query: string): Promise<Array<{ title: string; url: string; content: string }>> {
+  return cached(`search:${query}`, async () => {
+    const { webSearch } = await import('@/lib/web-search/search');
+    return (await webSearch(query, { maxResults: 4 })).map((r) => ({
+      title: r.title,
+      url: r.url,
+      content: (r.content || '').slice(0, 600),
+    }));
+  });
+}
+
+/** Fetch a page as plain text (scripts/styles/tags stripped). */
+async function fetchPageText(url: string): Promise<string> {
+  return cached(`page:${url}`, async () => {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NeoAcademy/1.0' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return '';
+    const html = (await res.text()).slice(0, 3_000_000);
+    return html
+      .replace(/<(script|style|nav|header|footer)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&#x27;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n');
+  });
+}
+
+/** The searchable core of an identifier: "$<LIST:REMOVE_ITEM,a,b>" → "$<LIST:REMOVE_ITEM". */
+function coreIdentifier(identifier: string): string {
+  const id = identifier.trim();
+  if (id.startsWith('$<')) return id.match(/^\$<[A-Z_]+(?::[A-Z_]+)?/)?.[0] ?? id;
+  return id.replace(/\(.*$/, '').split(/[\s=]/)[0];
+}
 
 async function checkWeb(claim: Claim): Promise<Evidence | null> {
-  const query = claim.query || `${claim.tool ?? ''} ${claim.identifier} documentation`.trim();
-  const cacheFile = path.join(CACHE_DIR, `web-${createHash('sha1').update(query).digest('hex')}.json`);
-  let results: Array<{ title: string; url: string; content: string }> | null = null;
+  const tool = (claim.tool || '').toLowerCase();
+  const domain = OFFICIAL_DOCS[tool];
+  const core = coreIdentifier(claim.identifier);
+
   try {
-    results = JSON.parse(await fs.readFile(cacheFile, 'utf-8'));
-  } catch {
-    try {
-      const { webSearch } = await import('@/lib/web-search/search');
-      results = (await webSearch(query, { maxResults: 3 })).map((r) => ({
-        title: r.title,
-        url: r.url,
-        content: (r.content || '').slice(0, 700),
-      }));
-      await fs.mkdir(CACHE_DIR, { recursive: true });
-      await fs.writeFile(cacheFile, JSON.stringify(results), 'utf-8');
-    } catch (error) {
-      log.warn(`Web search failed for "${query}":`, error);
-      return null;
+    // 1. Official documentation site first.
+    let results: Array<{ title: string; url: string; content: string }> = [];
+    if (domain && claim.kind !== 'fact') {
+      results = await search(`${core} site:${domain.split('/')[0]}`);
+      results = results.filter((r) => r.url.includes(domain.split('/')[0]));
     }
+    const official = results.length > 0;
+    // 2. Otherwise the model's own query.
+    if (!official) {
+      results = await search(claim.query || `${tool} ${core} documentation`.trim());
+    }
+    if (results.length === 0) return null;
+
+    // 3. Read the top pages themselves, not just the snippets, and look for
+    //    the identifier. Found on an official page = confirmed; absence on
+    //    the web is never treated as proof of non-existence.
+    for (const result of results.slice(0, 2)) {
+      const text = await fetchPageText(result.url).catch(() => '');
+      if (!text) continue;
+      const index = core.length >= 3 ? text.indexOf(core) : -1;
+      if (index >= 0) {
+        return {
+          claim,
+          verdict: official ? 'confirmed' : 'unknown',
+          source: 'web',
+          reference: result.url,
+          excerpt: text.slice(Math.max(0, index - 400), index + 900).trim(),
+        };
+      }
+    }
+
+    return {
+      claim,
+      verdict: 'unknown',
+      source: 'web',
+      reference: results.map((r) => r.url).join(' | '),
+      excerpt:
+        `"${core}" was not found on the top ${official ? 'official documentation' : 'search'} pages. Snippets:\n` +
+        results.map((r) => `[${r.title}] ${r.content}`).join('\n').slice(0, 1500),
+    };
+  } catch (error) {
+    log.warn(`Web lookup failed for "${claim.identifier}":`, error);
+    return null;
   }
-  if (!results || results.length === 0) return null;
-  return {
-    claim,
-    verdict: 'unknown',
-    source: 'web',
-    reference: results.map((r) => r.url).join(' | '),
-    excerpt: results.map((r) => `[${r.title}] ${r.content}`).join('\n').slice(0, 1800),
-  };
 }
 
 export async function gatherEvidence(

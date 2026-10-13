@@ -26,11 +26,17 @@ export async function POST(req: Request) {
 
     const apiKey = resolveWebSearchApiKey(clientApiKey);
     if (!apiKey) {
-      return apiError(
-        'MISSING_API_KEY',
-        400,
-        'Tavily API key is not configured. Set it in Settings → Web Search or set TAVILY_API_KEY env var.',
-      );
+      // No Tavily key: fall back to the unified client (Brave → SearXNG →
+      // DuckDuckGo) instead of failing the whole generation.
+      const { webSearch, formatSearchResultsForPrompt } = await import('@/lib/web-search/search');
+      const results = await webSearch(query.trim(), { maxResults: 6 });
+      return apiSuccess({
+        answer: '',
+        sources: results.map((r) => ({ title: r.title, url: r.url, content: r.content })),
+        context: formatSearchResultsForPrompt(results),
+        query: query.trim(),
+        responseTime: 0,
+      });
     }
 
     const result = await searchWithTavily({ query: query.trim(), apiKey });

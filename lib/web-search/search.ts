@@ -1,6 +1,7 @@
 /**
  * Unified web search client.
- * Tries providers in order: Tavily → Brave → DuckDuckGo (always free)
+ * Tries providers in order: Tavily → Brave → SearXNG (self-hosted, if
+ * SEARXNG_URL is set) → DuckDuckGo HTML results (free, no key).
  */
 
 import { createLogger } from '@/lib/logger';
@@ -22,8 +23,15 @@ export interface SearchOptions {
 /** Search using the best available provider */
 export async function webSearch(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
   const { maxResults = 5 } = opts;
-  const { getWebSearchConfig } = await import('@/lib/db/config');
-  const config = await getWebSearchConfig();
+  // Keys come from the settings DB; if it can't be read, carry on with the
+  // keyless providers (SearXNG / DuckDuckGo) rather than failing.
+  const noKeys = { tavily: { enabled: false, apiKey: '' }, brave: { enabled: false, apiKey: '' } };
+  const config = await import('@/lib/db/config')
+    .then((m) => m.getWebSearchConfig())
+    .catch((err) => {
+      log.warn('Web search settings unavailable, using keyless providers:', err);
+      return noKeys;
+    });
 
   // 1. Try Tavily
   if (config.tavily.enabled && config.tavily.apiKey) {
@@ -51,7 +59,33 @@ export async function webSearch(query: string, opts: SearchOptions = {}): Promis
     }
   }
 
-  // 3. DuckDuckGo (always available, no key needed)
+  // 3. SearXNG — self-hosted metasearch (e.g. docker run -p 8888:8080 searxng/searxng)
+  //    with the JSON format enabled in its settings.yml.
+  const searxngUrl = process.env.SEARXNG_URL?.trim();
+  if (searxngUrl) {
+    try {
+      const results = await searxngSearch(searxngUrl, query, maxResults);
+      if (results.length > 0) {
+        log.info(`Web search via SearXNG: ${results.length} results`);
+        return results;
+      }
+    } catch (err) {
+      log.warn('SearXNG search failed:', err);
+    }
+  }
+
+  // 4. DuckDuckGo HTML results (real web results, no key needed)
+  try {
+    const results = await duckduckgoHtmlSearch(query, maxResults);
+    if (results.length > 0) {
+      log.info(`Web search via DuckDuckGo: ${results.length} results`);
+      return results;
+    }
+  } catch (err) {
+    log.warn('DuckDuckGo HTML search failed:', err);
+  }
+
+  // 5. DuckDuckGo Instant Answers (encyclopedic summaries only)
   try {
     const results = await duckduckgoSearch(query, maxResults);
     log.info(`Web search via DuckDuckGo: ${results.length} results`);
@@ -122,6 +156,68 @@ async function braveSearch(
     url: r.url,
     content: r.description || '',
   }));
+}
+
+async function searxngSearch(baseUrl: string, query: string, maxResults: number): Promise<SearchResult[]> {
+  const url = new URL('/search', baseUrl);
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'json');
+  const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`SearXNG HTTP ${res.status} (is the json format enabled?)`);
+  const data = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> };
+  return (data.results || [])
+    .filter((r) => r.url)
+    .slice(0, maxResults)
+    .map((r) => ({ title: r.title || r.url!, url: r.url!, content: r.content || '' }));
+}
+
+const decodeEntities = (text: string) =>
+  text
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&mdash;/g, '—')
+    .replace(/&ndash;/g, '–')
+    .replace(/&hellip;/g, '…')
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code)))
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/** Parse DuckDuckGo's HTML results page (html.duckduckgo.com). Exported for tests. */
+export function parseDuckDuckGoHtml(html: string, maxResults: number): SearchResult[] {
+  const results: SearchResult[] = [];
+  const blocks = html.split(/<div[^>]+class="[^"]*\bresult\b[^"]*"/).slice(1);
+  for (const block of blocks) {
+    const link = block.match(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!link) continue;
+    let href = link[1].replace(/&amp;/g, '&');
+    const redirect = href.match(/[?&]uddg=([^&]+)/);
+    if (redirect) href = decodeURIComponent(redirect[1]);
+    if (href.startsWith('//')) href = `https:${href}`;
+    if (!/^https?:\/\//.test(href) || /duckduckgo\.com\/y\.js/.test(href)) continue; // skip ads
+    const snippet = block.match(/class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div|td)>/);
+    results.push({ title: decodeEntities(link[2]), url: href, content: snippet ? decodeEntities(snippet[1]) : '' });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+async function duckduckgoHtmlSearch(query: string, maxResults: number): Promise<SearchResult[]> {
+  const res = await fetch('https://html.duckduckgo.com/html/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NeoAcademy/1.0',
+    },
+    body: new URLSearchParams({ q: query }).toString(),
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`DuckDuckGo HTML HTTP ${res.status}`);
+  return parseDuckDuckGoHtml(await res.text(), maxResults);
 }
 
 async function duckduckgoSearch(query: string, maxResults: number): Promise<SearchResult[]> {

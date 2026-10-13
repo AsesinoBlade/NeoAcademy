@@ -191,6 +191,34 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   if (words > 0)
     ctx.logProgress(`[Ebook] Writing complete (+${words.toLocaleString()} words this run)`);
 
+  // Build verification: compile/test the appendix project and fix it (needs
+  // the LLM, so it runs before the model is unloaded).
+  if (plan.hasProject) {
+    if (signal.aborted) throw abortError();
+    ctx.setStatus('Verifying that the project builds...');
+    ctx.logProgress('[Ebook] Building and testing the project');
+    try {
+      const report = await postJson<{
+        status: string;
+        reason?: string;
+        skipped?: boolean;
+        fixRounds?: unknown[];
+        fixedFiles?: Array<{ path: string }>;
+      }>('/api/generate/book-verify', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+      if (!report.skipped) {
+        ctx.logProgress(
+          `[Ebook] Build verification ${report.status}` +
+            (report.fixedFiles?.length ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}` : '') +
+            (report.reason ? ` (${report.reason})` : ''),
+        );
+      }
+    } catch (error) {
+      if (signal.aborted) throw abortError();
+      // Verification is advisory: never fail the book because of it.
+      ctx.logProgress(`[Ebook] Build verification could not run: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   // 3. Pictures — separate phase so the LLM and ComfyUI never share VRAM.
   await fetch('/api/unload-local-llm', { method: 'POST' }).catch(() => undefined);
 

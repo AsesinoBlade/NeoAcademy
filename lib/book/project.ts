@@ -165,3 +165,31 @@ export async function buildProjectContext(
         (listed.length ? `\n\nOther existing files (content omitted for length):\n${listed.join('\n')}` : ''),
   ].join('\n\n');
 }
+
+/**
+ * Apply files corrected by build verification. The index keeps the section
+ * that last showed each file (so the fix can be written back into that
+ * section); brand-new files are attributed to "verify".
+ */
+export async function applyVerifiedFiles(
+  bookId: string,
+  files: Array<{ path: string; content: string }>,
+): Promise<Array<{ path: string; sectionId: string | null }>> {
+  const index = await readIndex(bookId);
+  const applied: Array<{ path: string; sectionId: string | null }> = [];
+  for (const file of files) {
+    const target = path.join(projectDir(bookId), file.path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, file.content, 'utf-8');
+    const previous = index[file.path];
+    index[file.path] = {
+      sectionId: previous?.sectionId ?? 'verify',
+      updatedAt: new Date().toISOString(),
+      lines: file.content.split('\n').length,
+    };
+    applied.push({ path: file.path, sectionId: previous && previous.sectionId !== 'verify' ? previous.sectionId : null });
+  }
+  await fs.mkdir(projectDir(bookId), { recursive: true });
+  await fs.writeFile(indexPath(bookId), JSON.stringify(index, null, 2), 'utf-8');
+  return applied;
+}

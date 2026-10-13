@@ -192,6 +192,23 @@ function nodeModuleFile(...segments: string[]): string {
   return path.join(process.cwd(), 'node_modules', ...segments);
 }
 
+/** One honest line about whether the appendix project was build-verified. */
+async function verificationNote(bookId: string): Promise<string> {
+  const { verifyReportPath } = await import('./verify');
+  const report = await fs
+    .readFile(verifyReportPath(bookId), 'utf-8')
+    .then((t) => JSON.parse(t) as import('./verify').VerifyReport)
+    .catch(() => null);
+  if (!report || report.status === 'skipped') return '';
+  const date = new Date(report.verifiedAt).toLocaleDateString('en-IE', { day: 'numeric', month: 'long', year: 'numeric' });
+  const tools = report.toolchain.length ? ` with ${escapeHtml(report.toolchain.join(', '))}` : '';
+  const ran = report.steps.filter((s) => s.status !== 'skipped').map((s) => `<code>${escapeHtml(s.command)}</code>`);
+  if (report.status === 'passed') {
+    return `<blockquote class="callout callout-tip"><p><strong class="callout-label">Verified</strong> These files were built and tested automatically on ${date}${tools}: ${ran.join(', ')}.</p></blockquote>`;
+  }
+  return `<blockquote class="callout callout-warning"><p><strong class="callout-label">Not verified</strong> Automatic build verification on ${date} did not pass (${escapeHtml(report.reason || 'build failed')}). Check the build output carefully when you build this project.</p></blockquote>`;
+}
+
 export interface RenderedBook {
   html: string;
   sectionCount: number;
@@ -290,6 +307,7 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
         </header>
         <section class="book-section">
           <h2>Build and run</h2>
+          ${await verificationNote(book.id)}
           <p>${escapeHtml(spec.buildSystem)}. From the project root:</p>
           ${await renderFence('bash', spec.buildCommands.join('\n'), ctx)}
           <h2>Files</h2>
