@@ -1,7 +1,18 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { Bot, Check, ChevronLeft, Globe, Paperclip, FileText, X, Globe2 } from 'lucide-react';
+import {
+  Bot,
+  Check,
+  ChevronLeft,
+  Globe,
+  Paperclip,
+  FileText,
+  X,
+  Globe2,
+  ListChecks,
+} from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Select,
@@ -32,6 +43,9 @@ export interface GenerationToolbarProps {
   onLanguageChange: (lang: 'en-US') => void;
   webSearch: boolean;
   onWebSearchChange: (v: boolean) => void;
+  /** Pause after the outline for review / revision before generating scenes. */
+  reviewOutline: boolean;
+  onReviewOutlineChange: (v: boolean) => void;
   onSettingsOpen: (section?: SettingsSection) => void;
   // PDF
   pdfFiles: File[];
@@ -45,6 +59,8 @@ export function GenerationToolbar({
   onLanguageChange,
   webSearch,
   onWebSearchChange,
+  reviewOutline,
+  onReviewOutlineChange,
   onSettingsOpen,
   pdfFiles,
   onPdfFilesChange,
@@ -513,6 +529,30 @@ export function GenerationToolbar({
           <TooltipContent>{t('toolbar.webSearchNoProvider')}</TooltipContent>
         </Tooltip>
       )}
+
+      {/* ── Pause for outline review ── */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <label
+            htmlFor="review-outline-switch"
+            className={cn(reviewOutline ? pillActive : pillMuted, 'cursor-pointer select-none')}
+          >
+            <ListChecks className="size-3.5" />
+            <span>Review outline</span>
+            <Switch
+              id="review-outline-switch"
+              checked={reviewOutline}
+              onCheckedChange={onReviewOutlineChange}
+              className="scale-75 -mr-1"
+              aria-label="Pause for outline review"
+            />
+          </label>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64">
+          Pause for outline review: stop after the outline is generated so you can edit it or
+          revise it with notes before the class is built. Turn off for unattended generation.
+        </TooltipContent>
+      </Tooltip>
 
       {/* ── Separator ── */}
       <div className="w-px h-4 bg-border/60 mx-1" />

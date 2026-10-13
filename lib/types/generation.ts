@@ -102,6 +102,12 @@ export interface UserRequirements {
   userNickname?: string; // Student nickname for personalization
   userBio?: string; // Student background for personalization
   webSearch?: boolean; // Enable web search for richer context
+  /**
+   * Pause after the outline so the learner can edit / revise it before scene
+   * generation. Stored per class so a resumed generation keeps the choice.
+   * Undefined (older sessions) behaves as enabled.
+   */
+  reviewOutline?: boolean;
 }
 
 /**

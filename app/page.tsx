@@ -55,6 +55,7 @@ import { SpeechButton } from '@/components/audio/speech-button';
 const log = createLogger('Home');
 
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
+const REVIEW_OUTLINE_STORAGE_KEY = 'outlineReviewEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -103,6 +104,7 @@ interface FormState {
   requirement: string;
   language: 'en-US';
   webSearch: boolean;
+  reviewOutline: boolean;
 }
 
 const initialFormState: FormState = {
@@ -110,6 +112,7 @@ const initialFormState: FormState = {
   requirement: '',
   language: 'en-US',
   webSearch: false,
+  reviewOutline: true,
 };
 
 function HomePage() {
@@ -165,6 +168,9 @@ function HomePage() {
       const savedLanguage = localStorage.getItem(LANGUAGE_STORAGE_KEY);
       const updates: Partial<FormState> = {};
       if (savedWebSearch === 'true') updates.webSearch = true;
+      if (localStorage.getItem(REVIEW_OUTLINE_STORAGE_KEY) === 'false') {
+        updates.reviewOutline = false;
+      }
       updates.language = 'en-US';
       if (Object.keys(updates).length > 0) {
         setForm((prev) => ({ ...prev, ...updates }));
@@ -445,6 +451,9 @@ function HomePage() {
     setForm((prev) => ({ ...prev, [field]: value }));
     try {
       if (field === 'webSearch') localStorage.setItem(WEB_SEARCH_STORAGE_KEY, String(value));
+      if (field === 'reviewOutline') {
+        localStorage.setItem(REVIEW_OUTLINE_STORAGE_KEY, String(value));
+      }
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -473,6 +482,7 @@ function HomePage() {
         userNickname: userProfile.nickname || undefined,
         userBio: userProfile.bio || undefined,
         webSearch: form.webSearch || undefined,
+        reviewOutline: form.reviewOutline,
       };
 
       let pdfDocuments:
@@ -720,6 +730,8 @@ function HomePage() {
                   onLanguageChange={(lang) => updateForm('language', lang)}
                   webSearch={form.webSearch}
                   onWebSearchChange={(v) => updateForm('webSearch', v)}
+                  reviewOutline={form.reviewOutline}
+                  onReviewOutlineChange={(v) => updateForm('reviewOutline', v)}
                   onSettingsOpen={() => {}}
                   pdfFiles={form.pdfFiles}
                   onPdfFilesChange={(files) => updateForm('pdfFiles', files)}

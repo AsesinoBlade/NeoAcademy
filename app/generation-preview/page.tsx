@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, Suspense, useRef } from 'react';
+import { useCallback, useEffect, useState, Suspense, useRef } from 'react';
 
 import { generateTTSForScene, useSceneGenerator } from '@/lib/hooks/use-scene-generator';
 import { logGenerationProgress } from '@/lib/generation/progress-log';
@@ -54,6 +54,11 @@ import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { applyDiagramAnnotationsToScene } from '@/lib/generation/diagram-annotations';
 import type { MediaGenerationRequest } from '@/lib/media/types';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
+import {
+  OutlineReviewPanel,
+  renumberOutlines,
+  type OutlineReviewDecision,
+} from './components/outline-review';
 import { StepVisualizer } from './components/visualizers';
 
 const log = createLogger('GenerationPreview');
@@ -3354,6 +3359,59 @@ function GenerationPreviewContent() {
   const pauseRequestedRef = useRef(false);
   const [isPausing, setIsPausing] = useState(false);
 
+  // Outline review step: generation awaits the learner's decision.
+  const [outlineReview, setOutlineReview] = useState<SceneOutline[] | null>(null);
+  const outlineReviewResolveRef = useRef<((decision: OutlineReviewDecision) => void) | null>(
+    null,
+  );
+  // Latest hand edits, kept so a Pause during review doesn't lose them.
+  const outlineReviewDraftRef = useRef<SceneOutline[] | null>(null);
+
+  const handleOutlineDraftChange = useCallback((draft: SceneOutline[]) => {
+    outlineReviewDraftRef.current = draft;
+  }, []);
+
+  const requestOutlineReview = (outlines: SceneOutline[], signal: AbortSignal) =>
+    new Promise<OutlineReviewDecision>((resolve, reject) => {
+      outlineReviewDraftRef.current = outlines;
+
+      const onAbort = () => {
+        // Keep any hand edits so resuming reopens the review with them.
+        const draft = outlineReviewDraftRef.current;
+        if (draft?.length) {
+          try {
+            const raw = sessionStorage.getItem('generationSession');
+            if (raw) {
+              const saved = JSON.parse(raw) as GenerationSessionState;
+              sessionStorage.setItem(
+                'generationSession',
+                JSON.stringify({ ...saved, sceneOutlines: renumberOutlines(draft) }),
+              );
+            }
+          } catch {
+            /* best effort */
+          }
+        }
+        outlineReviewResolveRef.current = null;
+        setOutlineReview(null);
+        reject(new DOMException('Generation aborted', 'AbortError'));
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      outlineReviewResolveRef.current = (decision) => {
+        signal.removeEventListener('abort', onAbort);
+        outlineReviewResolveRef.current = null;
+        setOutlineReview(null);
+        resolve({ ...decision, outlines: renumberOutlines(decision.outlines) });
+      };
+      setOutlineReview(outlines);
+    });
+
   const [session, setSession] = useState<GenerationSessionState | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4736,19 +4794,13 @@ function GenerationPreviewContent() {
       }
 
       // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Generate outlines (with agent personas for teacher context) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
-      let outlines = currentSession.sceneOutlines;
-      if (isResume && (!outlines || outlines.length === 0)) {
-        const storedOutlines = useStageStore.getState().outlines;
-        if (storedOutlines.length > 0) outlines = storedOutlines;
-      }
-
-      const outlineStepIdx = activeSteps.findIndex((s) => s.id === 'outline');
-      setCurrentStepIndex(outlineStepIdx >= 0 ? outlineStepIdx : 0);
-      if (!outlines || outlines.length === 0) {
-        log.debug('=== Generating outlines (SSE) ===');
-        setStreamingOutlines([]);
-
-        outlines = await new Promise<SceneOutline[]>((resolve, reject) => {
+      // Streams an outline from the server; with `revision`, the server
+      // revises the given outline according to the learner's notes.
+      const streamOutlines = (revision?: {
+        previousOutlines: SceneOutline[];
+        feedback: string;
+      }) =>
+        new Promise<SceneOutline[]>((resolve, reject) => {
           const collected: SceneOutline[] = [];
 
           fetch('/api/generate/scene-outlines-stream', {
@@ -4761,6 +4813,7 @@ function GenerationPreviewContent() {
               imageMapping,
               researchContext: currentSession.researchContext,
               agents,
+              revision,
             }),
             signal,
           })
@@ -4826,6 +4879,20 @@ function GenerationPreviewContent() {
             .catch(reject);
         });
 
+      let outlines = currentSession.sceneOutlines;
+      if (isResume && (!outlines || outlines.length === 0)) {
+        const storedOutlines = useStageStore.getState().outlines;
+        if (storedOutlines.length > 0) outlines = storedOutlines;
+      }
+
+      const outlineStepIdx = activeSteps.findIndex((s) => s.id === 'outline');
+      setCurrentStepIndex(outlineStepIdx >= 0 ? outlineStepIdx : 0);
+      if (!outlines || outlines.length === 0) {
+        log.debug('=== Generating outlines (SSE) ===');
+        setStreamingOutlines([]);
+
+        outlines = await streamOutlines();
+
         const updatedSession = { ...currentSession, sceneOutlines: outlines };
         setSession(updatedSession);
         sessionStorage.setItem('generationSession', JSON.stringify(updatedSession));
@@ -4839,6 +4906,50 @@ function GenerationPreviewContent() {
 
         // Brief pause to let user see the final outline state
         await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+
+      // ── Outline review ────────────────────────────────────────────────
+      // Stop and let the learner check, hand-edit, or revise the outline
+      // (with notes) before the long scene-generation run. Skipped when
+      // resuming a class that already has completed scenes.
+      const resumeHasScenes =
+        isResume &&
+        useStageStore.getState().stage?.id === stage.id &&
+        useStageStore.getState().scenes.length > 0;
+
+      const saveOutlinesToSession = (next: SceneOutline[]) => {
+        currentSession = { ...currentSession, sceneOutlines: next };
+        setSession(currentSession);
+        sessionStorage.setItem('generationSession', JSON.stringify(currentSession));
+      };
+
+      const reviewOutlineEnabled = currentSession.requirements.reviewOutline !== false;
+
+      if (outlines && outlines.length > 0 && !resumeHasScenes && reviewOutlineEnabled) {
+        for (;;) {
+          setStatusMessage('');
+          const decision = await requestOutlineReview(outlines, signal);
+          outlines = decision.outlines;
+          saveOutlinesToSession(outlines);
+
+          if (decision.action === 'generate') {
+            logGenerationProgress(
+              `[Generation] Outline approved: ${outlines.length} scenes`,
+            );
+            break;
+          }
+
+          logGenerationProgress(
+            `[Generation] Revising outline with notes: ${decision.feedback.slice(0, 120)}`,
+          );
+          setStatusMessage('Revising the outline with your notes...');
+          setStreamingOutlines([]);
+          outlines = await streamOutlines({
+            previousOutlines: outlines,
+            feedback: decision.feedback,
+          });
+          saveOutlinesToSession(outlines);
+        }
       }
 
       // Move to scene generation step
@@ -5904,6 +6015,16 @@ function GenerationPreviewContent() {
           style={{ animationDuration: '6s' }}
         />
       </div>
+
+      {outlineReview && (
+        <OutlineReviewPanel
+          outlines={outlineReview}
+          onDraftChange={handleOutlineDraftChange}
+          onDecision={(decision) => outlineReviewResolveRef.current?.(decision)}
+          onPause={pauseGeneration}
+          isPausing={isPausing}
+        />
+      )}
 
       {/* Back button */}
       <motion.div

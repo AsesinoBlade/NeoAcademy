@@ -147,14 +147,20 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Requirements are required');
     }
 
-    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents } = body as {
-      requirements: UserRequirements;
-      pdfText?: string;
-      pdfImages?: PdfImage[];
-      imageMapping?: ImageMapping;
-      researchContext?: string;
-      agents?: AgentInfo[];
-    };
+    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision } =
+      body as {
+        requirements: UserRequirements;
+        pdfText?: string;
+        pdfImages?: PdfImage[];
+        imageMapping?: ImageMapping;
+        researchContext?: string;
+        agents?: AgentInfo[];
+        /** Revise an existing outline according to the user's notes. */
+        revision?: {
+          previousOutlines: SceneOutline[];
+          feedback: string;
+        };
+      };
 
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
@@ -232,6 +238,38 @@ export async function POST(req: NextRequest) {
 
     if (!prompts) {
       return apiError('INTERNAL_ERROR', 500, 'Prompt template not found');
+    }
+
+    // Revision mode: the user reviewed (and possibly hand-edited) an outline
+    // and wrote notes. Give the model the current outline plus the notes and
+    // ask for a full revised outline — keeping what the notes don't touch.
+    if (revision?.previousOutlines?.length && revision.feedback?.trim()) {
+      const currentOutline = revision.previousOutlines.map((outline, index) => ({
+        order: index + 1,
+        type: outline.type,
+        title: outline.title,
+        description: outline.description,
+        keyPoints: outline.keyPoints,
+        teachingNotes: outline.teachingNotes,
+        ...(outline.quizConfig ? { quizConfig: outline.quizConfig } : {}),
+        ...(outline.mediaGenerations?.length ? { mediaGenerations: outline.mediaGenerations } : {}),
+      }));
+
+      prompts.user +=
+        `\n\n## REVISION REQUEST (highest priority)\n\n` +
+        `You already produced an outline for this course, and the learner has reviewed it ` +
+        `(some scenes may have been edited, reordered or deleted by hand — treat the version below as the current state).\n\n` +
+        `### Current outline\n\n\`\`\`json\n${JSON.stringify(currentOutline, null, 2)}\n\`\`\`\n\n` +
+        `### Learner's notes\n\n${revision.feedback.trim()}\n\n` +
+        `### How to revise\n\n` +
+        `- Apply every note fully: add, split, merge, reorder, deepen or remove scenes as the notes require.\n` +
+        `- Keep scenes the notes do not affect, including their hand-edited wording, unless a change elsewhere requires adjusting them (e.g. renumbering, updated cross-references).\n` +
+        `- All the depth and format rules above still apply to new or changed scenes.\n` +
+        `- Output the COMPLETE revised outline as one JSON array (every scene, not just the changed ones).`;
+
+      log.info(
+        `Revising outline (${revision.previousOutlines.length} scenes) with notes: "${revision.feedback.trim().slice(0, 120)}"`,
+      );
     }
 
     log.info(
