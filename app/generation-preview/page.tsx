@@ -55,6 +55,8 @@ import { applyDiagramAnnotationsToScene } from '@/lib/generation/diagram-annotat
 import type { MediaGenerationRequest } from '@/lib/media/types';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import { runEbookGeneration } from './ebook-runner';
+import { PreflightPanel, type PreflightDecision } from './components/preflight-panel';
+import type { PreflightResult } from '@/lib/book/preflight';
 import {
   OutlineReviewPanel,
   renumberOutlines,
@@ -3369,6 +3371,88 @@ function GenerationPreviewContent() {
   // Latest hand edits, kept so a Pause during review doesn't lose them.
   const outlineReviewDraftRef = useRef<SceneOutline[] | null>(null);
 
+  // Preflight: generation waits here when a dependency is missing.
+  const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
+  const [preflightChecking, setPreflightChecking] = useState(false);
+  const preflightResolveRef = useRef<((decision: PreflightDecision) => void) | null>(null);
+
+  const requestPreflightDecision = (result: PreflightResult, signal: AbortSignal) =>
+    new Promise<PreflightDecision>((resolve, reject) => {
+      const onAbort = () => {
+        preflightResolveRef.current = null;
+        setPreflightResult(null);
+        reject(new DOMException('Generation aborted', 'AbortError'));
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      preflightResolveRef.current = (decision) => {
+        signal.removeEventListener('abort', onAbort);
+        preflightResolveRef.current = null;
+        resolve(decision);
+      };
+      setPreflightChecking(false);
+      setPreflightResult(result);
+    });
+
+  /**
+   * Check dependencies; if anything is missing, show what and how to fix it
+   * and wait: "Check again" re-runs the checks, "Continue" proceeds (only
+   * when nothing required is missing), "Pause" saves the book for later.
+   */
+  const preflightGate = async (
+    stage: 'start' | 'project',
+    options: { bookId?: string; mode?: 'class' | 'ebook'; factCheck: boolean; webSearch: boolean },
+    signal: AbortSignal,
+  ) => {
+    for (;;) {
+      let result: PreflightResult;
+      try {
+        const response = await fetch('/api/generate/book-preflight', {
+          method: 'POST',
+          headers: { ...getApiHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stage, ...options }),
+          signal,
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.error || 'Preflight failed');
+        result = data as PreflightResult;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // The checker itself failing must not block generation.
+        log.warn('[Generation] Preflight check could not run:', error);
+        setPreflightResult(null);
+        return;
+      }
+
+      if (result.issues === 0) {
+        setPreflightResult(null);
+        return;
+      }
+      logGenerationProgress(
+        `[Generation] Preflight (${stage}): ${result.checks
+          .filter((c) => c.status !== 'ok')
+          .map((c) => `${c.label} ${c.status}`)
+          .join(', ')}`,
+      );
+
+      const decision = await requestPreflightDecision(result, signal);
+      if (decision === 'continue' && !result.blocking) {
+        setPreflightResult(null);
+        logGenerationProgress('[Generation] Continuing without the missing optional tools');
+        return;
+      }
+      if (decision === 'pause') {
+        setPreflightResult(null);
+        pauseGeneration();
+        throw new DOMException('Generation paused', 'AbortError');
+      }
+      setPreflightChecking(true);
+    }
+  };
+
   const handleOutlineDraftChange = useCallback((draft: SceneOutline[]) => {
     outlineReviewDraftRef.current = draft;
   }, []);
@@ -3673,6 +3757,23 @@ function GenerationPreviewContent() {
         if (signal.aborted || pauseRequestedRef.current) return;
         void persistGenerationState('generating').catch(() => undefined);
       }, 5 * 60 * 1000);
+
+      // Before any LLM work: make sure ComfyUI is not holding the GPU (both
+      // modes), and for ebooks check packages / PDF browser / ComfyUI setup /
+      // web search, so a missing dependency is reported immediately.
+      setStatusMessage(
+        isEbook ? 'Checking that everything the book needs is installed...' : 'Checking the GPU is free...',
+      );
+      await preflightGate(
+        'start',
+        {
+          mode: isEbook ? 'ebook' : 'class',
+          factCheck: !!currentSession.requirements.factCheck,
+          webSearch: !!currentSession.requirements.webSearch,
+        },
+        signal,
+      );
+      setStatusMessage('');
       // Compute active steps for this session (recomputed after session mutations)
 
       // Keep Docker/Kokoro/Whisper out of memory while Ollama performs
@@ -5007,6 +5108,16 @@ function GenerationPreviewContent() {
           imageGenerationEnabled: !!useSettingsStore.getState().imageGenerationEnabled,
           factCheck: !!currentSession.requirements.factCheck,
           webSearch: !!currentSession.requirements.webSearch,
+          preflightProject: () =>
+            preflightGate(
+              'project',
+              {
+                bookId: stage.id,
+                factCheck: !!currentSession.requirements.factCheck,
+                webSearch: !!currentSession.requirements.webSearch,
+              },
+              signal,
+            ),
           onTitle: async (title, subtitle) => {
             stage.name = title;
             if (subtitle) stage.description = subtitle;
@@ -6091,6 +6202,14 @@ function GenerationPreviewContent() {
           style={{ animationDuration: '6s' }}
         />
       </div>
+
+      {preflightResult && (
+        <PreflightPanel
+          result={preflightResult}
+          checking={preflightChecking}
+          onDecision={(decision) => preflightResolveRef.current?.(decision)}
+        />
+      )}
 
       {outlineReview && (
         <OutlineReviewPanel

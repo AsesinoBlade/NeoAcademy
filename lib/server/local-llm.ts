@@ -207,3 +207,52 @@ export async function unloadAllLocalOllamaModels(): Promise<UnloadLocalLlmResult
     };
   }
 }
+/**
+ * Make sure no Ollama model is resident in GPU memory — required before
+ * ComfyUI starts, because the LLM and ComfyUI cannot share the GPU.
+ *
+ * Unloads all models, then confirms via /api/ps, retrying for a while
+ * (Ollama frees VRAM asynchronously, and another client may have just
+ * re-loaded a model). Non-local LLM setups are reported as clear.
+ */
+export async function ensureNoResidentOllamaModels(
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<{ clear: boolean; remaining: Array<{ name: string; vramGb: number }>; message?: string }> {
+  const attempts = options.attempts ?? 5;
+  const delayMs = options.delayMs ?? 3000;
+  const baseUrl = process.env.OPENAI_BASE_URL || '';
+  const isLocalOllama = baseUrl.includes('127.0.0.1:11434') || baseUrl.includes('localhost:11434');
+
+  let remaining: Array<{ name: string; vramGb: number }> = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (isLocalOllama) await unloadAllLocalOllamaModels();
+    try {
+      const response = await fetch('http://127.0.0.1:11434/api/ps', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) {
+        return { clear: false, remaining: [], message: `Could not query Ollama (/api/ps ${response.status}).` };
+      }
+      const payload = (await response.json()) as {
+        models?: Array<{ name?: string; model?: string; size_vram?: number }>;
+      };
+      remaining = (payload.models ?? []).map((m) => ({
+        name: m.name || m.model || 'unknown',
+        vramGb: Math.round(((m.size_vram ?? 0) / 1024 ** 3) * 10) / 10,
+      }));
+    } catch {
+      // Ollama not running at all: nothing can be resident.
+      return { clear: true, remaining: [] };
+    }
+    if (remaining.length === 0) return { clear: true, remaining };
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return {
+    clear: false,
+    remaining,
+    message:
+      `Ollama still has ${remaining.map((m) => `${m.name}${m.vramGb ? ` (${m.vramGb} GB VRAM)` : ''}`).join(', ')} ` +
+      'loaded after repeated unload attempts.',
+  };
+}

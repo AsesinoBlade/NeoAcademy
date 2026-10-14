@@ -80,6 +80,12 @@ function runTool(tool: string, args: string[], timeoutMs = 15000): Promise<strin
 }
 
 const toolAvailability = new Map<string, Promise<boolean>>();
+
+/** Forget cached tool lookups and outputs (after PATH changes). */
+export function resetReferenceToolCaches(): void {
+  toolAvailability.clear();
+  memoryCache.clear();
+}
 function toolAvailable(tool: string): Promise<boolean> {
   if (!TOOL_ALLOWLIST.has(tool)) return Promise.resolve(false);
   if (!toolAvailability.has(tool)) {

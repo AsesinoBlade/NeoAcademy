@@ -93,6 +93,11 @@ function run(
 }
 
 const availability = new Map<string, Promise<boolean>>();
+
+/** Forget cached tool lookups (after PATH changes). */
+export function resetVerifyToolCaches(): void {
+  availability.clear();
+}
 export function toolAvailable(tool: string): Promise<boolean> {
   if (!availability.has(tool)) {
     const probe = tool === 'cl' ? [tool] : [tool, '--version'];
@@ -142,6 +147,25 @@ export interface VerifyRunResult {
   steps: VerifyStep[];
   failedStep?: VerifyStep;
   toolchain: string[];
+}
+
+/** Test commands (run only in the final verification, not at chapter checkpoints). */
+export function isTestCommand(command: string): boolean {
+  const program = splitArgs(command)[0] ?? '';
+  return /^(ctest|pytest)$/i.test(program) || /\b(test|tests|check)\b/.test(command.split(/\s+/).slice(1).join(' '));
+}
+
+/** The file a build command needs before it can run at all. */
+export function rootBuildFile(commands: string[]): string | null {
+  for (const command of commands) {
+    const program = (splitArgs(command)[0] ?? '').toLowerCase();
+    if (program === 'cmake' && !command.includes('--build') && !command.includes('--install')) return 'CMakeLists.txt';
+    if (program === 'make' || program === 'mingw32-make') return 'Makefile';
+    if (program === 'npm' || program === 'npx') return 'package.json';
+    if (program === 'cargo') return 'Cargo.toml';
+    if (program === 'meson') return 'meson.build';
+  }
+  return null;
 }
 
 /** Copy the project into a fresh workspace and run its build commands. */

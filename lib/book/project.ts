@@ -48,12 +48,45 @@ export function safeProjectPath(raw: string): string | null {
   return normalised;
 }
 
-const FILE_HEADER_RE = /^\s*(?:\/\/|#|--|;|%|<!--|\/\*)\s*File:\s*([^\s*>]+)/i;
+const FILE_HEADER_RE = /^\s*(?:\/\/|#|--|;|%|<!--|\/\*)\s*File:\s*([^\s*>]+)(.*)$/i;
 
-/** Complete project files declared in a section's code blocks. */
-export function extractProjectFiles(markdown: string): Array<{ path: string; content: string }> {
+/** Header text after the path that marks a partial listing, e.g. "(excerpt)". */
+const PARTIAL_HEADER_RE =
+  /\(|excerpt|partial|snippet|abridged|simplified|fragment|continued|portion|changes|diff|example|illustrat|before|after/i;
+
+/** Placeholder lines meaning "the rest is elided": `// ...`, `# ... existing code`, `…`. */
+const PLACEHOLDER_RE = /^\s*(?:(?:\/\/|#|--|;|\/\*|<!--)\s*)?(?:\.\.\.|…)(?:\s|$)/m;
+
+/** Generated / build-tree paths are never project source files. */
+const GENERATED_PATH_RE =
+  /(^|\/)(build|out|bin|obj|cmake-build-[^/]+|node_modules|\.cache)\/|(^|\/)CMakeFiles\/|CMakeCache\.txt$|\.(o|obj|a|lib|so|dll|exe)$/i;
+
+export interface FileBlockDecision {
+  path: string;
+  accepted: boolean;
+  reason?: string;
+}
+
+/**
+ * Complete project files declared in a section's code blocks.
+ *
+ * A block becomes a project file only if: its first line is a `File: <path>`
+ * header with nothing after the path suggesting a partial listing; it has no
+ * placeholder lines (`// ...`); its path is not a generated/build artefact;
+ * and — when `allowedPaths` is given (the project spec) — the path is one of
+ * the spec's files. Everything else is illustration, not project state.
+ */
+export function extractProjectFilesDetailed(
+  markdown: string,
+  allowedPaths?: string[],
+): { files: Array<{ path: string; content: string }>; decisions: FileBlockDecision[] } {
+  const allowed = allowedPaths
+    ? new Set(allowedPaths.map((p) => (safeProjectPath(p) ?? p).toLowerCase()))
+    : null;
   const files: Array<{ path: string; content: string }> = [];
+  const decisions: FileBlockDecision[] = [];
   const fenceRe = /^([ \t]*)```[^\n]*\n([\s\S]*?)\n[ \t]*```[ \t]*$/gm;
+
   for (const match of markdown.matchAll(fenceRe)) {
     const indent = match[1];
     const body = indent
@@ -67,9 +100,37 @@ export function extractProjectFiles(markdown: string): Array<{ path: string; con
     if (!header) continue;
     const filePath = safeProjectPath(header[1]);
     if (!filePath) continue;
+
+    const reject = (reason: string) => decisions.push({ path: filePath, accepted: false, reason });
+    const rest = (header[2] || '').replace(/\*\/|-->/g, '').trim();
+    if (rest && PARTIAL_HEADER_RE.test(rest)) {
+      reject(`partial listing ("${rest}")`);
+      continue;
+    }
+    if (PLACEHOLDER_RE.test(body.split('\n').slice(1).join('\n'))) {
+      reject('contains placeholder lines (// ...)');
+      continue;
+    }
+    if (GENERATED_PATH_RE.test(filePath)) {
+      reject('generated/build-tree file');
+      continue;
+    }
+    if (allowed && !allowed.has(filePath.toLowerCase())) {
+      reject('not in the project specification');
+      continue;
+    }
+    decisions.push({ path: filePath, accepted: true });
     files.push({ path: filePath, content: body.endsWith('\n') ? body : `${body}\n` });
   }
-  return files;
+  return { files, decisions };
+}
+
+/** Complete project files in a section (see extractProjectFilesDetailed). */
+export function extractProjectFiles(
+  markdown: string,
+  allowedPaths?: string[],
+): Array<{ path: string; content: string }> {
+  return extractProjectFilesDetailed(markdown, allowedPaths).files;
 }
 
 async function readIndex(bookId: string): Promise<ProjectIndex> {

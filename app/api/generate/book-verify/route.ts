@@ -1,7 +1,12 @@
 /**
  * Verify that a book's running project actually builds.
  *
- * POST /api/generate/book-verify { bookId, force? }
+ * POST /api/generate/book-verify { bookId, force?, checkpointChapter? }
+ *
+ * With checkpointChapter = N, this is a chapter checkpoint: the project as it
+ * stands after chapter N must configure and build (tests are left for the
+ * final verification). Catching a failure here means later chapters are
+ * written on top of working code instead of compounding the error.
  *
  *  1. Run the project spec's build commands on a copy of the project files.
  *  2. On failure, the model gets the error + files and returns corrected
@@ -20,8 +25,12 @@ import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { generateBookText } from '@/lib/book/llm';
 import { applyVerifiedFiles, extractProjectFiles, listProjectFiles } from '@/lib/book/project';
 import { readBook, readSection, writeSection } from '@/lib/book/storage';
+import path from 'node:path';
+
 import {
+  isTestCommand,
   replaceFileBlock,
+  rootBuildFile,
   runProjectBuild,
   verifyDir,
   verifyReportPath,
@@ -33,23 +42,31 @@ const log = createLogger('Book Verify API');
 export const runtime = 'nodejs';
 export const maxDuration = 3600;
 
-const MAX_FIX_ROUNDS = 3;
+const MAX_FIX_ROUNDS = 4;
 
 export async function POST(req: NextRequest) {
   try {
-    const { bookId, force } = (await req.json()) as { bookId: string; force?: boolean };
+    const { bookId, force, checkpointChapter } = (await req.json()) as {
+      bookId: string;
+      force?: boolean;
+      checkpointChapter?: number;
+    };
+    const isCheckpoint = typeof checkpointChapter === 'number' && checkpointChapter > 0;
+    const reportFile = isCheckpoint
+      ? path.join(verifyDir(bookId), `chapter-${checkpointChapter}.json`)
+      : verifyReportPath(bookId);
     const book = await readBook(bookId);
     if (!book) return apiError('INVALID_REQUEST', 404, 'Book not found');
 
     const previous = await fs
-      .readFile(verifyReportPath(bookId), 'utf-8')
+      .readFile(reportFile, 'utf-8')
       .then((t) => JSON.parse(t) as VerifyReport)
       .catch(() => null);
     if (!force && previous?.status === 'passed') return apiSuccess({ ...previous, skipped: true });
 
     const save = async (report: VerifyReport) => {
       await fs.mkdir(verifyDir(bookId), { recursive: true });
-      await fs.writeFile(verifyReportPath(bookId), JSON.stringify(report, null, 2), 'utf-8');
+      await fs.writeFile(reportFile, JSON.stringify(report, null, 2), 'utf-8');
       return report;
     };
 
@@ -69,11 +86,38 @@ export async function POST(req: NextRequest) {
       return apiSuccess({ ...report });
     }
 
+    // Checkpoints build without running tests; they also wait until the
+    // project's root build file (CMakeLists.txt, Makefile, ...) exists.
+    const commands = isCheckpoint
+      ? spec.buildCommands.filter((c) => !isTestCommand(c))
+      : spec.buildCommands;
+    const rootFile = rootBuildFile(commands);
+    if (isCheckpoint && rootFile && !files.some((f) => f.path.toLowerCase() === rootFile.toLowerCase())) {
+      const report = await save({
+        status: 'skipped',
+        reason: `${rootFile} has not been created yet at the end of chapter ${checkpointChapter}.`,
+        verifiedAt: new Date().toISOString(),
+        toolchain: [],
+        notes: [],
+        steps: [],
+        fixRounds: [],
+        fixedFiles: [],
+      });
+      return apiSuccess({ ...report });
+    }
+
+    const maxRounds = isCheckpoint ? 2 : MAX_FIX_ROUNDS;
+    const stage = isCheckpoint
+      ? `## Stage\nThe reader has just finished chapter ${checkpointChapter}. Only the files introduced so far exist. ` +
+        `Make the project build AS IT STANDS NOW: fix errors in existing files, and if a build file references something ` +
+        `that does not exist yet, remove or guard that reference rather than inventing later chapters' code.`
+      : '## Stage\nThis is the finished project at the end of the book: it must build and all its tests must pass.';
+
     const fixRounds: VerifyReport['fixRounds'] = [];
     const fixed = new Map<string, string | null>();
-    let result = await runProjectBuild(bookId, spec.buildCommands);
+    let result = await runProjectBuild(bookId, commands);
 
-    for (let round = 1; !result.passed && result.failedStep && round <= MAX_FIX_ROUNDS; round++) {
+    for (let round = 1; !result.passed && result.failedStep && round <= maxRounds; round++) {
       const failed = result.failedStep;
       log.warn(`Build failed at "${failed.command}" (round ${round}) — asking the model for a fix`);
 
@@ -84,6 +128,7 @@ export async function POST(req: NextRequest) {
         command: failed.command,
         exitCode: String(failed.exitCode),
         output: (failed.outputTail || '').slice(-7000),
+        stage,
         previousAttempts: fixRounds.length
           ? `## Previous fix attempts (did not fully work)\n${fixRounds.map((r) => `- Round ${r.round}: ${r.summary}`).join('\n')}`
           : '',
@@ -102,7 +147,7 @@ export async function POST(req: NextRequest) {
         if (!fixed.has(entry.path)) fixed.set(entry.path, entry.sectionId);
       }
       fixRounds.push({ round, failedCommand: failed.command, summary, files: changed.map((f) => f.path) });
-      result = await runProjectBuild(bookId, spec.buildCommands);
+      result = await runProjectBuild(bookId, commands);
     }
 
     // Write fixes back into the sections that last showed each file, so the
@@ -134,7 +179,8 @@ export async function POST(req: NextRequest) {
     });
 
     log.info(
-      `Verification ${report.status} for "${book.title}" after ${fixRounds.length} fix round(s)` +
+      `${isCheckpoint ? `Chapter ${checkpointChapter} checkpoint` : 'Final verification'} ${report.status} ` +
+        `for "${book.title}" after ${fixRounds.length} fix round(s)` +
         (fixedFiles.length ? `; fixed ${fixedFiles.map((f) => f.path).join(', ')}` : ''),
     );
     return apiSuccess({ ...report });

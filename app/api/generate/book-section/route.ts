@@ -18,7 +18,7 @@ import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
 import { sanitiseSectionFigures } from '@/lib/book/figures';
 import { extractClaims } from '@/lib/book/llm';
-import { buildProjectContext, extractProjectFiles, recordProjectFiles } from '@/lib/book/project';
+import { buildProjectContext, extractProjectFilesDetailed, recordProjectFiles } from '@/lib/book/project';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
   countWords,
@@ -221,9 +221,21 @@ export async function POST(req: NextRequest) {
 
     const cleaned = sanitiseSectionFigures(markdown, ref.id, { imagesEnabled });
     await writeSection(book.id, ref.id, cleaned.markdown);
-    const projectFiles = book.projectSpec
-      ? await recordProjectFiles(book.id, ref.id, extractProjectFiles(cleaned.markdown))
-      : 0;
+    let projectFiles = 0;
+    if (book.projectSpec) {
+      const { files, decisions } = extractProjectFilesDetailed(
+        cleaned.markdown,
+        book.projectSpec.files.map((f) => f.path),
+      );
+      projectFiles = await recordProjectFiles(book.id, ref.id, files);
+      const rejected = decisions.filter((d) => !d.accepted);
+      if (rejected.length) {
+        log.info(
+          `${ref.sectionNumber}: ${rejected.length} File: block(s) not recorded as project state — ` +
+            rejected.map((d) => `${d.path} (${d.reason})`).join('; '),
+        );
+      }
+    }
 
     const words = countWords(cleaned.markdown);
     log.info(

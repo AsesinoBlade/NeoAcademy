@@ -27,6 +27,11 @@ export interface EbookRunContext {
   factCheck: boolean;
   /** Allow web search during fact-checking (local tool docs are always used). */
   webSearch: boolean;
+  /**
+   * Check the tools the planned project needs (cmake, make, compiler, git...).
+   * Waits for the user if something is missing; throws AbortError on pause.
+   */
+  preflightProject?: () => Promise<void>;
   /** Called once the book has a real title (from the outline or the planner). */
   onTitle?: (title: string, subtitle?: string) => void | Promise<void>;
   signal: AbortSignal;
@@ -101,6 +106,13 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   }
   await ctx.onTitle?.(plan.title, plan.subtitle);
 
+  // Now that the project (and its build commands) is known, check the tools it
+  // needs before any chapter is written.
+  if (plan.hasProject && ctx.preflightProject) {
+    ctx.setStatus("Checking the tools the book's project needs...");
+    await ctx.preflightProject();
+  }
+
   const statusResponse = await fetch(`/api/books?id=${encodeURIComponent(ctx.bookId)}`, {
     cache: 'no-store',
     signal,
@@ -132,10 +144,51 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   );
 
   let words = 0;
-  for (const item of sectionPlan) {
+  // Chapter checkpoint: the running project must build at the end of every
+  // chapter, so a mistake is fixed before later chapters build on it.
+  // Already-passed checkpoints return immediately (resume-safe).
+  const runCheckpoint = async (chapter: number) => {
+    if (!plan.hasProject) return;
+    if (signal.aborted) throw abortError();
+    ctx.setStatus(`Checking that the project builds after chapter ${chapter}...`);
+    try {
+      const report = await postJson<{
+        status: string;
+        skipped?: boolean;
+        reason?: string;
+        fixedFiles?: Array<{ path: string }>;
+      }>(
+        '/api/generate/book-verify',
+        { bookId: ctx.bookId, checkpointChapter: chapter },
+        ctx.apiHeaders(),
+        signal,
+      );
+      if (!report.skipped && report.status !== 'skipped') {
+        ctx.logProgress(
+          `[Ebook] Chapter ${chapter} build checkpoint ${report.status}` +
+            (report.fixedFiles?.length
+              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}`
+              : '') +
+            (report.status === 'failed' && report.reason ? ` (${report.reason})` : ''),
+        );
+      }
+    } catch (error) {
+      if (signal.aborted) throw abortError();
+      ctx.logProgress(
+        `[Ebook] Chapter ${chapter} build checkpoint could not run: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  for (const [index, item] of sectionPlan.entries()) {
+    const endsChapter =
+      index === sectionPlan.length - 1 || sectionPlan[index + 1].chapter !== item.chapter;
     const needsWriting = !written.has(item.id);
     const needsReview = ctx.factCheck && !reviewed.has(item.id);
-    if (!needsWriting && !needsReview) continue;
+    if (!needsWriting && !needsReview) {
+      if (endsChapter) await runCheckpoint(item.chapter);
+      continue;
+    }
     if (signal.aborted) throw abortError();
     const label = `${item.chapter}.${item.section} ${item.title}`;
 
@@ -187,6 +240,8 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
         );
       }
     }
+
+    if (endsChapter) await runCheckpoint(item.chapter);
   }
   if (words > 0)
     ctx.logProgress(`[Ebook] Writing complete (+${words.toLocaleString()} words this run)`);
@@ -208,19 +263,36 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       if (!report.skipped) {
         ctx.logProgress(
           `[Ebook] Build verification ${report.status}` +
-            (report.fixedFiles?.length ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}` : '') +
+            (report.fixedFiles?.length
+              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}`
+              : '') +
             (report.reason ? ` (${report.reason})` : ''),
         );
       }
     } catch (error) {
       if (signal.aborted) throw abortError();
       // Verification is advisory: never fail the book because of it.
-      ctx.logProgress(`[Ebook] Build verification could not run: ${error instanceof Error ? error.message : String(error)}`);
+      ctx.logProgress(
+        `[Ebook] Build verification could not run: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
   // 3. Pictures — separate phase so the LLM and ComfyUI never share VRAM.
-  await fetch('/api/unload-local-llm', { method: 'POST' }).catch(() => undefined);
+  // Release the LLM before ComfyUI starts: both cannot share the GPU. The
+  // ComfyUI start itself also refuses while a model is still resident.
+  const unload = await fetch('/api/unload-local-llm', { method: 'POST', signal })
+    .then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+    .catch((error) => {
+      if (signal.aborted) throw abortError();
+      return { ok: false, data: { message: String(error) } };
+    });
+  if (!unload.ok) {
+    ctx.logProgress(
+      `[Ebook] LLM unload reported a problem (${unload.data?.message ?? 'unknown'}); ` +
+        'ComfyUI will only start once the GPU is free.',
+    );
+  }
 
   if (ctx.imageGenerationEnabled) {
     if (signal.aborted) throw abortError();

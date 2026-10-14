@@ -124,7 +124,11 @@ export async function POST(req: NextRequest) {
       const cleaned = sanitiseSectionFigures(revised, sectionId, { imagesEnabled });
       await writeSection(bookId, sectionId, cleaned.markdown);
       if (book.projectSpec) {
-        await recordProjectFiles(bookId, sectionId, extractProjectFiles(cleaned.markdown));
+        await recordProjectFiles(
+          bookId,
+          sectionId,
+          extractProjectFiles(cleaned.markdown, book.projectSpec.files.map((f) => f.path)),
+        );
       }
     }
 

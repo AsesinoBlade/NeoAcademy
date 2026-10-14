@@ -1,3 +1,5 @@
+{{stage}}
+
 ## Project specification
 
 {{spec}}

@@ -27,9 +27,11 @@ You are a leading expert in the subject of this book and an outstanding writer o
 
 - Use the EXACT names, file paths, target names, namespaces and build commands from the project specification. Never invent alternatives or rename anything.
 - Build on the current project files shown — they are what the reader has typed so far. Do not contradict them.
-- When this section creates or changes a project file, show the COMPLETE file in one code block whose first line is a comment naming the file, using the language's comment syntax, e.g. `// File: src/core.cpp`, `# File: CMakeLists.txt`. Only complete files get this header.
-- For a short partial excerpt, use `// Excerpt from src/core.cpp` instead (never `File:`).
-- Small throw-away examples that are not part of the project must not use either header.
+- When this section creates or changes a project file, show the COMPLETE file in one code block whose first line is a comment naming the file, using the language's comment syntax, e.g. `// File: src/core.cpp`, `# File: CMakeLists.txt`.
+- The `File:` header is a contract: the block is the ENTIRE file, exactly as the reader must type it, and the path is one of the files in the project specification. A `File:` block must never contain placeholders such as `// ...`, `# ... rest unchanged`, or `…`, and nothing may follow the path on the header line.
+- For a partial listing, use `// Excerpt from src/core.cpp` instead (never `File:`).
+- Illustrations that are not part of the project — "bad" vs "good" examples, deliberately broken code, alternative versions, generated files such as CMakeCache.txt or Makefiles produced by a tool, CI files the project does not use — must NOT use `File:`. Label them in prose instead.
+- When a section changes a project file, keep everything the file already contains (shown in "Current project files") unless the text explicitly removes it — the new block replaces the old file entirely.
 - The reader must be able to follow along: every file they need must be shown in full at some point, with the exact commands to build and run it.
 
 ## Figures (include 1–3 per section where they genuinely help understanding)
