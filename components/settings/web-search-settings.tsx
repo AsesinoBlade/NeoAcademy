@@ -40,6 +40,20 @@ export function WebSearchSettings({ selectedProviderId }: WebSearchSettingsProps
       )}
 
       {/* API Key + Base URL Configuration */}
+      {selectedProviderId === 'searxng' && (
+        <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+          <p>
+            SearXNG runs on this PC. NeoAcademy's server reads its address from{' '}
+            <code>SEARXNG_URL</code> in <code>.env.local</code> (default{' '}
+            <code>http://127.0.0.1:8888</code>).
+          </p>
+          <p>
+            DuckDuckGo is used only if SearXNG cannot be reached or returns an error — never just
+            because a search found nothing.
+          </p>
+        </div>
+      )}
+
       {(provider.requiresApiKey || isServerConfigured) && (
         <>
           <div className="grid grid-cols-2 gap-4">

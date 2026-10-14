@@ -303,10 +303,15 @@ async function cached<T>(key: string, producer: () => Promise<T>): Promise<T> {
   }
 }
 
-async function search(query: string): Promise<Array<{ title: string; url: string; content: string }>> {
+type Provider = import('@/lib/web-search/search').WebSearchProviderChoice;
+
+async function search(
+  query: string,
+  provider?: Provider,
+): Promise<Array<{ title: string; url: string; content: string }>> {
   return cached(`search:${query}`, async () => {
     const { webSearch } = await import('@/lib/web-search/search');
-    return (await webSearch(query, { maxResults: 4 })).map((r) => ({
+    return (await webSearch(query, { maxResults: 4, provider })).map((r) => ({
       title: r.title,
       url: r.url,
       content: (r.content || '').slice(0, 600),
@@ -344,7 +349,7 @@ function coreIdentifier(identifier: string): string {
   return id.replace(/\(.*$/, '').split(/[\s=]/)[0];
 }
 
-async function checkWeb(claim: Claim): Promise<Evidence | null> {
+async function checkWeb(claim: Claim, provider?: Provider): Promise<Evidence | null> {
   const tool = (claim.tool || '').toLowerCase();
   const domain = OFFICIAL_DOCS[tool];
   const core = coreIdentifier(claim.identifier);
@@ -353,13 +358,13 @@ async function checkWeb(claim: Claim): Promise<Evidence | null> {
     // 1. Official documentation site first.
     let results: Array<{ title: string; url: string; content: string }> = [];
     if (domain && claim.kind !== 'fact') {
-      results = await search(`${core} site:${domain.split('/')[0]}`);
+      results = await search(`${core} site:${domain.split('/')[0]}`, provider);
       results = results.filter((r) => r.url.includes(domain.split('/')[0]));
     }
     const official = results.length > 0;
     // 2. Otherwise the model's own query.
     if (!official) {
-      results = await search(claim.query || `${tool} ${core} documentation`.trim());
+      results = await search(claim.query || `${tool} ${core} documentation`.trim(), provider);
     }
     if (results.length === 0) return null;
 
@@ -398,7 +403,7 @@ async function checkWeb(claim: Claim): Promise<Evidence | null> {
 
 export async function gatherEvidence(
   claims: Claim[],
-  options: { webSearch: boolean },
+  options: { webSearch: boolean; provider?: Provider },
 ): Promise<Evidence[]> {
   const evidence: Evidence[] = [];
   for (const claim of claims) {
@@ -408,8 +413,8 @@ export async function gatherEvidence(
       if (isCMake || ['ctest', 'cpack'].includes((claim.tool || '').toLowerCase())) found = await checkCMake(claim);
       if (!found) found = await checkPython(claim);
       if (!found) found = await checkCliOption(claim);
-      if (!found && options.webSearch && claim.kind !== 'fact') found = await checkWeb(claim);
-      if (!found && options.webSearch && claim.kind === 'fact' && claim.query) found = await checkWeb(claim);
+      if (!found && options.webSearch && claim.kind !== 'fact') found = await checkWeb(claim, options.provider);
+      if (!found && options.webSearch && claim.kind === 'fact' && claim.query) found = await checkWeb(claim, options.provider);
     } catch (error) {
       log.warn(`Reference lookup failed for ${claim.identifier}:`, error);
     }

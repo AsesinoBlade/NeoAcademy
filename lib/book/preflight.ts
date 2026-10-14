@@ -190,13 +190,17 @@ async function checkComfyUi(): Promise<PreflightCheck> {
     : { ...base, status: 'ok', detail: `ComfyUI found at ${root}; it will be started for the picture phase.` };
 }
 
-async function checkWebSearch(): Promise<PreflightCheck> {
-  const base = { id: 'web-search', label: 'Web search', blocking: false };
-  const searxng = process.env.SEARXNG_URL?.trim();
+async function checkWebSearch(provider?: string): Promise<PreflightCheck> {
+  const label = provider === 'searxng' ? 'Web search (SearXNG)' : provider ? `Web search (${provider})` : 'Web search';
+  const base = { id: 'web-search', label, blocking: false };
+  const searxng = process.env.SEARXNG_URL?.trim() || (provider === 'searxng' ? 'http://127.0.0.1:8888' : '');
   try {
     const { webSearch } = await import('@/lib/web-search/search');
     const results = await Promise.race([
-      webSearch('cmake add_executable documentation', { maxResults: 2 }),
+      webSearch('cmake add_executable documentation', {
+        maxResults: 2,
+        provider: provider as import('@/lib/web-search/search').WebSearchProviderChoice | undefined,
+      }),
       new Promise<never>((_r, reject) => setTimeout(() => reject(new Error('timed out after 20s')), 20000)),
     ]);
     if (results.length > 0) return { ...base, status: 'ok', detail: `Web search works (${results.length} test results).` };
@@ -207,7 +211,7 @@ async function checkWebSearch(): Promise<PreflightCheck> {
       status: 'warning',
       detail: `Web search is switched on but does not work: ${error instanceof Error ? error.message : String(error)}.`,
       fix: searxng
-        ? [`SEARXNG_URL is ${searxng}. Make sure the container is running: docker start searxng`, `Test it: open ${searxng}/search?q=test&format=json in a browser — you should see JSON (a 403 means "json" is missing from formats in settings.yml).`, RESTART_NOTE]
+        ? [`SearXNG is expected at ${searxng}${process.env.SEARXNG_URL ? '' : ' (SEARXNG_URL is not set in .env.local; that is the default)'}. Make sure the container is running: docker start searxng`, `Test it: open ${searxng}/search?q=test&format=json in a browser — you should see JSON (a 403 means "json" is missing from formats in settings.yml).`, RESTART_NOTE]
         : ['Set up SearXNG (see the SearXNG guide) and add SEARXNG_URL=http://127.0.0.1:8888 to .env.local, or add a Tavily/Brave key in Settings → Web Search.', RESTART_NOTE],
       ifIgnored: 'Research and fact-check web lookups are skipped; fact-checking still uses the installed tools\' own documentation.',
     };
@@ -387,6 +391,8 @@ export async function runPreflight(options: {
   factCheck: boolean;
   webSearch: boolean;
   imagesEnabled: boolean;
+  /** Search engine chosen with the globe. */
+  webSearchProvider?: string;
 }): Promise<PreflightResult> {
   await refreshWindowsPath();
   const checks: PreflightCheck[] = [];
@@ -397,7 +403,7 @@ export async function runPreflight(options: {
       checks.push(checkPackages());
       checks.push(await checkPdfBrowser());
       if (options.imagesEnabled) checks.push(await checkComfyUi());
-      if (options.webSearch) checks.push(await checkWebSearch());
+      if (options.webSearch) checks.push(await checkWebSearch(options.webSearchProvider));
     }
   } else if (options.spec) {
     checks.push(...(await checkProjectTools(options.spec, options.factCheck)));

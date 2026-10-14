@@ -15,7 +15,8 @@ const log = createLogger('WebSearch');
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { query, apiKey: clientApiKey } = body as {
+    const { query, apiKey: clientApiKey, provider } = body as {
+      provider?: 'tavily' | 'brave' | 'searxng' | 'duckduckgo';
       query?: string;
       apiKey?: string;
     };
@@ -24,12 +25,14 @@ export async function POST(req: Request) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'query is required');
     }
 
-    const apiKey = resolveWebSearchApiKey(clientApiKey);
+    // Tavily (with a key) keeps its rich research API; any other engine chosen
+    // with the globe goes through the unified client in that engine's order.
+    const apiKey = provider && provider !== 'tavily' ? '' : resolveWebSearchApiKey(clientApiKey);
     if (!apiKey) {
       // No Tavily key: fall back to the unified client (Brave → SearXNG →
       // DuckDuckGo) instead of failing the whole generation.
       const { webSearch, formatSearchResultsForPrompt } = await import('@/lib/web-search/search');
-      const results = await webSearch(query.trim(), { maxResults: 6 });
+      const results = await webSearch(query.trim(), { maxResults: 6, provider });
       return apiSuccess({
         answer: '',
         sources: results.map((r) => ({ title: r.title, url: r.url, content: r.content })),

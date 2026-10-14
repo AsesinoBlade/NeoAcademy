@@ -155,7 +155,12 @@ export async function POST(req: NextRequest) {
         8,
       ).catch(() => []);
       if (claims.length > 0) {
-        const evidence = await gatherEvidence(claims, { webSearch: !!body.webSearch });
+        const evidence = await gatherEvidence(claims, {
+          webSearch: !!body.webSearch,
+          provider: (req.headers.get('x-web-search-provider') || undefined) as
+            | import('@/lib/web-search/search').WebSearchProviderChoice
+            | undefined,
+        });
         referenceNotes = formatEvidence(evidence);
         const missing = evidence.filter((e) => e.verdict === 'not-found').map((e) => e.claim.identifier);
         if (missing.length) log.warn(`${ref.sectionNumber}: spec mentions non-existent ${missing.join(', ')}`);

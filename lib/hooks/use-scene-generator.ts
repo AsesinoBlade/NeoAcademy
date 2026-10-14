@@ -141,6 +141,7 @@ function getApiHeaders(): HeadersInit {
     // Media generation toggles
     'x-image-generation-enabled': String(settings.imageGenerationEnabled ?? false),
     'x-video-generation-enabled': String(settings.videoGenerationEnabled ?? false),
+    'x-web-search-provider': settings.webSearchProviderId || '',
   };
 }
 

@@ -69,7 +69,12 @@ export async function POST(req: NextRequest) {
 
     // 1-2. Claims and evidence
     const claims = await extractClaims(req, original.slice(0, 20000), 12).catch(() => []);
-    const evidence = await gatherEvidence(claims, { webSearch: !!webSearch });
+    const evidence = await gatherEvidence(claims, {
+      webSearch: !!webSearch,
+      provider: (req.headers.get('x-web-search-provider') || undefined) as
+        | import('@/lib/web-search/search').WebSearchProviderChoice
+        | undefined,
+    });
     const notFound = evidence.filter((e) => e.verdict === 'not-found');
     const leaks = (original.match(LEAK_RE) || []).length;
 

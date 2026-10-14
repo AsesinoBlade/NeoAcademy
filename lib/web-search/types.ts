@@ -5,7 +5,7 @@
 /**
  * Web Search Provider IDs
  */
-export type WebSearchProviderId = 'tavily' | 'brave' | 'duckduckgo';
+export type WebSearchProviderId = 'tavily' | 'brave' | 'searxng' | 'duckduckgo';
 
 /**
  * Web Search Provider Configuration

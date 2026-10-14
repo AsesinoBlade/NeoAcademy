@@ -20,6 +20,13 @@ export const WEB_SEARCH_PROVIDERS: Record<WebSearchProviderId, WebSearchProvider
     requiresApiKey: true,
     defaultBaseUrl: 'https://api.search.brave.com',
   },
+  searxng: {
+    // Self-hosted; the server reads SEARXNG_URL from .env.local.
+    id: 'searxng',
+    name: 'SearXNG (self-hosted)',
+    requiresApiKey: false,
+    defaultBaseUrl: 'http://127.0.0.1:8888',
+  },
   duckduckgo: {
     id: 'duckduckgo',
     name: 'DuckDuckGo',

@@ -3577,6 +3577,8 @@ function GenerationPreviewContent() {
       // Media generation toggles
       'x-image-generation-enabled': String(settings.imageGenerationEnabled ?? false),
       'x-video-generation-enabled': String(settings.videoGenerationEnabled ?? false),
+      // Search engine chosen with the globe; the server uses it first.
+      'x-web-search-provider': settings.webSearchProviderId || '',
     };
   };
 
@@ -4748,6 +4750,7 @@ function GenerationPreviewContent() {
           body: JSON.stringify({
             query: currentSession.requirements.requirement,
             apiKey: wsApiKey || undefined,
+            provider: wsSettings.webSearchProviderId,
           }),
           signal,
         });

@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
       factCheck: !!body.factCheck,
       webSearch: !!body.webSearch,
       imagesEnabled: req.headers.get('x-image-generation-enabled') === 'true',
+      webSearchProvider: req.headers.get('x-web-search-provider') || undefined,
     });
     return apiSuccess({ ...result });
   } catch (error) {

@@ -17,12 +17,33 @@ export interface SearchResult {
 
 export interface SearchOptions {
   maxResults?: number;
+  /** Engine chosen in the UI (globe). See webSearch() for the fallback rules. */
+  provider?: WebSearchProviderChoice;
   includeAnswer?: boolean;
 }
 
 /** Search using the best available provider */
+export type WebSearchProviderChoice = 'tavily' | 'brave' | 'searxng' | 'duckduckgo';
+
+/**
+ * Search the web.
+ *
+ * `provider` is the engine chosen with the globe in the UI. The chosen engine
+ * is used first; fallbacks only happen when it FAILS (unreachable, HTTP
+ * error, rate-limited) — never just because a search found nothing, so an
+ * empty SearXNG result does not turn into a DuckDuckGo request.
+ *
+ *   searxng    → SearXNG, then DuckDuckGo only if SearXNG fails
+ *   duckduckgo → DuckDuckGo (HTML results, then Instant Answers)
+ *   tavily     → Tavily, then SearXNG / DuckDuckGo if Tavily fails or has no key
+ *   brave      → Brave, then SearXNG / DuckDuckGo if Brave fails or has no key
+ *
+ * With no provider (older callers): SearXNG if SEARXNG_URL is set, otherwise
+ * Tavily → Brave → DuckDuckGo, with the same failure-only fallback.
+ */
 export async function webSearch(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
   const { maxResults = 5 } = opts;
+  const provider = opts.provider ?? (process.env.WEB_SEARCH_PROVIDER as WebSearchProviderChoice | undefined);
   // Keys come from the settings DB; if it can't be read, carry on with the
   // keyless providers (SearXNG / DuckDuckGo) rather than failing.
   const noKeys = { tavily: { enabled: false, apiKey: '' }, brave: { enabled: false, apiKey: '' } };
@@ -33,68 +54,99 @@ export async function webSearch(query: string, opts: SearchOptions = {}): Promis
       return noKeys;
     });
 
-  // 1. Try Tavily
-  if (config.tavily.enabled && config.tavily.apiKey) {
-    try {
-      const results = await tavilySearch(query, config.tavily.apiKey, maxResults);
-      if (results.length > 0) {
-        log.info(`Web search via Tavily: ${results.length} results`);
-        return results;
-      }
-    } catch (err) {
-      log.warn('Tavily search failed:', err);
-    }
-  }
+  const searxngUrl = process.env.SEARXNG_URL?.trim() || (provider === 'searxng' ? 'http://127.0.0.1:8888' : '');
 
-  // 2. Try Brave
-  if (config.brave.enabled && config.brave.apiKey) {
-    try {
-      const results = await braveSearch(query, config.brave.apiKey, maxResults);
-      if (results.length > 0) {
-        log.info(`Web search via Brave: ${results.length} results`);
-        return results;
-      }
-    } catch (err) {
-      log.warn('Brave search failed:', err);
-    }
-  }
+  type Engine = { name: string; run: () => Promise<SearchResult[]> };
+  const engines: Record<WebSearchProviderChoice, Engine | null> = {
+    tavily:
+      config.tavily?.enabled && config.tavily?.apiKey
+        ? { name: 'Tavily', run: () => tavilySearch(query, config.tavily.apiKey, maxResults) }
+        : null,
+    brave:
+      config.brave?.enabled && config.brave?.apiKey
+        ? { name: 'Brave', run: () => braveSearch(query, config.brave.apiKey, maxResults) }
+        : null,
+    searxng: searxngUrl ? { name: 'SearXNG', run: () => searxngSearch(searxngUrl, query, maxResults) } : null,
+    duckduckgo: { name: 'DuckDuckGo', run: () => duckduckgoHtmlSearch(query, maxResults) },
+  };
 
-  // 3. SearXNG — self-hosted metasearch (e.g. docker run -p 8888:8080 searxng/searxng)
-  //    with the JSON format enabled in its settings.yml.
-  const searxngUrl = process.env.SEARXNG_URL?.trim();
-  if (searxngUrl) {
-    try {
-      const results = await searxngSearch(searxngUrl, query, maxResults);
-      if (results.length > 0) {
-        log.info(`Web search via SearXNG: ${results.length} results`);
-        return results;
-      }
-    } catch (err) {
-      log.warn('SearXNG search failed:', err);
-    }
-  }
+  const order: WebSearchProviderChoice[] =
+    provider === 'searxng'
+      ? ['searxng', 'duckduckgo']
+      : provider === 'duckduckgo'
+        ? ['duckduckgo']
+        : provider === 'tavily'
+          ? ['tavily', 'searxng', 'duckduckgo']
+          : provider === 'brave'
+            ? ['brave', 'searxng', 'duckduckgo']
+            : searxngUrl
+              ? ['searxng', 'duckduckgo']
+              : ['tavily', 'brave', 'duckduckgo'];
 
-  // 4. DuckDuckGo HTML results (real web results, no key needed)
-  try {
-    const results = await duckduckgoHtmlSearch(query, maxResults);
-    if (results.length > 0) {
-      log.info(`Web search via DuckDuckGo: ${results.length} results`);
+  for (const id of order) {
+    const engine = engines[id];
+    if (!engine) continue;
+    try {
+      const results = await engine.run();
+      log.info(`Web search via ${engine.name}: ${results.length} results`);
+      // A working engine that found nothing is an answer, not a failure.
       return results;
+    } catch (err) {
+      log.warn(`${engine.name} search failed${order.indexOf(id) < order.length - 1 ? ', trying the next engine' : ''}:`, err);
     }
-  } catch (err) {
-    log.warn('DuckDuckGo HTML search failed:', err);
   }
 
-  // 5. DuckDuckGo Instant Answers (encyclopedic summaries only)
-  try {
-    const results = await duckduckgoSearch(query, maxResults);
-    log.info(`Web search via DuckDuckGo: ${results.length} results`);
-    return results;
-  } catch (err) {
-    log.warn('DuckDuckGo search failed:', err);
+  // Last resort for the DuckDuckGo choice: Instant Answers (encyclopedic only).
+  if (provider === 'duckduckgo' && !duckduckgoCoolingDown()) {
+    try {
+      return await duckduckgoSearch(query, maxResults);
+    } catch {
+      /* fall through */
+    }
   }
-
   return [];
+}
+
+// ── DuckDuckGo protection: throttle + cooldown after a block ────────────────
+
+interface DdgState {
+  queue: Promise<unknown>;
+  lastRequestAt: number;
+  cooldownUntil: number;
+}
+const ddg: DdgState = ((globalThis as typeof globalThis & { __neoacademyDdg?: DdgState }).__neoacademyDdg ??= {
+  queue: Promise.resolve(),
+  lastRequestAt: 0,
+  cooldownUntil: 0,
+});
+const DDG_MIN_INTERVAL_MS = 3000;
+const DDG_COOLDOWN_MS = 15 * 60 * 1000;
+
+function duckduckgoCoolingDown(): boolean {
+  return Date.now() < ddg.cooldownUntil;
+}
+
+/** One DuckDuckGo request at a time, at most one every 3 s. */
+function ddgThrottled<T>(task: () => Promise<T>): Promise<T> {
+  const run = ddg.queue.then(async () => {
+    if (duckduckgoCoolingDown()) {
+      throw new Error(
+        `DuckDuckGo is cooling down after a rate-limit block (until ${new Date(ddg.cooldownUntil).toLocaleTimeString()})`,
+      );
+    }
+    const wait = ddg.lastRequestAt + DDG_MIN_INTERVAL_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    ddg.lastRequestAt = Date.now();
+    return task();
+  });
+  ddg.queue = run.catch(() => undefined);
+  return run;
+}
+
+function ddgBlocked(reason: string): never {
+  ddg.cooldownUntil = Date.now() + DDG_COOLDOWN_MS;
+  log.warn(`DuckDuckGo blocked the request (${reason}); not using it for 15 minutes`);
+  throw new Error(`DuckDuckGo rate-limited (${reason})`);
 }
 
 async function tavilySearch(
@@ -163,8 +215,16 @@ async function searxngSearch(baseUrl: string, query: string, maxResults: number)
   url.searchParams.set('q', query);
   url.searchParams.set('format', 'json');
   const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
-  if (!res.ok) throw new Error(`SearXNG HTTP ${res.status} (is the json format enabled?)`);
-  const data = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> };
+  if (!res.ok) throw new Error(`SearXNG HTTP ${res.status}${res.status === 403 ? ' (is "json" in search.formats in settings.yml?)' : ''}`);
+  const data = (await res.json()) as {
+    results?: Array<{ title?: string; url?: string; content?: string }>;
+    unresponsive_engines?: Array<[string, string]>;
+  };
+  if (data.unresponsive_engines?.length) {
+    log.warn(
+      `SearXNG engines not answering: ${data.unresponsive_engines.map(([name, why]) => `${name} (${why})`).join(', ')}`,
+    );
+  }
   return (data.results || [])
     .filter((r) => r.url)
     .slice(0, maxResults)
@@ -207,6 +267,7 @@ export function parseDuckDuckGoHtml(html: string, maxResults: number): SearchRes
 }
 
 async function duckduckgoHtmlSearch(query: string, maxResults: number): Promise<SearchResult[]> {
+  return ddgThrottled(async () => {
   const res = await fetch('https://html.duckduckgo.com/html/', {
     method: 'POST',
     headers: {
@@ -216,8 +277,13 @@ async function duckduckgoHtmlSearch(query: string, maxResults: number): Promise<
     body: new URLSearchParams({ q: query }).toString(),
     signal: AbortSignal.timeout(12000),
   });
+  if (res.status === 403 || res.status === 429) ddgBlocked(`HTTP ${res.status}`);
   if (!res.ok) throw new Error(`DuckDuckGo HTML HTTP ${res.status}`);
-  return parseDuckDuckGoHtml(await res.text(), maxResults);
+  const html = await res.text();
+  // A block can also arrive as 200/202 with a bot-check page instead of results.
+  if (/anomaly-modal|challenge-form|unusual traffic/i.test(html)) ddgBlocked('bot check page');
+  return parseDuckDuckGoHtml(html, maxResults);
+  });
 }
 
 async function duckduckgoSearch(query: string, maxResults: number): Promise<SearchResult[]> {
