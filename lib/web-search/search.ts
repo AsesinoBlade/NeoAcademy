@@ -234,6 +234,17 @@ const SEARX_MIN_INTERVAL_MS = Number.parseInt(process.env.SEARXNG_MIN_INTERVAL_M
 const SEARX_BACKOFF_START_MS = 5 * 60 * 1000;
 const SEARX_BACKOFF_MAX_MS = 30 * 60 * 1000;
 
+/** NeoAcademy's own SearXNG backoff (after engines were found suspended). */
+export function searxngBackoffStatus(): { pausedUntil: number | null } {
+  return { pausedUntil: searxngDegraded() ? searx.degradedUntil : null };
+}
+
+/** Lift the backoff, e.g. once a direct check shows SearXNG answering again. */
+export function resetSearxngBackoff(): void {
+  searx.degradedUntil = 0;
+  searx.backoffMs = 0;
+}
+
 /** True while SearXNG's upstream engines are suspended (see searxngSearch). */
 export function searxngDegraded(): boolean {
   return Date.now() < searx.degradedUntil;

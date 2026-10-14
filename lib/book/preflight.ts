@@ -190,14 +190,95 @@ async function checkComfyUi(): Promise<PreflightCheck> {
     : { ...base, status: 'ok', detail: `ComfyUI found at ${root}; it will be started for the picture phase.` };
 }
 
+/**
+ * SearXNG, checked directly (not through NeoAcademy's search client, which
+ * may be in backoff): is it reachable, is JSON enabled, and which of its
+ * upstream engines are suspended? A healthy answer also lifts the backoff.
+ */
+async function checkSearxng(url: string): Promise<PreflightCheck> {
+  const base = { id: 'web-search', label: 'Web search (SearXNG)', blocking: false };
+  const ifIgnored =
+    "Research and fact-check web lookups are skipped; fact-checking still uses the installed tools' own documentation.";
+  let response: Response;
+  try {
+    response = await fetch(`${url.replace(/\/$/, '')}/search?q=${encodeURIComponent('python programming language')}&format=json`, {
+      signal: AbortSignal.timeout(20000),
+      cache: 'no-store',
+    });
+  } catch (error) {
+    return {
+      ...base,
+      status: 'warning',
+      detail: `SearXNG is not reachable at ${url}: ${error instanceof Error ? error.message : String(error)}.`,
+      fix: ['Start the container: docker start searxng', `Check that ${url} opens in a browser${process.env.SEARXNG_URL ? '' : ' (SEARXNG_URL is not set in .env.local; this is the default address)'}.`, RESTART_NOTE],
+      ifIgnored,
+    };
+  }
+  if (response.status === 403) {
+    return {
+      ...base,
+      status: 'warning',
+      detail: 'SearXNG is running but refuses JSON requests (HTTP 403).',
+      fix: ['Add "json" under search: formats: in SearXNG\'s settings.yml, then: docker restart searxng', RESTART_NOTE],
+      ifIgnored,
+    };
+  }
+  if (!response.ok) {
+    return { ...base, status: 'warning', detail: `SearXNG answered HTTP ${response.status}.`, fix: ['Check the container log: docker logs searxng', RESTART_NOTE], ifIgnored };
+  }
+
+  const data = (await response.json().catch(() => ({}))) as {
+    results?: Array<{ url?: string; engines?: string[]; engine?: string }>;
+    unresponsive_engines?: Array<[string, string]>;
+  };
+  const results = (data.results ?? []).filter((r) => r.url);
+  const suspended = (data.unresponsive_engines ?? []).filter(([, why]) => /suspended|too many|captcha|access denied/i.test(why));
+  const answering = [...new Set(results.flatMap((r) => r.engines ?? (r.engine ? [r.engine] : [])))];
+  const { resetSearxngBackoff, searxngBackoffStatus } = await import('@/lib/web-search/search');
+  const paused = searxngBackoffStatus().pausedUntil;
+  const generalEngines = answering.filter((e) => !/wiki/i.test(e));
+
+  if (results.length > 0 && generalEngines.length > 0) {
+    resetSearxngBackoff();
+    return {
+      ...base,
+      status: 'ok',
+      detail:
+        `SearXNG is answering (engines: ${answering.join(', ')}).` +
+        (suspended.length ? ` Suspended: ${suspended.map(([n, w]) => `${n} (${w})`).join(', ')}.` : '') +
+        (paused ? ' NeoAcademy\'s pause on web lookups has been lifted.' : ''),
+    };
+  }
+
+  // Running, but its web engines are rate-limited/suspended (only Wikipedia-type
+  // engines, or nothing, answering).
+  return {
+    ...base,
+    status: 'warning',
+    detail:
+      'SearXNG is running, but its web search engines are suspended after being rate-limited by earlier searches' +
+      (suspended.length ? `: ${suspended.map(([n, w]) => `${n} (${w})`).join(', ')}` : '') +
+      `. ${answering.length ? `Only ${answering.join(', ')} answered, which cannot find technical documentation.` : 'No engine returned results.'}` +
+      (paused ? ` NeoAcademy has also paused web lookups until ${new Date(paused).toLocaleTimeString()}.` : ''),
+    fix: [
+      'Clear the suspensions by restarting SearXNG: docker restart searxng',
+      'Optional, to make suspensions shorter in future: in SearXNG\'s settings.yml under search: suspended_times: set SearxEngineTooManyRequests: 600 and SearxEngineCaptcha: 3600',
+      'Then click "Check again" — a working result also lifts NeoAcademy\'s pause on web lookups.',
+    ],
+    ifIgnored,
+  };
+}
+
 async function checkWebSearch(provider?: string): Promise<PreflightCheck> {
-  const label = provider === 'searxng' ? 'Web search (SearXNG)' : provider ? `Web search (${provider})` : 'Web search';
+  const searxngUrl = process.env.SEARXNG_URL?.trim() || (provider === 'searxng' ? 'http://127.0.0.1:8888' : '');
+  if (provider === 'searxng' || (!provider && searxngUrl)) return checkSearxng(searxngUrl);
+
+  const label = provider ? `Web search (${provider})` : 'Web search';
   const base = { id: 'web-search', label, blocking: false };
-  const searxng = process.env.SEARXNG_URL?.trim() || (provider === 'searxng' ? 'http://127.0.0.1:8888' : '');
   try {
     const { webSearch } = await import('@/lib/web-search/search');
     const results = await Promise.race([
-      webSearch('cmake add_executable documentation', {
+      webSearch('python programming language', {
         maxResults: 2,
         provider: provider as import('@/lib/web-search/search').WebSearchProviderChoice | undefined,
       }),
@@ -210,10 +291,12 @@ async function checkWebSearch(provider?: string): Promise<PreflightCheck> {
       ...base,
       status: 'warning',
       detail: `Web search is switched on but does not work: ${error instanceof Error ? error.message : String(error)}.`,
-      fix: searxng
-        ? [`SearXNG is expected at ${searxng}${process.env.SEARXNG_URL ? '' : ' (SEARXNG_URL is not set in .env.local; that is the default)'}. Make sure the container is running: docker start searxng`, `Test it: open ${searxng}/search?q=test&format=json in a browser — you should see JSON (a 403 means "json" is missing from formats in settings.yml).`, RESTART_NOTE]
-        : ['Set up SearXNG (see the SearXNG guide) and add SEARXNG_URL=http://127.0.0.1:8888 to .env.local, or add a Tavily/Brave key in Settings → Web Search.', RESTART_NOTE],
-      ifIgnored: 'Research and fact-check web lookups are skipped; fact-checking still uses the installed tools\' own documentation.',
+      fix: [
+        'Select "SearXNG (self-hosted)" with the globe and set SEARXNG_URL=http://127.0.0.1:8888 in .env.local, or add a Tavily/Brave key in Settings → Web Search.',
+        RESTART_NOTE,
+      ],
+      ifIgnored:
+        "Research and fact-check web lookups are skipped; fact-checking still uses the installed tools' own documentation.",
     };
   }
 }
