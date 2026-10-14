@@ -42,6 +42,8 @@ export interface GenerationSessionState {
    * up at the first unfinished scene.
    */
   resume?: boolean;
+  /** Ebooks: premise check of the request (kept for resume and revisions). */
+  premises?: import('@/lib/book/principles').PremiseFinding[];
 }
 
 export type GenerationStep = {

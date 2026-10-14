@@ -4925,6 +4925,7 @@ function GenerationPreviewContent() {
               agents,
               revision,
               mode: isEbook ? 'ebook' : 'class',
+              premises: isEbook ? currentSession.premises : undefined,
             }),
             signal,
           })
@@ -4989,6 +4990,39 @@ function GenerationPreviewContent() {
             })
             .catch(reject);
         });
+
+      // Ebooks with fact-check: examine the request's premises before planning,
+      // so the outline doesn't build techniques on unsupported ideas.
+      if (isEbook && currentSession.requirements.factCheck && !currentSession.premises) {
+        setStatusMessage('Checking the premises of your request...');
+        try {
+          const premiseResponse = await fetch('/api/generate/book-premises', {
+            method: 'POST',
+            headers: { ...getApiHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              requirement: currentSession.requirements.requirement,
+              researchContext: currentSession.researchContext,
+            }),
+            signal,
+          });
+          const premiseData = await premiseResponse.json();
+          if (premiseResponse.ok && premiseData.success) {
+            currentSession = { ...currentSession, premises: premiseData.premises };
+            setSession(currentSession);
+            sessionStorage.setItem('generationSession', JSON.stringify(currentSession));
+            const flagged = (premiseData.premises as Array<{ verdict: string; premise: string }>).filter(
+              (p) => p.verdict !== 'supported',
+            );
+            logGenerationProgress(
+              `[Ebook] Premise check: ${flagged.length} of ${premiseData.premises.length} premise(s) not supported by the evidence`,
+            );
+          }
+        } catch (premiseError) {
+          if (signal.aborted) throw premiseError;
+          log.warn('[Generation] Premise check failed; planning without it:', premiseError);
+        }
+        setStatusMessage('');
+      }
 
       let outlines = currentSession.sceneOutlines;
       if (isResume && (!outlines || outlines.length === 0)) {
@@ -5101,6 +5135,7 @@ function GenerationPreviewContent() {
           requirement: currentSession.requirements.requirement,
           language: currentSession.requirements.language || 'en-US',
           fallbackTitle: stage.name,
+          premises: currentSession.premises,
           referenceMaterial: referenceMaterial || undefined,
           userProfile:
             currentSession.requirements.userNickname || currentSession.requirements.userBio
@@ -6222,6 +6257,7 @@ function GenerationPreviewContent() {
           onPause={pauseGeneration}
           isPausing={isPausing}
           mode={reviewMode}
+          premises={reviewMode === 'ebook' ? session?.premises : undefined}
         />
       )}
 

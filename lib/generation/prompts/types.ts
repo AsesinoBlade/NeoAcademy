@@ -21,7 +21,10 @@ export type PromptId =
   | 'book-claims'
   | 'book-review'
   | 'book-fix-build'
-  | 'book-math';
+  | 'book-math'
+  | 'book-premises'
+  | 'book-principles'
+  | 'book-consistency';
 
 /**
  * Snippet identifier

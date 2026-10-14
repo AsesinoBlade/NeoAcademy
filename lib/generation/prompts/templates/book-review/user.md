@@ -5,6 +5,14 @@
 
 {{projectContext}}
 
+## Consistency conflicts (recommendations that contradict the book's own principles)
+
+{{consistency}}
+
+## Editorial stance on the request's premises
+
+{{premiseStance}}
+
 ## Calculation check (computed with Python — authoritative)
 
 {{mathReport}}

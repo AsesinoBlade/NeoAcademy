@@ -37,4 +37,7 @@ export const PROMPT_IDS = {
   BOOK_REVIEW: 'book-review',
   BOOK_FIX_BUILD: 'book-fix-build',
   BOOK_MATH: 'book-math',
+  BOOK_PREMISES: 'book-premises',
+  BOOK_PRINCIPLES: 'book-principles',
+  BOOK_CONSISTENCY: 'book-consistency',
 } as const;

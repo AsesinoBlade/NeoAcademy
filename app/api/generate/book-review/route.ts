@@ -26,6 +26,13 @@ import { checkSectionMath, extractClaims, generateBookText, tableOfContents } fr
 import { buildProjectContext, extractProjectFiles, recordProjectFiles } from '@/lib/book/project';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
+  checkConsistency,
+  formatConflicts,
+  formatPremises,
+  readPrinciples,
+  recordSectionPrinciples,
+} from '@/lib/book/principles';
+import {
   bookDir,
   countWords,
   listSectionRefs,
@@ -83,6 +90,20 @@ export async function POST(req: NextRequest) {
       log.warn(`Math check failed for ${ref.sectionNumber}:`, error);
       return null;
     });
+    // Consistency: does the advice follow from the book's own principles and
+    // its stance on the request's premises?
+    const principles = await readPrinciples(bookId);
+    const conflicts = await checkConsistency(req, {
+      principles: principles.filter((p) => p.sectionId !== sectionId),
+      premises: book.premises,
+      sectionNumber: ref.sectionNumber,
+      sectionTitle: ref.title,
+      section: original,
+    }).catch((error) => {
+      log.warn(`Consistency check failed for ${ref.sectionNumber}:`, error);
+      return [];
+    });
+
     const mathReport = math
       ? math.report
       : 'Not available (Python with numpy and sympy was not found) — check every calculation carefully yourself.';
@@ -103,6 +124,8 @@ export async function POST(req: NextRequest) {
       projectContext,
       evidence: formatEvidence(evidence),
       mathReport,
+      consistency: formatConflicts(conflicts),
+      premiseStance: formatPremises(book.premises),
       sectionNumber: ref.sectionNumber,
       sectionTitle: ref.title,
       section: original,
@@ -122,7 +145,7 @@ export async function POST(req: NextRequest) {
     // 4. Guard rails
     let accepted = false;
     let rejectedReason = '';
-    if (corrections.length === 0 && leaks === 0 && !(math && math.wrong > 0)) {
+    if (corrections.length === 0 && leaks === 0 && !(math && math.wrong > 0) && conflicts.length === 0) {
       rejectedReason = 'no corrections needed';
     } else if (!revised) {
       rejectedReason = 'editor returned no section';
@@ -147,6 +170,8 @@ export async function POST(req: NextRequest) {
           projectContext,
           evidence: '(already reviewed — only fix the calculations marked WRONG)',
           mathReport: mathAfter.report,
+          consistency: '(already reviewed)',
+          premiseStance: formatPremises(book.premises),
           sectionNumber: ref.sectionNumber,
           sectionTitle: ref.title,
           section: revised,
@@ -180,6 +205,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Principles ledger: record what this section establishes, from the final text.
+    const finalText = accepted ? ((await readSection(bookId, sectionId)) ?? revised) : original;
+    const newPrinciples = await recordSectionPrinciples(
+      req,
+      bookId,
+      sectionId,
+      ref.sectionNumber,
+      ref.title,
+      finalText,
+    ).catch((error) => {
+      log.warn(`Recording principles failed for ${ref.sectionNumber}:`, error);
+      return 0;
+    });
+
     const report = {
       sectionId,
       sectionNumber: ref.sectionNumber,
@@ -188,6 +227,7 @@ export async function POST(req: NextRequest) {
       accepted,
       rejectedReason: rejectedReason || undefined,
       leakedReasoningLines: leaks,
+      consistencyConflicts: conflicts,
       math: math
         ? {
             checked: math.checks.length,
@@ -218,6 +258,7 @@ export async function POST(req: NextRequest) {
       `Reviewed ${ref.sectionNumber}: ${claims.length} claim(s), ${notFound.length} not found` +
         `${notFound.length ? ` (${notFound.map((e) => e.claim.identifier).join(', ')})` : ''}, ` +
         `${corrections.length} correction(s), ${accepted ? 'applied' : `kept original — ${rejectedReason}`}` +
+        `; ${conflicts.length} consistency conflict(s), ${newPrinciples} new principle(s)` +
         (math ? `; math: ${math.checks.length} checked, ${math.wrong} wrong${accepted && mathAfter ? ` → ${mathAfter.wrong} after review` : ''}` : '; math: not verified'),
     );
 
@@ -230,6 +271,8 @@ export async function POST(req: NextRequest) {
       mathChecked: math?.checks.length ?? 0,
       mathWrong: math?.wrong ?? 0,
       mathWrongAfter: accepted ? (mathAfter?.wrong ?? null) : (math?.wrong ?? null),
+      conflicts: conflicts.length,
+      newPrinciples,
     });
   } catch (error) {
     log.error('Book review failed:', error);

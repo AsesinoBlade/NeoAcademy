@@ -187,8 +187,10 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Requirements are required');
     }
 
-    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision, mode } =
+    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision, mode, premises } =
       body as {
+        /** Ebooks: premise check results the plan must follow. */
+        premises?: import('@/lib/book/principles').PremiseFinding[];
         /** 'ebook' plans a book (chapters → sections) instead of a class. */
         mode?: 'class' | 'ebook';
         requirements: UserRequirements;
@@ -297,6 +299,17 @@ export async function POST(req: NextRequest) {
 
     if (!prompts) {
       return apiError('INTERNAL_ERROR', 500, 'Prompt template not found');
+    }
+
+    // Ebooks: plan with the premise check's editorial stance, so unsupported
+    // ideas in the request are explained and corrected rather than taught.
+    if (mode === 'ebook' && Array.isArray(premises) && premises.length > 0) {
+      const { formatPremises } = await import('@/lib/book/principles');
+      prompts.user +=
+        `\n\n## Premise check of the request (follow this editorial stance)\n\n${formatPremises(premises)}\n\n` +
+        `Plan the book accordingly: premises marked UNSUPPORTED or FALSE must not become techniques the book teaches. ` +
+        `Give them sections that explain why the idea is popular, what the evidence and mathematics actually show, ` +
+        `and what the reader can genuinely do instead. CONTESTED premises are presented with the evidence on each side.`;
     }
 
     // Revision mode: the user reviewed (and possibly hand-edited) an outline

@@ -33,6 +33,14 @@ Sections already written in this chapter (do not repeat their material):
 
 {{referenceMaterial}}
 
+## Editorial stance on the request's premises (follow it)
+
+{{premiseStance}}
+
+## Principles this book has established (never contradict them)
+
+{{principles}}
+
 ## Reference notes (checked against official documentation)
 
 {{referenceNotes}}

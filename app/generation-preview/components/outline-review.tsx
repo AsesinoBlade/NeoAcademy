@@ -16,6 +16,51 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import type { SceneOutline } from '@/lib/types/generation';
+import type { PremiseFinding } from '@/lib/book/principles';
+
+const VERDICT_STYLES: Record<PremiseFinding['verdict'], string> = {
+  false: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  unsupported: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+  contested: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  supported: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+};
+
+/** The premise check: what the request assumes and how the book treats it. */
+function PremiseSummary({ premises }: { premises: PremiseFinding[] }) {
+  const flagged = premises.filter((p) => p.verdict !== 'supported');
+  const supported = premises.filter((p) => p.verdict === 'supported');
+  const Row = ({ p }: { p: PremiseFinding }) => (
+    <li className="space-y-1">
+      <div className="flex items-start gap-2">
+        <span className={cn('mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', VERDICT_STYLES[p.verdict])}>
+          {p.verdict}
+        </span>
+        <span className="font-medium">{p.premise}</span>
+      </div>
+      <p className="pl-1 text-muted-foreground">{p.explanation}</p>
+      <p className="pl-1">
+        <span className="font-medium">The book will:</span> {p.treatment}
+      </p>
+    </li>
+  );
+  return (
+    <div className="rounded-xl border bg-white p-4 text-sm shadow-sm dark:bg-slate-900">
+      <h3 className="mb-1 font-semibold">Premise check of your request</h3>
+      <p className="mb-3 text-xs text-muted-foreground">
+        {flagged.length
+          ? `${flagged.length} assumption(s) in your request are not supported by the evidence, so the book explains and corrects them instead of teaching them. Disagree? Say so in the revision notes below.`
+          : 'Every assumption in your request is consistent with the evidence.'}
+      </p>
+      {flagged.length > 0 && <ul className="space-y-3">{flagged.map((p, i) => <Row key={i} p={p} />)}</ul>}
+      {supported.length > 0 && (
+        <details className="mt-3 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">{supported.length} supported premise(s)</summary>
+          <ul className="mt-2 space-y-3 text-sm">{supported.map((p, i) => <Row key={i} p={p} />)}</ul>
+        </details>
+      )}
+    </div>
+  );
+}
 
 export type OutlineReviewDecision =
   | { action: 'generate'; outlines: SceneOutline[] }
@@ -73,6 +118,7 @@ export function OutlineReviewPanel({
   onPause,
   isPausing,
   mode = 'class',
+  premises,
 }: {
   outlines: SceneOutline[];
   /** Called on every edit so the parent can keep the latest draft. */
@@ -81,6 +127,8 @@ export function OutlineReviewPanel({
   onPause: () => void;
   isPausing: boolean;
   mode?: 'class' | 'ebook';
+  /** Ebooks: premise check results, shown above the outline. */
+  premises?: PremiseFinding[];
 }) {
   const labels = LABELS[mode];
   const [draft, setDraft] = useState<SceneOutline[]>(outlines);
@@ -168,6 +216,7 @@ export function OutlineReviewPanel({
       {/* Scene list */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-4 py-4 space-y-2">
+          {premises && premises.length > 0 && <PremiseSummary premises={premises} />}
           {draft.map((outline, index) => {
             const isOpen = expanded.has(outline.id);
             return (

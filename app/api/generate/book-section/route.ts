@@ -20,6 +20,7 @@ import { sanitiseSectionFigures } from '@/lib/book/figures';
 import { extractClaims } from '@/lib/book/llm';
 import { buildProjectContext, extractProjectFilesDetailed, recordProjectFiles } from '@/lib/book/project';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
+import { formatPremises, formatPrinciples, readPrinciples } from '@/lib/book/principles';
 import {
   countWords,
   listSectionRefs,
@@ -185,6 +186,8 @@ export async function POST(req: NextRequest) {
       previousSectionTail,
       referenceMaterial: body.referenceMaterial?.trim() || 'None provided — rely on your expert knowledge.',
       referenceNotes,
+      premiseStance: book.premises?.length ? formatPremises(book.premises) : '(none — no premise check was run)',
+      principles: formatPrinciples(await readPrinciples(book.id)),
       projectContext: projectContext
         ? `## The running project (follow exactly)\n\n${projectContext}`
         : '',
