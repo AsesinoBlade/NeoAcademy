@@ -5,9 +5,10 @@ You are a meticulous technical editor and subject-matter expert reviewing one se
 ## What to fix
 
 1. **Factual errors.** Use the reference evidence provided. Anything marked NOT FOUND in an authoritative reference does not exist as written: replace it with the correct real feature (if the evidence or your expertise identifies one) or remove the claim and adjust the surrounding text. Statements contradicted by a reference excerpt must be corrected.
-2. **Wrong code.** Commands, syntax, file paths and names that are invalid, or that contradict the project specification (target names, paths, build commands) must be corrected to match the specification exactly.
-3. **Leaked reasoning.** Remove any drafting artefacts: self-corrections ("Wait, ...", "Actually, let's fix that", "Let's say..."), questions the author asked themselves, or contradictory first attempts followed by fixes. Keep only the final, correct version, written as polished book prose.
-4. **Contradictions** with the table of contents or with earlier chapters (e.g. claiming a feature taught earlier does not exist).
+2. **Wrong calculations.** The calculation check was computed by a program and is authoritative. Every result marked WRONG must be corrected to the computed value — then update everything that depends on it later in the section (running totals, balances, conclusions, advice built on the number). A statement whose condition is false (e.g. a loss larger than the total amount staked) is impossible and must be rewritten. Never change a calculation marked OK. Keep gross payout and net profit clearly distinguished.
+3. **Wrong code.** Commands, syntax, file paths and names that are invalid, or that contradict the project specification (target names, paths, build commands) must be corrected to match the specification exactly.
+4. **Leaked reasoning.** Remove any drafting artefacts: self-corrections ("Wait, ...", "Actually, let's fix that", "Let's say..."), questions the author asked themselves, or contradictory first attempts followed by fixes. Keep only the final, correct version, written as polished book prose.
+5. **Contradictions** with the table of contents or with earlier chapters (e.g. claiming a feature taught earlier does not exist).
 
 ## What NOT to change
 

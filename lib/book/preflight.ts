@@ -258,6 +258,38 @@ async function checkGpuFreeForLlm(): Promise<PreflightCheck> {
   };
 }
 
+/** Python + numpy + sympy for verifying the book's calculations. */
+async function checkMathPython(): Promise<PreflightCheck> {
+  const { findMathPython, resetMathPython } = await import('./math');
+  resetMathPython();
+  const base = { id: 'math-python', label: 'Python math checker (numpy + sympy)', blocking: false };
+  const status = await findMathPython();
+  if (status.ok) {
+    return { ...base, status: 'ok', detail: `Using ${status.command!.join(' ')} — numpy ${status.versions!.numpy}, sympy ${status.versions!.sympy}.` };
+  }
+  const venv = path.join(process.cwd(), '.venv-math');
+  return {
+    ...base,
+    status: 'missing',
+    detail: `Calculations in the book are verified with Python, but it is not ready: ${status.problem}.`,
+    fix: isWindows
+      ? [
+          'winget install -e --id Python.Python.3.12   (skip if Python is already installed)',
+          `In a NEW terminal, in ${process.cwd()}: py -3 -m venv .venv-math`,
+          `.venv-math\\Scripts\\python -m pip install numpy sympy`,
+          `Add to .env.local:  BOOK_MATH_PYTHON=${venv}\\Scripts\\python.exe`,
+          RESTART_NOTE,
+        ]
+      : [
+          `python3 -m venv ${venv}`,
+          `${venv}/bin/python -m pip install numpy sympy`,
+          `Add to .env.local:  BOOK_MATH_PYTHON=${venv}/bin/python`,
+          RESTART_NOTE,
+        ],
+    ifIgnored: 'Calculations are reviewed by the model only, without exact verification.',
+  };
+}
+
 // ── Project-stage checks ───────────────────────────────────────────────────
 
 const looksLikeProgramRun = (program: string) => /^(\.{1,2}[\\/]|build[\\/]|bin[\\/])/.test(program) || /\.(exe|out)$/i.test(program);
@@ -404,6 +436,7 @@ export async function runPreflight(options: {
       checks.push(await checkPdfBrowser());
       if (options.imagesEnabled) checks.push(await checkComfyUi());
       if (options.webSearch) checks.push(await checkWebSearch(options.webSearchProvider));
+      if (options.factCheck) checks.push(await checkMathPython());
     }
   } else if (options.spec) {
     checks.push(...(await checkProjectTools(options.spec, options.factCheck)));

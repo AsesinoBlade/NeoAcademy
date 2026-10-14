@@ -5,6 +5,10 @@
 
 {{projectContext}}
 
+## Calculation check (computed with Python — authoritative)
+
+{{mathReport}}
+
 ## Reference evidence for the claims in this section
 
 {{evidence}}

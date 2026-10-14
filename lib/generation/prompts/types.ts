@@ -20,7 +20,8 @@ export type PromptId =
   | 'book-plan'
   | 'book-claims'
   | 'book-review'
-  | 'book-fix-build';
+  | 'book-fix-build'
+  | 'book-math';
 
 /**
  * Snippet identifier

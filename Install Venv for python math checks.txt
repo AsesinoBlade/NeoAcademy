@@ -1,0 +1,10 @@
+# 1. Python itself (skip if `py --version` already works)
+winget install -e --id Python.Python.3.12
+
+# 2. In a NEW terminal, in the NeoAcademy folder:
+cd  to your NeoAcademy directory
+py -3 -m venv .venv-math
+.venv-math\Scripts\python -m pip install numpy sympy
+
+# 3. Check it works (should print versions):
+.venv-math\Scripts\python lib\book\math\check_math.py --selftest

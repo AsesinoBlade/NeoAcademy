@@ -22,7 +22,7 @@ import { buildPrompt, PROMPT_IDS } from '@/lib/generation/prompts';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { sanitiseSectionFigures } from '@/lib/book/figures';
-import { extractClaims, generateBookText, tableOfContents } from '@/lib/book/llm';
+import { checkSectionMath, extractClaims, generateBookText, tableOfContents } from '@/lib/book/llm';
 import { buildProjectContext, extractProjectFiles, recordProjectFiles } from '@/lib/book/project';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
@@ -78,6 +78,15 @@ export async function POST(req: NextRequest) {
     const notFound = evidence.filter((e) => e.verdict === 'not-found');
     const leaks = (original.match(LEAK_RE) || []).length;
 
+    // Calculations: transcribed by the model, evaluated by Python (authoritative).
+    const math = await checkSectionMath(req, original).catch((error) => {
+      log.warn(`Math check failed for ${ref.sectionNumber}:`, error);
+      return null;
+    });
+    const mathReport = math
+      ? math.report
+      : 'Not available (Python with numpy and sympy was not found) — check every calculation carefully yourself.';
+
     // 3. Technical editor pass
     const projectContext = book.projectSpec
       ? `## The running project (canonical)\n\n${await buildProjectContext(
@@ -93,6 +102,7 @@ export async function POST(req: NextRequest) {
       tableOfContents: tableOfContents(book.outline, (p) => parseSectionSpec(p).title),
       projectContext,
       evidence: formatEvidence(evidence),
+      mathReport,
       sectionNumber: ref.sectionNumber,
       sectionTitle: ref.title,
       section: original,
@@ -112,7 +122,7 @@ export async function POST(req: NextRequest) {
     // 4. Guard rails
     let accepted = false;
     let rejectedReason = '';
-    if (corrections.length === 0 && leaks === 0) {
+    if (corrections.length === 0 && leaks === 0 && !(math && math.wrong > 0)) {
       rejectedReason = 'no corrections needed';
     } else if (!revised) {
       rejectedReason = 'editor returned no section';
@@ -122,6 +132,39 @@ export async function POST(req: NextRequest) {
       rejectedReason = 'revised section dropped figures';
     } else {
       accepted = true;
+    }
+
+    // Re-verify the maths of the revised text; one targeted fix round for
+    // anything still wrong, then verify again.
+    let mathAfter: Awaited<ReturnType<typeof checkSectionMath>> = null;
+    if (accepted && math) {
+      mathAfter = await checkSectionMath(req, revised).catch(() => null);
+      if (mathAfter && mathAfter.wrong > 0) {
+        log.warn(`${ref.sectionNumber}: ${mathAfter.wrong} calculation(s) still wrong after review — targeted fix`);
+        const fixPrompts = buildPrompt(PROMPT_IDS.BOOK_REVIEW, {
+          bookTitle: book.title,
+          tableOfContents: tableOfContents(book.outline, (p) => parseSectionSpec(p).title),
+          projectContext,
+          evidence: '(already reviewed — only fix the calculations marked WRONG)',
+          mathReport: mathAfter.report,
+          sectionNumber: ref.sectionNumber,
+          sectionTitle: ref.title,
+          section: revised,
+        });
+        if (fixPrompts) {
+          const fixRaw = await generateBookText(req, fixPrompts.system, fixPrompts.user, 14000, 'book-review-math');
+          const fixed = (fixRaw.match(/<section>([\s\S]*?)(?:<\/section>|$)/i)?.[1] ?? '').trim().replace(/^#{1,2}\s+[^\n]*\n+/, '');
+          if (fixed && countWords(fixed) >= countWords(original) * 0.75 && figureCount(fixed) >= figureCount(original)) {
+            const recheck = await checkSectionMath(req, fixed).catch(() => null);
+            if (!recheck || recheck.wrong <= mathAfter.wrong) {
+              revised = fixed;
+              mathAfter = recheck ?? mathAfter;
+              corrections.push(...(fixRaw.match(/<corrections>([\s\S]*?)<\/corrections>/i)?.[1] ?? '')
+                .split('\n').map((l) => l.replace(/^\s*[-*]\s*/, '').trim()).filter((l) => l && !/^none\.?$/i.test(l)));
+            }
+          }
+        }
+      }
     }
 
     if (accepted) {
@@ -145,6 +188,18 @@ export async function POST(req: NextRequest) {
       accepted,
       rejectedReason: rejectedReason || undefined,
       leakedReasoningLines: leaks,
+      math: math
+        ? {
+            checked: math.checks.length,
+            wrongBefore: math.wrong,
+            wrongAfter: accepted ? (mathAfter?.wrong ?? null) : math.wrong,
+            unverifiable: math.results.filter((r) => r.ok === null).length,
+            details: math.checks.map((c) => {
+              const r = math.results.find((x) => x.id === c.id);
+              return { quote: c.quote, expression: c.expression ?? `${c.lhs} == ${c.rhs}`, claimed: c.claimed, computed: r?.computed, ok: r?.ok, error: r?.error };
+            }),
+          }
+        : { available: false },
       corrections,
       evidence: evidence.map((e) => ({
         identifier: e.claim.identifier,
@@ -162,7 +217,8 @@ export async function POST(req: NextRequest) {
     log.info(
       `Reviewed ${ref.sectionNumber}: ${claims.length} claim(s), ${notFound.length} not found` +
         `${notFound.length ? ` (${notFound.map((e) => e.claim.identifier).join(', ')})` : ''}, ` +
-        `${corrections.length} correction(s), ${accepted ? 'applied' : `kept original — ${rejectedReason}`}`,
+        `${corrections.length} correction(s), ${accepted ? 'applied' : `kept original — ${rejectedReason}`}` +
+        (math ? `; math: ${math.checks.length} checked, ${math.wrong} wrong${accepted && mathAfter ? ` → ${mathAfter.wrong} after review` : ''}` : '; math: not verified'),
     );
 
     return apiSuccess({
@@ -171,6 +227,9 @@ export async function POST(req: NextRequest) {
       notFound: notFound.length,
       corrections: corrections.length,
       accepted,
+      mathChecked: math?.checks.length ?? 0,
+      mathWrong: math?.wrong ?? 0,
+      mathWrongAfter: accepted ? (mathAfter?.wrong ?? null) : (math?.wrong ?? null),
     });
   } catch (error) {
     log.error('Book review failed:', error);

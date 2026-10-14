@@ -225,7 +225,15 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       if (signal.aborted) throw abortError();
       ctx.setStatus(`Fact-checking ${label}`);
       const reviewBody = { bookId: ctx.bookId, sectionId: item.id, webSearch: ctx.webSearch };
-      let review: { claims?: number; notFound?: number; corrections?: number; accepted?: boolean };
+      let review: {
+        claims?: number;
+        notFound?: number;
+        corrections?: number;
+        accepted?: boolean;
+        mathChecked?: number;
+        mathWrong?: number;
+        mathWrongAfter?: number | null;
+      };
       try {
         review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
       } catch (error) {
@@ -233,12 +241,15 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
         log.warn(`Review of ${item.id} failed, retrying once:`, error);
         review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
       }
-      if (review.corrections) {
+      if (review.corrections || review.mathWrong) {
         ctx.logProgress(
           `[Ebook] Reviewed ${label}: ${review.claims ?? 0} claims checked, ${review.notFound ?? 0} not found, ` +
-            `${review.corrections} correction(s)${review.accepted ? ' applied' : ' (kept original)'}`,
+            `${review.mathChecked ?? 0} calculations checked (${review.mathWrong ?? 0} wrong` +
+            `${review.mathWrongAfter != null ? ` → ${review.mathWrongAfter} after review` : ''}), ` +
+            `${review.corrections ?? 0} correction(s)${review.accepted ? ' applied' : ' (kept original)'}`,
         );
       }
+
     }
 
     if (endsChapter) await runCheckpoint(item.chapter);
