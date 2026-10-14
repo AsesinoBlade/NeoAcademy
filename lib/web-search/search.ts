@@ -210,7 +210,51 @@ async function braveSearch(
   }));
 }
 
+// ── SearXNG pacing and backoff ─────────────────────────────────────────────
+//
+// SearXNG forwards every query to upstream engines (Brave, Google, DuckDuckGo,
+// ...). Rapid-fire lookups get those engines rate-limited, and SearXNG then
+// suspends them (1 h for "too many requests", 24 h for a CAPTCHA). So:
+// requests are spaced out, and when SearXNG answers with nothing because its
+// engines are suspended, web lookups pause (5 min, doubling to 30 min).
+
+interface SearxState {
+  queue: Promise<unknown>;
+  lastRequestAt: number;
+  degradedUntil: number;
+  backoffMs: number;
+}
+const searx: SearxState = ((globalThis as typeof globalThis & { __neoacademySearx?: SearxState }).__neoacademySearx ??= {
+  queue: Promise.resolve(),
+  lastRequestAt: 0,
+  degradedUntil: 0,
+  backoffMs: 0,
+});
+const SEARX_MIN_INTERVAL_MS = Number.parseInt(process.env.SEARXNG_MIN_INTERVAL_MS || '2500', 10);
+const SEARX_BACKOFF_START_MS = 5 * 60 * 1000;
+const SEARX_BACKOFF_MAX_MS = 30 * 60 * 1000;
+
+/** True while SearXNG's upstream engines are suspended (see searxngSearch). */
+export function searxngDegraded(): boolean {
+  return Date.now() < searx.degradedUntil;
+}
+
 async function searxngSearch(baseUrl: string, query: string, maxResults: number): Promise<SearchResult[]> {
+  if (searxngDegraded()) {
+    // Answered, not failed: don't spill over to DuckDuckGo.
+    return [];
+  }
+  return (searx.queue = searx.queue
+    .catch(() => undefined)
+    .then(async () => {
+      const wait = searx.lastRequestAt + SEARX_MIN_INTERVAL_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      searx.lastRequestAt = Date.now();
+      return searxngRequest(baseUrl, query, maxResults);
+    })) as Promise<SearchResult[]>;
+}
+
+async function searxngRequest(baseUrl: string, query: string, maxResults: number): Promise<SearchResult[]> {
   const url = new URL('/search', baseUrl);
   url.searchParams.set('q', query);
   url.searchParams.set('format', 'json');
@@ -220,10 +264,20 @@ async function searxngSearch(baseUrl: string, query: string, maxResults: number)
     results?: Array<{ title?: string; url?: string; content?: string }>;
     unresponsive_engines?: Array<[string, string]>;
   };
-  if (data.unresponsive_engines?.length) {
+  const unresponsive = data.unresponsive_engines ?? [];
+  const found = (data.results || []).filter((r) => r.url).length;
+  if (unresponsive.length) {
+    log.warn(`SearXNG engines not answering: ${unresponsive.map(([name, why]) => `${name} (${why})`).join(', ')}`);
+  }
+  if (found === 0 && unresponsive.some(([, why]) => /suspended|too many|captcha|access denied/i.test(why))) {
+    searx.backoffMs = Math.min(searx.backoffMs ? searx.backoffMs * 2 : SEARX_BACKOFF_START_MS, SEARX_BACKOFF_MAX_MS);
+    searx.degradedUntil = Date.now() + searx.backoffMs;
     log.warn(
-      `SearXNG engines not answering: ${data.unresponsive_engines.map(([name, why]) => `${name} (${why})`).join(', ')}`,
+      `SearXNG's engines are rate-limited; pausing web lookups for ${Math.round(searx.backoffMs / 60000)} min ` +
+        '(fact-check continues with local documentation; affected claims are marked unverified).',
     );
+  } else if (found > 0) {
+    searx.backoffMs = 0;
   }
   return (data.results || [])
     .filter((r) => r.url)

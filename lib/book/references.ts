@@ -297,8 +297,13 @@ async function cached<T>(key: string, producer: () => Promise<T>): Promise<T> {
     return JSON.parse(await fs.readFile(file, 'utf-8')) as T;
   } catch {
     const value = await producer();
-    await fs.mkdir(CACHE_DIR, { recursive: true });
-    await fs.writeFile(file, JSON.stringify(value), 'utf-8').catch(() => undefined);
+    // Empty answers are usually temporary (rate-limited engines, a failed
+    // fetch): don't cache them, so the lookup is retried later.
+    const empty = value === '' || (Array.isArray(value) && value.length === 0);
+    if (!empty) {
+      await fs.mkdir(CACHE_DIR, { recursive: true });
+      await fs.writeFile(file, JSON.stringify(value), 'utf-8').catch(() => undefined);
+    }
     return value;
   }
 }
@@ -403,9 +408,17 @@ async function checkWeb(claim: Claim, provider?: Provider): Promise<Evidence | n
 
 export async function gatherEvidence(
   claims: Claim[],
-  options: { webSearch: boolean; provider?: Provider },
+  options: { webSearch: boolean; provider?: Provider; maxWebLookups?: number },
 ): Promise<Evidence[]> {
   const evidence: Evidence[] = [];
+  // Web lookups are the scarce resource (upstream engines rate-limit); local
+  // documentation checks are unlimited.
+  let webBudget = options.maxWebLookups ?? 6;
+  const webAllowed = () => {
+    if (!options.webSearch || webBudget <= 0) return false;
+    webBudget--;
+    return true;
+  };
   for (const claim of claims) {
     const isCMake = (claim.tool || '').toLowerCase() === 'cmake' || claim.identifier.startsWith('$<');
     let found: Evidence | null = null;
@@ -413,8 +426,9 @@ export async function gatherEvidence(
       if (isCMake || ['ctest', 'cpack'].includes((claim.tool || '').toLowerCase())) found = await checkCMake(claim);
       if (!found) found = await checkPython(claim);
       if (!found) found = await checkCliOption(claim);
-      if (!found && options.webSearch && claim.kind !== 'fact') found = await checkWeb(claim, options.provider);
-      if (!found && options.webSearch && claim.kind === 'fact' && claim.query) found = await checkWeb(claim, options.provider);
+      if (!found && (claim.kind !== 'fact' || claim.query) && webAllowed()) {
+        found = await checkWeb(claim, options.provider);
+      }
     } catch (error) {
       log.warn(`Reference lookup failed for ${claim.identifier}:`, error);
     }
