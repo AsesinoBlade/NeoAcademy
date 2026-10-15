@@ -13,6 +13,10 @@
 
 {{premiseStance}}
 
+## Code sample check (compiled with the real compiler — authoritative)
+
+{{codeReport}}
+
 ## Calculation check (computed with Python — authoritative)
 
 {{mathReport}}

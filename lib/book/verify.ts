@@ -144,6 +144,8 @@ const looksLikeProgramRun = (program: string) =>
 
 export interface VerifyRunResult {
   passed: boolean;
+  /** Could not run at all (no sandbox and running code on this PC not allowed). */
+  skipped?: boolean;
   steps: VerifyStep[];
   failedStep?: VerifyStep;
   toolchain: string[];
@@ -169,7 +171,20 @@ export function rootBuildFile(commands: string[]): string | null {
 }
 
 /** Copy the project into a fresh workspace and run its build commands. */
-export async function runProjectBuild(bookId: string, commands: string[]): Promise<VerifyRunResult> {
+export interface BuildOptions {
+  /** Per-book opt-in: allow builds/tests (which run project code) on this PC when the sandbox can't. */
+  allowHostCode?: boolean;
+  /** Extra programs the user approved in the verification plan: name → path on this PC. */
+  approvedPrograms?: Record<string, string>;
+}
+
+/**
+ * Build and test the project — in the Docker sandbox (no network). Dependencies
+ * are downloaded first by deps-prefetch (network, no project code). Building
+ * runs project code (CMake scripts, custom commands, tests), so it only happens
+ * on this PC when the book explicitly allows it.
+ */
+export async function runProjectBuild(bookId: string, commands: string[], options: BuildOptions = {}): Promise<VerifyRunResult> {
   const work = path.join(verifyDir(bookId), 'work');
   await fs.rm(work, { recursive: true, force: true });
   await fs.mkdir(work, { recursive: true });
@@ -178,9 +193,17 @@ export async function runProjectBuild(bookId: string, commands: string[]): Promi
     filter: (src) => path.basename(src) !== '.index.json',
   });
 
+  const { runContained, sandboxStatus, inSandboxImage } = await import('./sandbox');
+  const { prefetchDependencies } = await import('./deps-prefetch');
+  const { findExecutable } = await import('./verification-plan');
+  const sandbox = await sandboxStatus();
+
   const steps: VerifyStep[] = [];
   const toolchain = new Set<string>();
   let multiConfig = false;
+  const prefetch = sandbox.ready ? await prefetchDependencies(work) : { cmakeArgs: [], pipOffline: false, notes: [] };
+  for (const n of prefetch.notes) toolchain.add(`Dependencies: ${n}`);
+  if (sandbox.ready) toolchain.add('Built in the NeoAcademy sandbox (Linux container, no network)');
 
   for (const raw of commands.flatMap((c) => c.split(/\s*&&\s*/)).filter((c) => c.trim())) {
     if (/[|<>;`]|\$\(/.test(raw)) {
@@ -194,21 +217,32 @@ export async function runProjectBuild(bookId: string, commands: string[]): Promi
       steps.push({ command: raw, status: 'skipped', note: 'Not run: executes the finished program.' });
       continue;
     }
-    if (!BUILD_TOOLS.has(program.toLowerCase())) {
-      steps.push({ command: raw, status: 'skipped', note: `Not run: "${program}" is not an allowlisted build tool.` });
-      continue;
-    }
-    if (!(await toolAvailable(program))) {
-      steps.push({ command: raw, status: 'skipped', note: `Not run: ${program} is not installed on this computer.` });
+    const approved = options.approvedPrograms?.[program.toLowerCase()];
+    if (!BUILD_TOOLS.has(program.toLowerCase()) && !approved) {
+      steps.push({ command: raw, status: 'skipped', note: `Not run: "${program}" is not an allowlisted or approved build tool.` });
       continue;
     }
 
     let note: string | undefined;
-    if (program === 'cmake' && argv.some((a) => a === '-S' || a === '-B' || a === '..' || a === '.')) {
-      const adapted = await adaptGenerator(argv);
-      argv = adapted.argv;
-      note = adapted.note;
-      multiConfig = adapted.multiConfig;
+    const containerRun = sandbox.ready && inSandboxImage(program);
+    if (program === 'cmake' && !argv.includes('--build') && !argv.includes('--install') && !argv.includes('-P')) {
+      if (containerRun) {
+        // The sandbox is Linux: Visual Studio / Xcode generators don't exist there.
+        const g = argv.findIndex((a) => a === '-G');
+        if (g >= 0 && /visual studio|xcode/i.test(argv[g + 1] ?? '')) {
+          note = `"${argv[g + 1]}" is not available in the Linux sandbox — verified with CMake's default generator.`;
+          argv = [...argv.slice(0, g), ...argv.slice(g + 2)];
+        }
+        argv = [...argv, ...prefetch.cmakeArgs];
+      } else if (argv.some((a) => a === '-S' || a === '-B' || a === '..' || a === '.')) {
+        const adapted = await adaptGenerator(argv);
+        argv = adapted.argv;
+        note = adapted.note;
+        multiConfig = adapted.multiConfig;
+      }
+    }
+    if (/^pip3?$/.test(program) && argv[1] === 'install' && prefetch.pipOffline) {
+      argv = [...argv, '--no-index', '--find-links', '/work/_deps/wheels'];
     }
     // Multi-config generators (Visual Studio) need a configuration for tests.
     if (program === 'ctest' && multiConfig && !argv.includes('-C') && !argv.includes('--build-config')) {
@@ -216,46 +250,60 @@ export async function runProjectBuild(bookId: string, commands: string[]): Promi
       note = (note ? `${note} ` : '') + 'Added -C Debug (multi-config generator).';
     }
 
-    const result = await run(argv, work, 15 * 60 * 1000);
+    const hostProgram = approved ?? (containerRun ? null : await findExecutable(program));
+    const exec = await runContained({
+      argv,
+      work,
+      runsCode: true, // configure scripts, custom commands and tests all run project code
+      hostProgram,
+      allowHostCode: options.allowHostCode,
+      timeoutSec: 15 * 60,
+    });
+    if (exec.where === 'skipped') {
+      steps.push({ command: raw, argv, status: 'skipped', note: `Not run: ${exec.reason}.` });
+      // Later steps depend on this one.
+      return { passed: false, steps, toolchain: [...toolchain], skipped: true };
+    }
+    const result = { code: exec.code, output: exec.output, durationMs: exec.durationMs };
 
-    // Multi-config generators (Visual Studio — CMake's default on Windows —
-    // Xcode, Ninja Multi-Config) are detected from the generated cache, not
-    // from the command line: `cmake -S . -B build` with no -G is multi-config
-    // on Windows, and ctest then needs -C <config>.
+    // Multi-config generators are detected from the generated cache.
     if (program === 'cmake' && result.code === 0 && !argv.includes('--build') && !argv.includes('--install')) {
       const bIndex = argv.findIndex((a) => a === '-B' || (a.startsWith('-B') && a.length > 2));
       const buildDir = bIndex < 0 ? '.' : argv[bIndex] === '-B' ? argv[bIndex + 1] ?? '.' : argv[bIndex].slice(2);
-      const cache = await fs.readFile(path.join(work, buildDir, 'CMakeCache.txt'), 'utf-8').catch(() => '');
-      const generator = cache.match(/^CMAKE_GENERATOR:INTERNAL=(.+)$/m)?.[1]?.trim() ?? '';
+      const cacheFile = await fs
+        .readFile(path.join(work, buildDir.replace(/^\/work\/?/, ''), 'CMakeCache.txt'), 'utf-8')
+        .catch(() => '');
+      const generator = cacheFile.match(/^CMAKE_GENERATOR:INTERNAL=(.+)$/m)?.[1]?.trim() ?? '';
       if (generator) {
         multiConfig = /visual studio|xcode|multi-config/i.test(generator);
         toolchain.add(`Generator: ${generator}`);
       }
     }
-    // ctest exits 0 when it finds no tests at all (e.g. enable_testing()
-    // missing from the top-level CMakeLists.txt) — that is a failure here.
+    // ctest exits 0 when it finds no tests at all — that is a failure here.
     if (program === 'ctest' && result.code === 0 && /No tests were found/i.test(result.output)) {
       result.code = 1;
       result.output += '\nVERIFICATION: ctest found no tests. The book tells the reader to run the tests, so tests must be registered (enable_testing() in the top-level CMakeLists.txt, add_test(...)).';
     }
     for (const m of result.output.matchAll(/The (?:CXX|C) compiler identification is ([^\n]+)/g)) toolchain.add(m[1].trim());
+    if (exec.where === 'container' && result.code !== 0 && /windows\.h|<Windows\.h>|__declspec|winsock2|MSVC|_MSC_VER/i.test(result.output)) {
+      note = (note ? `${note} ` : '') +
+        'This code needs Windows and cannot be verified in the Linux sandbox; enable "run book code on this PC" for this book to verify it with your Windows toolchain.';
+    }
     const step: VerifyStep = {
       command: raw,
       argv,
       status: result.code === 0 ? 'passed' : 'failed',
       exitCode: result.code,
       durationMs: result.durationMs,
-      note,
+      note: note ?? (exec.where === 'host' ? 'Run on this PC (allowed for this book).' : undefined),
       outputTail: result.output.slice(-8000),
     };
     steps.push(step);
     if (result.code !== 0) return { passed: false, steps, failedStep: step, toolchain: [...toolchain] };
   }
 
-  const cmakeVersion = (await toolAvailable('cmake'))
-    ? (await run(['cmake', '--version'], process.cwd(), 10000)).output.split('\n')[0]
-    : '';
-  if (cmakeVersion) toolchain.add(cmakeVersion.replace(/^cmake version/i, 'CMake').trim());
+  const cmakeVersion = await runContained({ argv: ['cmake', '--version'], work, runsCode: false, hostProgram: await findExecutable('cmake'), timeoutSec: 60 });
+  if (cmakeVersion.code === 0) toolchain.add(cmakeVersion.output.split('\n')[0].replace(/^cmake version/i, 'CMake').trim());
 
   const ran = steps.filter((s) => s.status !== 'skipped');
   return { passed: ran.length > 0 && ran.every((s) => s.status === 'passed'), steps, toolchain: [...toolchain] };

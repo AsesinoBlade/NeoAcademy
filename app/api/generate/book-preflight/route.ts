@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
       stage: 'start' | 'project';
       mode?: 'class' | 'ebook';
       bookId?: string;
+      referenceLibraries?: Array<{ tool: string; path: string }>;
       factCheck?: boolean;
       webSearch?: boolean;
     };
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
       webSearch: !!body.webSearch,
       imagesEnabled: req.headers.get('x-image-generation-enabled') === 'true',
       webSearchProvider: req.headers.get('x-web-search-provider') || undefined,
+      referenceLibraries: Array.isArray(body.referenceLibraries) ? body.referenceLibraries : undefined,
     });
     return apiSuccess({ ...result });
   } catch (error) {

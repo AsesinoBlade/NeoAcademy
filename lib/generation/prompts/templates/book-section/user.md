@@ -33,6 +33,10 @@ Sections already written in this chapter (do not repeat their material):
 
 {{referenceMaterial}}
 
+## Target versions (state them where they matter; menus, commands and APIs must match these versions)
+
+{{targetVersions}}
+
 ## Editorial stance on the request's premises (follow it)
 
 {{premiseStance}}

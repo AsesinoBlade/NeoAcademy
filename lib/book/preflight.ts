@@ -341,6 +341,30 @@ async function checkGpuFreeForLlm(): Promise<PreflightCheck> {
   };
 }
 
+/** The Docker sandbox in which book code is compiled, built, tested and run. */
+async function checkSandbox(): Promise<PreflightCheck> {
+  const { sandboxStatus, resetSandboxState, SANDBOX_IMAGE } = await import('./sandbox');
+  resetSandboxState();
+  const status = await sandboxStatus();
+  const base = { id: 'sandbox', label: 'Code sandbox (Docker)', blocking: false };
+  if (status.ready) {
+    return { ...base, status: 'ok', detail: `${SANDBOX_IMAGE} is ready: book code runs isolated, without network access.` };
+  }
+  const notInstalled = /not installed/.test(status.reason ?? '');
+  const notRunning = /not running/.test(status.reason ?? '');
+  return {
+    ...base,
+    status: 'warning',
+    detail: `${status.reason} Book code is only compiled, built, tested or run inside this sandbox.`,
+    fix: notInstalled
+      ? ['Install Docker Desktop from the official Docker website, start it, then build the sandbox image:', `In ${process.cwd()}: docker build -t ${SANDBOX_IMAGE} docker/sandbox`, RESTART_NOTE]
+      : notRunning
+        ? ['Start Docker Desktop.', RESTART_NOTE]
+        : [`In ${process.cwd()}: docker build -t ${SANDBOX_IMAGE} docker/sandbox   (one-time, a few minutes)`, RESTART_NOTE],
+    ifIgnored: 'Code samples are only checked by compilers that do not run code; builds, tests and running samples are skipped (unless you allow running book code on this PC for a book).',
+  };
+}
+
 /** Python + numpy + sympy for verifying the book's calculations. */
 async function checkMathPython(): Promise<PreflightCheck> {
   const { findMathPython, resetMathPython } = await import('./math');
@@ -508,6 +532,8 @@ export async function runPreflight(options: {
   imagesEnabled: boolean;
   /** Search engine chosen with the globe. */
   webSearchProvider?: string;
+  /** Documentation folders / zips to index (indexed now, so writing doesn't wait). */
+  referenceLibraries?: Array<{ tool: string; path: string }>;
 }): Promise<PreflightResult> {
   await refreshWindowsPath();
   const checks: PreflightCheck[] = [];
@@ -520,6 +546,25 @@ export async function runPreflight(options: {
       if (options.imagesEnabled) checks.push(await checkComfyUi());
       if (options.webSearch) checks.push(await checkWebSearch(options.webSearchProvider));
       if (options.factCheck) checks.push(await checkMathPython());
+      if (options.factCheck) checks.push(await checkSandbox());
+      for (const lib of options.referenceLibraries ?? []) {
+        const { describeLibrary } = await import('./library');
+        const d = await describeLibrary(lib);
+        checks.push({
+          id: `library-${lib.tool}-${lib.path}`,
+          label: `Reference docs: ${lib.tool}`,
+          status: d.ok ? 'ok' : 'missing',
+          blocking: false,
+          detail: d.ok ? `${lib.path} — ${d.detail}` : d.detail,
+          fix: d.ok
+            ? undefined
+            : [
+                'Check the path in "Reference docs" on the main page (a folder or a .zip of HTML, Markdown, text, .d.ts, Java or Python files).',
+                'Remove it there if it is not needed, then start again.',
+              ],
+          ifIgnored: `Claims about ${lib.tool} are checked without its documentation.`,
+        });
+      }
     }
   } else if (options.spec) {
     checks.push(...(await checkProjectTools(options.spec, options.factCheck)));

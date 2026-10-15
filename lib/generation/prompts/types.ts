@@ -24,7 +24,10 @@ export type PromptId =
   | 'book-math'
   | 'book-premises'
   | 'book-principles'
-  | 'book-consistency';
+  | 'book-consistency'
+  | 'book-verification-plan'
+  | 'book-cross-check'
+  | 'book-cross-compare';
 
 /**
  * Snippet identifier

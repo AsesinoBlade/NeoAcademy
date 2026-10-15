@@ -11,6 +11,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { computeCoverage } from '@/lib/book/coverage';
 import {
   bookDir,
   bookPdfPath,
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
       coverImagePrompt?: string;
       premises?: import('@/lib/book/principles').PremiseFinding[];
       bookStyle?: import('@/lib/book/styles').BookStyle;
+      referenceLibraries?: Array<{ tool: string; path: string }>;
     };
     if (!body.id || !body.title || !Array.isArray(body.outline) || body.outline.length === 0) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'id, title and outline are required');
@@ -55,6 +57,13 @@ export async function POST(request: NextRequest) {
       coverImagePrompt: body.coverImagePrompt,
       ...(Array.isArray(body.premises) ? { premises: body.premises } : {}),
       ...(body.bookStyle ? { bookStyle: body.bookStyle } : {}),
+      ...(Array.isArray(body.referenceLibraries)
+        ? {
+            referenceLibraries: body.referenceLibraries
+              .filter((l) => l && typeof l.tool === 'string' && typeof l.path === 'string' && l.path.trim())
+              .map((l) => ({ tool: l.tool.trim().toLowerCase(), path: l.path.trim() })),
+          }
+        : {}),
     });
     return apiSuccess({ book: record });
   } catch (error) {
@@ -98,6 +107,9 @@ export async function GET(request: NextRequest) {
         totalSections: refs.length,
         writtenSections: refs.filter((r) => written.has(r.id)).length,
         writtenSectionIds: refs.filter((r) => written.has(r.id)).map((r) => r.id),
+        coverage: await computeCoverage(id).then((c) =>
+          c ? { ...c, openClaims: c.openClaims.length } : null,
+        ),
         reviewedSectionIds,
         words,
         imagesTotal,

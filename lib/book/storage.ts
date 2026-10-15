@@ -33,6 +33,10 @@ export interface BookRecord {
   projectSpec?: import('./project').ProjectSpec | null;
   /** Verify claims against local docs / web and run a technical review per section. */
   factCheck?: boolean;
+  /** How this book's claims and samples are verified (see lib/book/verification-plan). */
+  verificationPlan?: import('./verification-plan').VerificationPlan;
+  /** Documentation on this PC that claims are checked against (see lib/book/library). */
+  referenceLibraries?: import('./library').ReferenceLibrary[];
   /** quick | beginner | advanced — see lib/book/styles. Missing = advanced. */
   bookStyle?: import('./styles').BookStyle;
   /** Premise check of the request: verdicts + how the book treats each premise. */

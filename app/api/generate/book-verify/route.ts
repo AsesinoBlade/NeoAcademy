@@ -115,7 +115,31 @@ export async function POST(req: NextRequest) {
 
     const fixRounds: VerifyReport['fixRounds'] = [];
     const fixed = new Map<string, string | null>();
-    let result = await runProjectBuild(bookId, commands);
+    // Containment: builds run in the sandbox; on this PC only if the book allows it.
+    const plan = book.verificationPlan;
+    const buildOptions = {
+      allowHostCode: !!plan?.decision?.allowHostCode,
+      approvedPrograms: plan?.decision?.approved
+        ? Object.fromEntries(
+            plan.tools.filter((t) => t.executable && t.resolvedPath).map((t) => [t.executable!.toLowerCase(), t.resolvedPath!]),
+          )
+        : {},
+    };
+    let result = await runProjectBuild(bookId, commands, buildOptions);
+    if (result.skipped) {
+      const why = result.steps.find((st) => st.status === 'skipped')?.note ?? 'the build could not run';
+      const report = await save({
+        status: 'skipped',
+        reason: why,
+        verifiedAt: new Date().toISOString(),
+        toolchain: result.toolchain,
+        notes: [why],
+        steps: result.steps,
+        fixRounds: [],
+        fixedFiles: [],
+      });
+      return apiSuccess({ ...report });
+    }
 
     for (let round = 1; !result.passed && result.failedStep && round <= maxRounds; round++) {
       const failed = result.failedStep;
@@ -147,7 +171,7 @@ export async function POST(req: NextRequest) {
         if (!fixed.has(entry.path)) fixed.set(entry.path, entry.sectionId);
       }
       fixRounds.push({ round, failedCommand: failed.command, summary, files: changed.map((f) => f.path) });
-      result = await runProjectBuild(bookId, commands);
+      result = await runProjectBuild(bookId, commands, buildOptions);
     }
 
     // Write fixes back into the sections that last showed each file, so the

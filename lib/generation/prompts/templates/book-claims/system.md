@@ -10,6 +10,7 @@ For each claim output:
 - `tool`: the tool/language it belongs to, lower case (`cmake`, `ctest`, `make`, `git`, `python`, `gcc`, ...), or omit
 - `parent`: for `command-argument` only — the command it is claimed to belong to
 - `statement`: the specific claim being made, in one sentence
+- `question`: a neutral question whose answer is what the statement asserts, WITHOUT revealing that answer (e.g. statement "Blender's Bevel modifier is under Add Modifier > Generate" → question "Under which category of Blender's Add Modifier menu is the Bevel modifier?")
 - `query`: a precise web search query that would find the official documentation (e.g. `cmake add_executable command documentation`)
 
 Output ONLY a JSON array (no prose, no code fences).

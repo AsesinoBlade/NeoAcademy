@@ -61,6 +61,7 @@ const REVIEW_OUTLINE_STORAGE_KEY = 'outlineReviewEnabled';
 const OUTPUT_MODE_STORAGE_KEY = 'generationOutputMode';
 const FACT_CHECK_STORAGE_KEY = 'ebookFactCheck';
 const BOOK_STYLE_STORAGE_KEY = 'ebookStyle';
+const REFERENCE_LIBRARIES_STORAGE_KEY = 'ebookReferenceLibraries';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -114,6 +115,7 @@ interface FormState {
   outputMode: 'class' | 'ebook';
   factCheck: boolean;
   bookStyle: 'quick' | 'beginner' | 'advanced';
+  referenceLibraries: Array<{ tool: string; path: string }>;
 }
 
 const initialFormState: FormState = {
@@ -125,6 +127,7 @@ const initialFormState: FormState = {
   outputMode: 'class',
   factCheck: true,
   bookStyle: 'advanced',
+  referenceLibraries: [],
 };
 
 function HomePage() {
@@ -188,6 +191,12 @@ function HomePage() {
       }
       if (localStorage.getItem(FACT_CHECK_STORAGE_KEY) === 'false') {
         updates.factCheck = false;
+      }
+      try {
+        const savedLibs = JSON.parse(localStorage.getItem(REFERENCE_LIBRARIES_STORAGE_KEY) || '[]');
+        if (Array.isArray(savedLibs)) updates.referenceLibraries = savedLibs;
+      } catch {
+        /* ignore */
       }
       const savedStyle = localStorage.getItem(BOOK_STYLE_STORAGE_KEY);
       if (savedStyle === 'quick' || savedStyle === 'beginner' || savedStyle === 'advanced') {
@@ -485,6 +494,9 @@ function HomePage() {
       if (field === 'bookStyle') {
         localStorage.setItem(BOOK_STYLE_STORAGE_KEY, String(value));
       }
+      if (field === 'referenceLibraries') {
+        localStorage.setItem(REFERENCE_LIBRARIES_STORAGE_KEY, JSON.stringify(value));
+      }
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -517,6 +529,7 @@ function HomePage() {
         outputMode: form.outputMode,
         factCheck: form.outputMode === 'ebook' ? form.factCheck : undefined,
         bookStyle: form.outputMode === 'ebook' ? form.bookStyle : undefined,
+        referenceLibraries: form.outputMode === 'ebook' && form.referenceLibraries.length ? form.referenceLibraries : undefined,
       };
 
       let pdfDocuments:
@@ -807,6 +820,8 @@ function HomePage() {
                   onReviewOutlineChange={(v) => updateForm('reviewOutline', v)}
                   showFactCheck={form.outputMode === 'ebook'}
                   bookStyle={form.bookStyle}
+                  referenceLibraries={form.referenceLibraries}
+                  onReferenceLibrariesChange={(v) => updateForm('referenceLibraries', v)}
                   onBookStyleChange={(v) => updateForm('bookStyle', v)}
                   factCheck={form.factCheck}
                   onFactCheckChange={(v) => updateForm('factCheck', v)}

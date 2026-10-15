@@ -13,6 +13,7 @@ import {
   ListChecks,
   ShieldCheck,
   BookOpen,
+  Library,
 } from 'lucide-react';
 import { BOOK_STYLES, type BookStyle } from '@/lib/book/styles';
 import { Switch } from '@/components/ui/switch';
@@ -51,6 +52,9 @@ export interface GenerationToolbarProps {
   onReviewOutlineChange: (v: boolean) => void;
   /** Shown for ebooks only: fact-check every section against docs / web. */
   showFactCheck?: boolean;
+  /** Ebooks only: documentation on this PC that claims are checked against. */
+  referenceLibraries?: Array<{ tool: string; path: string }>;
+  onReferenceLibrariesChange?: (v: Array<{ tool: string; path: string }>) => void;
   /** Ebooks only: quick how-to / beginner's guide / in-depth advanced. */
   bookStyle?: BookStyle;
   onBookStyleChange?: (v: BookStyle) => void;
@@ -72,6 +76,8 @@ export function GenerationToolbar({
   reviewOutline,
   onReviewOutlineChange,
   showFactCheck,
+  referenceLibraries,
+  onReferenceLibrariesChange,
   bookStyle,
   onBookStyleChange,
   factCheck,
@@ -595,6 +601,16 @@ export function GenerationToolbar({
         </Select>
       )}
 
+      {/* ── Reference docs (ebooks) ── */}
+      {showFactCheck && (
+        <ReferenceDocsPopover
+          libraries={referenceLibraries ?? []}
+          onChange={(v) => onReferenceLibrariesChange?.(v)}
+          pillActive={pillActive}
+          pillMuted={pillMuted}
+        />
+      )}
+
       {/* ── Fact-check (ebooks) ── */}
       {showFactCheck && (
         <Tooltip>
@@ -799,6 +815,98 @@ function ModelSelectorPopover({
             })}
           </div>
         )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * Ebooks: documentation folders / zips on this PC that the book's claims are
+ * checked against (e.g. Ghidra's API Javadoc zip, node_modules/typescript/lib).
+ */
+function ReferenceDocsPopover({
+  libraries,
+  onChange,
+  pillActive,
+  pillMuted,
+}: {
+  libraries: Array<{ tool: string; path: string }>;
+  onChange: (v: Array<{ tool: string; path: string }>) => void;
+  pillActive: string;
+  pillMuted: string;
+}) {
+  const [tool, setTool] = useState('');
+  const [docPath, setDocPath] = useState('');
+  const add = () => {
+    const t = tool.trim().toLowerCase();
+    const p = docPath.trim().replace(/^"|"$/g, '');
+    if (!t || !p) return;
+    onChange([...libraries.filter((l) => !(l.tool === t && l.path === p)), { tool: t, path: p }]);
+    setTool('');
+    setDocPath('');
+  };
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button className={cn(libraries.length ? pillActive : pillMuted)} aria-label="Reference docs">
+          <Library className="size-3.5" />
+          <span>Reference docs{libraries.length ? ` (${libraries.length})` : ''}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-96 space-y-3 text-sm">
+        <div>
+          <p className="font-medium">Reference documentation</p>
+          <p className="text-xs text-muted-foreground">
+            Folders or .zip files on this PC that the book is fact-checked against. A name is only
+            reported as non-existent if it appears nowhere in its tool&apos;s documentation.
+          </p>
+        </div>
+        {libraries.length > 0 && (
+          <ul className="space-y-1">
+            {libraries.map((l) => (
+              <li key={`${l.tool}|${l.path}`} className="flex items-center gap-2 rounded border px-2 py-1">
+                <span className="shrink-0 rounded bg-muted px-1.5 text-xs font-medium">{l.tool}</span>
+                <span className="min-w-0 flex-1 truncate text-xs" title={l.path}>
+                  {l.path}
+                </span>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => onChange(libraries.filter((x) => x !== l))}
+                  aria-label={`Remove ${l.tool} documentation`}
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="space-y-1.5">
+          <input
+            className="w-full rounded border bg-background px-2 py-1 text-xs"
+            placeholder="Tool, e.g. ghidra or typescript"
+            value={tool}
+            onChange={(e) => setTool(e.target.value)}
+          />
+          <input
+            className="w-full rounded border bg-background px-2 py-1 font-mono text-xs"
+            placeholder="C:\ghidra_11.4\docs\GhidraAPI_javadoc.zip"
+            value={docPath}
+            onChange={(e) => setDocPath(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && add()}
+          />
+          <button
+            className="w-full rounded bg-primary px-2 py-1 text-xs text-primary-foreground disabled:opacity-50"
+            disabled={!tool.trim() || !docPath.trim()}
+            onClick={add}
+          >
+            Add documentation
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Examples: <b>typescript</b> → <code>…\NeoAcademy\node_modules\typescript\lib</code> ·{' '}
+          <b>ghidra</b> → <code>&lt;Ghidra&gt;\docs\GhidraAPI_javadoc.zip</code> · any folder of HTML,
+          Markdown or text docs.
+        </p>
       </PopoverContent>
     </Popover>
   );

@@ -22,6 +22,8 @@ export interface EbookRunContext {
   fallbackTitle: string;
   /** Premise check results, saved with the book for writers and reviewers. */
   premises?: import('@/lib/book/principles').PremiseFinding[];
+  /** Documentation on this PC that claims are checked against. */
+  referenceLibraries?: Array<{ tool: string; path: string }>;
   /** quick | beginner | advanced. */
   bookStyle?: import('@/lib/book/styles').BookStyle;
   referenceMaterial?: string;
@@ -36,6 +38,15 @@ export interface EbookRunContext {
    * Waits for the user if something is missing; throws AbortError on pause.
    */
   preflightProject?: () => Promise<void>;
+  /**
+   * Show the verification plan and wait for the user's decision (approve,
+   * web docs, running code on this PC, fixture files). Throws AbortError on pause.
+   */
+  requestVerificationApproval?: (
+    plan: import('@/lib/book/verification-plan').VerificationPlan,
+    sandbox: { ready: boolean; reason?: string },
+    placements: Record<string, 'sandbox' | 'host' | 'missing'>,
+  ) => Promise<{ approved: boolean; allowWeb: boolean; allowHostCode: boolean; fixtures: Record<string, string> }>;
   /** Called once the book has a real title (from the outline or the planner). */
   onTitle?: (title: string, subtitle?: string) => void | Promise<void>;
   signal: AbortSignal;
@@ -90,6 +101,7 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       coverImagePrompt: ctx.imageGenerationEnabled ? first?.coverImagePrompt : undefined,
       premises: ctx.premises,
       bookStyle: ctx.bookStyle,
+      referenceLibraries: ctx.referenceLibraries,
     },
     {},
     signal,
@@ -117,6 +129,47 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   if (plan.hasProject && ctx.preflightProject) {
     ctx.setStatus("Checking the tools the book's project needs...");
     await ctx.preflightProject();
+  }
+
+  // Verification plan: how THIS book's claims and samples can be checked.
+  // Nothing in it runs until the user approves it.
+  if (ctx.factCheck) {
+    ctx.setStatus('Planning how this book will be verified...');
+    type PlanResponse = {
+      plan: import('@/lib/book/verification-plan').VerificationPlan;
+      sandbox: { ready: boolean; reason?: string };
+      placements: Record<string, 'sandbox' | 'host' | 'missing'>;
+    };
+    let vp = await postJson<PlanResponse>('/api/generate/book-verification-plan', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+    if (!vp.plan.decision) {
+      const needsApproval = vp.plan.checks.length + vp.plan.docSources.length + vp.plan.fixtures.length > 0;
+      const decision =
+        needsApproval && ctx.requestVerificationApproval
+          ? await ctx.requestVerificationApproval(vp.plan, vp.sandbox, vp.placements)
+          : { approved: needsApproval ? false : true, allowWeb: false, allowHostCode: false, fixtures: {} };
+      vp = await postJson<PlanResponse>(
+        '/api/generate/book-verification-plan',
+        { bookId: ctx.bookId, action: 'decide', ...decision },
+        ctx.apiHeaders(),
+        signal,
+      );
+    }
+    ctx.logProgress(
+      `[Ebook] Verification plan ${vp.plan.decision?.approved ? 'approved' : 'not approved'}: ` +
+        `${vp.plan.checks.length} check(s), ${vp.plan.docSources.length} documentation source(s)`,
+    );
+    if (vp.plan.decision?.approved && !vp.plan.assembled) {
+      ctx.setStatus('Assembling reference documentation (help output, bundled docs, official pages)...');
+      const assembled = await postJson<{ libraries: Array<{ tool: string; files: number }>; notes: string[] }>(
+        '/api/generate/book-references',
+        { bookId: ctx.bookId },
+        ctx.apiHeaders(),
+        signal,
+      );
+      ctx.logProgress(
+        `[Ebook] Reference library: ${assembled.libraries.map((l) => `${l.tool} (${l.files} files)`).join(', ') || 'nothing assembled'}`,
+      );
+    }
   }
 
   const statusResponse = await fetch(`/api/books?id=${encodeURIComponent(ctx.bookId)}`, {

@@ -56,6 +56,8 @@ import type { MediaGenerationRequest } from '@/lib/media/types';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import { runEbookGeneration } from './ebook-runner';
 import { PreflightPanel, type PreflightDecision } from './components/preflight-panel';
+import { VerificationPlanPanel, type VerificationDecision } from './components/verification-plan-panel';
+import type { VerificationPlan } from '@/lib/book/verification-plan';
 import type { PreflightResult } from '@/lib/book/preflight';
 import {
   OutlineReviewPanel,
@@ -3404,7 +3406,13 @@ function GenerationPreviewContent() {
    */
   const preflightGate = async (
     stage: 'start' | 'project',
-    options: { bookId?: string; mode?: 'class' | 'ebook'; factCheck: boolean; webSearch: boolean },
+    options: {
+      bookId?: string;
+      mode?: 'class' | 'ebook';
+      factCheck: boolean;
+      webSearch: boolean;
+      referenceLibraries?: Array<{ tool: string; path: string }>;
+    },
     signal: AbortSignal,
   ) => {
     for (;;) {
@@ -3452,6 +3460,45 @@ function GenerationPreviewContent() {
       setPreflightChecking(true);
     }
   };
+
+  // Verification plan approval (ebooks with fact-check).
+  const [verificationRequest, setVerificationRequest] = useState<{
+    plan: VerificationPlan;
+    sandbox: { ready: boolean; reason?: string };
+    placements: Record<string, 'sandbox' | 'host' | 'missing'>;
+  } | null>(null);
+  const verificationResolveRef = useRef<((d: VerificationDecision | 'pause') => void) | null>(null);
+
+  const requestVerificationApproval = (
+    plan: VerificationPlan,
+    sandbox: { ready: boolean; reason?: string },
+    placements: Record<string, 'sandbox' | 'host' | 'missing'>,
+    signal: AbortSignal,
+  ) =>
+    new Promise<VerificationDecision>((resolve, reject) => {
+      const onAbort = () => {
+        verificationResolveRef.current = null;
+        setVerificationRequest(null);
+        reject(new DOMException('Generation aborted', 'AbortError'));
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      verificationResolveRef.current = (decision) => {
+        signal.removeEventListener('abort', onAbort);
+        verificationResolveRef.current = null;
+        setVerificationRequest(null);
+        if (decision === 'pause') {
+          pauseGeneration();
+          reject(new DOMException('Generation paused', 'AbortError'));
+        } else {
+          resolve(decision);
+        }
+      };
+      setVerificationRequest({ plan, sandbox, placements });
+    });
 
   const handleOutlineDraftChange = useCallback((draft: SceneOutline[]) => {
     outlineReviewDraftRef.current = draft;
@@ -3770,6 +3817,7 @@ function GenerationPreviewContent() {
         'start',
         {
           mode: isEbook ? 'ebook' : 'class',
+          referenceLibraries: currentSession.requirements.referenceLibraries,
           factCheck: !!currentSession.requirements.factCheck,
           webSearch: !!currentSession.requirements.webSearch,
         },
@@ -5138,6 +5186,7 @@ function GenerationPreviewContent() {
           fallbackTitle: stage.name,
           premises: currentSession.premises,
           bookStyle: currentSession.requirements.bookStyle,
+          referenceLibraries: currentSession.requirements.referenceLibraries,
           referenceMaterial: referenceMaterial || undefined,
           userProfile:
             currentSession.requirements.userNickname || currentSession.requirements.userBio
@@ -5148,6 +5197,8 @@ function GenerationPreviewContent() {
           imageGenerationEnabled: !!useSettingsStore.getState().imageGenerationEnabled,
           factCheck: !!currentSession.requirements.factCheck,
           webSearch: !!currentSession.requirements.webSearch,
+          requestVerificationApproval: (plan, sandbox, placements) =>
+            requestVerificationApproval(plan, sandbox, placements, signal),
           preflightProject: () =>
             preflightGate(
               'project',
@@ -6242,6 +6293,15 @@ function GenerationPreviewContent() {
           style={{ animationDuration: '6s' }}
         />
       </div>
+
+      {verificationRequest && (
+        <VerificationPlanPanel
+          plan={verificationRequest.plan}
+          sandbox={verificationRequest.sandbox}
+          placements={verificationRequest.placements}
+          onDecision={(d) => verificationResolveRef.current?.(d)}
+        />
+      )}
 
       {preflightResult && (
         <PreflightPanel

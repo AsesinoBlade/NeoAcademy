@@ -40,4 +40,7 @@ export const PROMPT_IDS = {
   BOOK_PREMISES: 'book-premises',
   BOOK_PRINCIPLES: 'book-principles',
   BOOK_CONSISTENCY: 'book-consistency',
+  BOOK_VERIFICATION_PLAN: 'book-verification-plan',
+  BOOK_CROSS_CHECK: 'book-cross-check',
+  BOOK_CROSS_COMPARE: 'book-cross-compare',
 } as const;

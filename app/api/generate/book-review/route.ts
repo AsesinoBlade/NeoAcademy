@@ -23,7 +23,10 @@ import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { sanitiseSectionFigures } from '@/lib/book/figures';
 import { checkSectionMath, extractClaims, generateBookText, tableOfContents } from '@/lib/book/llm';
-import { buildProjectContext, extractProjectFiles, recordProjectFiles } from '@/lib/book/project';
+import { buildProjectContext, extractProjectFiles, listProjectFiles, projectDir, recordProjectFiles } from '@/lib/book/project';
+import { checkCodeSamples, formatCodeReport, type CodeCheckReport } from '@/lib/book/code-check';
+import { bookLibraries } from '@/lib/book/auto-references';
+import { crossCheckUnverified } from '@/lib/book/cross-check';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
   checkConsistency,
@@ -52,6 +55,20 @@ const reviewPath = (bookId: string, sectionId: string) =>
 
 const LEAK_RE = /^(?:>\s*)?(?:Wait[,.!]|Hmm[,.]|Actually,? (?:wait|no|let'?s)|Let me (?:re)?(?:check|think|fix))/gim;
 
+/** Every directory above a project header, so samples' #include <...> resolve. */
+async function projectIncludeDirs(bookId: string): Promise<string[]> {
+  const dirs = new Set<string>();
+  for (const f of await listProjectFiles(bookId)) {
+    if (!/\.(h|hh|hpp|hxx|inl)$/i.test(f.path)) continue;
+    let d = path.dirname(f.path);
+    while (d && d !== '.') {
+      dirs.add(path.join(projectDir(bookId), d));
+      d = path.dirname(d);
+    }
+  }
+  return [...dirs];
+}
+
 function figureCount(markdown: string): number {
   return (markdown.match(/^[ \t]*```[ \t]*(chart|mermaid|image)\b/gm) || []).length;
 }
@@ -78,11 +95,18 @@ export async function POST(req: NextRequest) {
     const claims = await extractClaims(req, original.slice(0, 20000), 12).catch(() => []);
     const evidence = await gatherEvidence(claims, {
       webSearch: !!webSearch,
+      libraries: bookLibraries(book),
       provider: (req.headers.get('x-web-search-provider') || undefined) as
         | import('@/lib/web-search/search').WebSearchProviderChoice
         | undefined,
     });
+    // Claims nothing could verify get an independent cross-check.
+    const crossChecked = await crossCheckUnverified(req, evidence, `${book.title} — ${ref.title}`).catch((error) => {
+      log.warn(`Cross-check failed for ${ref.sectionNumber}:`, error);
+      return 0;
+    });
     const notFound = evidence.filter((e) => e.verdict === 'not-found');
+    const disputed = evidence.filter((e) => e.verdict === 'disputed');
     const leaks = (original.match(LEAK_RE) || []).length;
 
     // Calculations: transcribed by the model, evaluated by Python (authoritative).
@@ -102,6 +126,18 @@ export async function POST(req: NextRequest) {
     }).catch((error) => {
       log.warn(`Consistency check failed for ${ref.sectionNumber}:`, error);
       return [];
+    });
+
+    // Code samples: compiled with the real compilers.
+    const codeOptions = {
+      skipProjectFiles: !!book.projectSpec,
+      projectRoot: book.projectSpec ? projectDir(bookId) : undefined,
+      includeDirs: book.projectSpec ? await projectIncludeDirs(bookId) : [],
+      plan: book.verificationPlan,
+    };
+    const code = await checkCodeSamples(original, codeOptions).catch((error) => {
+      log.warn(`Code check failed for ${ref.sectionNumber}:`, error);
+      return { checked: 0, withErrors: 0, results: [], unavailable: [] } as CodeCheckReport;
     });
 
     const mathReport = math
@@ -124,6 +160,7 @@ export async function POST(req: NextRequest) {
       projectContext,
       evidence: formatEvidence(evidence),
       mathReport,
+      codeReport: formatCodeReport(code),
       consistency: formatConflicts(conflicts),
       premiseStance: formatPremises(book.premises),
       sectionNumber: ref.sectionNumber,
@@ -145,7 +182,7 @@ export async function POST(req: NextRequest) {
     // 4. Guard rails
     let accepted = false;
     let rejectedReason = '';
-    if (corrections.length === 0 && leaks === 0 && !(math && math.wrong > 0) && conflicts.length === 0) {
+    if (corrections.length === 0 && leaks === 0 && !(math && math.wrong > 0) && conflicts.length === 0 && code.withErrors === 0 && disputed.length === 0) {
       rejectedReason = 'no corrections needed';
     } else if (!revised) {
       rejectedReason = 'editor returned no section';
@@ -157,19 +194,26 @@ export async function POST(req: NextRequest) {
       accepted = true;
     }
 
-    // Re-verify the maths of the revised text; one targeted fix round for
-    // anything still wrong, then verify again.
+    // Re-verify maths and code in the revised text; one targeted fix round
+    // for anything still wrong, then verify again.
     let mathAfter: Awaited<ReturnType<typeof checkSectionMath>> = null;
-    if (accepted && math) {
-      mathAfter = await checkSectionMath(req, revised).catch(() => null);
-      if (mathAfter && mathAfter.wrong > 0) {
-        log.warn(`${ref.sectionNumber}: ${mathAfter.wrong} calculation(s) still wrong after review — targeted fix`);
+    let codeAfter: CodeCheckReport | null = null;
+    if (accepted) {
+      if (math) mathAfter = await checkSectionMath(req, revised).catch(() => null);
+      if (code.checked > 0) codeAfter = await checkCodeSamples(revised, codeOptions).catch(() => null);
+      const mathLeft = mathAfter?.wrong ?? 0;
+      const codeLeft = codeAfter?.withErrors ?? 0;
+      if (mathLeft > 0 || codeLeft > 0) {
+        log.warn(
+          `${ref.sectionNumber}: ${mathLeft} calculation(s) and ${codeLeft} code sample(s) still wrong after review — targeted fix`,
+        );
         const fixPrompts = buildPrompt(PROMPT_IDS.BOOK_REVIEW, {
           bookTitle: book.title,
           tableOfContents: tableOfContents(book.outline, (p) => parseSectionSpec(p).title),
           projectContext,
-          evidence: '(already reviewed — only fix the calculations marked WRONG)',
-          mathReport: mathAfter.report,
+          evidence: '(already reviewed — only fix the calculations marked WRONG and the code samples that DO NOT COMPILE)',
+          mathReport: mathAfter ? mathAfter.report : '(already reviewed)',
+          codeReport: codeAfter ? formatCodeReport(codeAfter) : '(already reviewed)',
           consistency: '(already reviewed)',
           premiseStance: formatPremises(book.premises),
           sectionNumber: ref.sectionNumber,
@@ -177,13 +221,17 @@ export async function POST(req: NextRequest) {
           section: revised,
         });
         if (fixPrompts) {
-          const fixRaw = await generateBookText(req, fixPrompts.system, fixPrompts.user, 14000, 'book-review-math');
+          const fixRaw = await generateBookText(req, fixPrompts.system, fixPrompts.user, 14000, 'book-review-fix');
           const fixed = (fixRaw.match(/<section>([\s\S]*?)(?:<\/section>|$)/i)?.[1] ?? '').trim().replace(/^#{1,2}\s+[^\n]*\n+/, '');
           if (fixed && countWords(fixed) >= countWords(original) * 0.75 && figureCount(fixed) >= figureCount(original)) {
-            const recheck = await checkSectionMath(req, fixed).catch(() => null);
-            if (!recheck || recheck.wrong <= mathAfter.wrong) {
+            const mathRe = mathAfter ? await checkSectionMath(req, fixed).catch(() => null) : null;
+            const codeRe = codeAfter ? await checkCodeSamples(fixed, codeOptions).catch(() => null) : null;
+            const better =
+              (mathRe?.wrong ?? mathLeft) + (codeRe?.withErrors ?? codeLeft) <= mathLeft + codeLeft;
+            if (better) {
               revised = fixed;
-              mathAfter = recheck ?? mathAfter;
+              mathAfter = mathRe ?? mathAfter;
+              codeAfter = codeRe ?? codeAfter;
               corrections.push(...(fixRaw.match(/<corrections>([\s\S]*?)<\/corrections>/i)?.[1] ?? '')
                 .split('\n').map((l) => l.replace(/^\s*[-*]\s*/, '').trim()).filter((l) => l && !/^none\.?$/i.test(l)));
             }
@@ -228,6 +276,13 @@ export async function POST(req: NextRequest) {
       rejectedReason: rejectedReason || undefined,
       leakedReasoningLines: leaks,
       consistencyConflicts: conflicts,
+      code: {
+        checked: code.checked,
+        withErrorsBefore: code.withErrors,
+        withErrorsAfter: accepted ? (codeAfter?.withErrors ?? (code.checked ? 0 : null)) : code.withErrors,
+        unavailable: code.unavailable,
+        samples: code.results.map((r) => ({ quote: r.sample.quote, lang: r.sample.lang, status: r.status, messages: r.messages })),
+      },
       math: math
         ? {
             checked: math.checks.length,
@@ -249,6 +304,7 @@ export async function POST(req: NextRequest) {
         verdict: e.verdict,
         source: e.source,
         reference: e.reference,
+        ...(e.verdict === 'disputed' ? { independentAnswer: e.excerpt.slice(0, 600) } : {}),
       })),
     };
     await fs.mkdir(path.dirname(reviewPath(bookId, sectionId)), { recursive: true });
@@ -259,6 +315,8 @@ export async function POST(req: NextRequest) {
         `${notFound.length ? ` (${notFound.map((e) => e.claim.identifier).join(', ')})` : ''}, ` +
         `${corrections.length} correction(s), ${accepted ? 'applied' : `kept original — ${rejectedReason}`}` +
         `; ${conflicts.length} consistency conflict(s), ${newPrinciples} new principle(s)` +
+        (crossChecked ? `; cross-check: ${crossChecked} claim(s) settled, ${disputed.length} disputed` : '') +
+        (code.checked ? `; code: ${code.checked} sample(s) compiled, ${code.withErrors} with errors${accepted && codeAfter ? ` → ${codeAfter.withErrors} after review` : ''}` : '') +
         (math ? `; math: ${math.checks.length} checked, ${math.wrong} wrong${accepted && mathAfter ? ` → ${mathAfter.wrong} after review` : ''}` : '; math: not verified'),
     );
 
@@ -273,6 +331,9 @@ export async function POST(req: NextRequest) {
       mathWrongAfter: accepted ? (mathAfter?.wrong ?? null) : (math?.wrong ?? null),
       conflicts: conflicts.length,
       newPrinciples,
+      codeChecked: code.checked,
+      codeErrors: code.withErrors,
+      codeErrorsAfter: accepted ? (codeAfter?.withErrors ?? 0) : code.withErrors,
     });
   } catch (error) {
     log.error('Book review failed:', error);

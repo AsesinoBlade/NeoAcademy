@@ -318,6 +318,51 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
     );
   }
 
+  // Final appendix: how the book was verified (versions, coverage, open claims).
+  const { computeCoverage } = await import('./coverage');
+  const coverage = await computeCoverage(book.id);
+  if (coverage && coverage.claims > 0) {
+    const letter = chapters.some((c) => c.includes('id="appendix-project"')) ? 'B' : 'A';
+    const plan = book.verificationPlan;
+    const pct = (n: number) => `${Math.round((100 * n) / Math.max(1, coverage.claims))}%`;
+    const rows: Array<[string, number]> = [
+      ['Confirmed against documentation (installed tools, bundled docs, reference libraries)', coverage.byDocs],
+      ['Confirmed against official web documentation', coverage.byWeb],
+      ['Cross-checked by an independent expert answer (no documentation available)', coverage.byCrossCheck],
+      ['Found to be wrong and corrected during review', coverage.corrected],
+      ['Disputed — an independent answer disagreed (see below)', coverage.disputed],
+      ['Not verifiable with the sources available (see below)', coverage.unverified],
+    ];
+    const open = coverage.openClaims.slice(0, 200);
+    const bySection = new Map<string, typeof open>();
+    for (const c of open) bySection.set(`${c.section} ${c.title}`, [...(bySection.get(`${c.section} ${c.title}`) ?? []), c]);
+    toc.push(`<li class="toc-chapter"><a href="#appendix-verification"><span class="toc-num">${letter}</span>How this book was verified</a></li>`);
+    chapters.push(
+      `<article class="chapter appendix" id="appendix-verification" data-chapter="${letter}">
+        <header class="chapter-opener">
+          <div class="chapter-kicker">Appendix ${letter}</div>
+          <h1>How this book was verified</h1>
+          <p class="chapter-intro">Every section was checked after it was written. This appendix shows what was checked, how, and what you should double-check yourself.</p>
+        </header>
+        <section class="book-section">
+          ${plan?.versions?.length ? `<h2>Versions this book targets</h2><ul>${plan.versions.map((v) => `<li>${escapeHtml(v.tool)} ${escapeHtml(v.version)}</li>`).join('')}</ul><p>Menus, commands and APIs can differ in other versions.</p>` : ''}
+          <h2>Claims</h2>
+          <p>${coverage.claims.toLocaleString()} specific technical claims (commands, options, APIs, menu paths, facts) were checked across ${coverage.sectionsReviewed} sections.</p>
+          <table><thead><tr><th>Outcome</th><th>Claims</th><th>Share</th></tr></thead><tbody>
+            ${rows.map(([label, n]) => `<tr><td>${label}</td><td>${n}</td><td>${pct(n)}</td></tr>`).join('')}
+          </tbody></table>
+          <h2>Code and calculations</h2>
+          <p>${coverage.codeSamples} code sample(s) were compiled or run with the real tools${coverage.codeErrorsLeft ? ` (${coverage.codeErrorsLeft} still had errors after review)` : ''}; ${coverage.calculations} calculation(s) were recomputed exactly${coverage.calculationsWrongLeft ? ` (${coverage.calculationsWrongLeft} could not be corrected automatically)` : ''}.
+          Code was only ever run in an isolated sandbox without network access; text from the web was used for facts only, never as code.</p>
+          ${bySection.size ? `<h2>Please double-check</h2>
+          <p>These claims could not be confirmed. Disputed ones were contradicted by an independent answer; check them against your version's documentation.</p>
+          ${[...bySection.entries()].map(([sec, list]) => `<h3>${escapeHtml(sec)}</h3><ul>${list.map((c) => `<li><strong>${c.status === 'disputed' ? 'Disputed' : 'Unverified'}:</strong> ${escapeHtml(c.statement)}${c.note ? `<br><em>Independent answer: ${escapeHtml(c.note.split('\n')[0].slice(0, 300))}</em>` : ''}</li>`).join('')}</ul>`).join('\n')}
+          ${coverage.openClaims.length > open.length ? `<p>…and ${coverage.openClaims.length - open.length} more.</p>` : ''}` : '<p>Every checked claim was confirmed or corrected.</p>'}
+        </section>
+      </article>`,
+    );
+  }
+
   const coverFile = path.join(imagesDir(book.id), 'cover.png');
   const coverImage = (await fileExists(coverFile))
     ? `<img class="cover-image" src="${pathToFileURL(coverFile).href}" alt="">`
