@@ -12,7 +12,9 @@ import {
   Globe2,
   ListChecks,
   ShieldCheck,
+  BookOpen,
 } from 'lucide-react';
+import { BOOK_STYLES, type BookStyle } from '@/lib/book/styles';
 import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
@@ -49,6 +51,9 @@ export interface GenerationToolbarProps {
   onReviewOutlineChange: (v: boolean) => void;
   /** Shown for ebooks only: fact-check every section against docs / web. */
   showFactCheck?: boolean;
+  /** Ebooks only: quick how-to / beginner's guide / in-depth advanced. */
+  bookStyle?: BookStyle;
+  onBookStyleChange?: (v: BookStyle) => void;
   factCheck?: boolean;
   onFactCheckChange?: (v: boolean) => void;
   onSettingsOpen: (section?: SettingsSection) => void;
@@ -67,6 +72,8 @@ export function GenerationToolbar({
   reviewOutline,
   onReviewOutlineChange,
   showFactCheck,
+  bookStyle,
+  onBookStyleChange,
   factCheck,
   onFactCheckChange,
   onSettingsOpen,
@@ -561,6 +568,32 @@ export function GenerationToolbar({
           revise it with notes before the class is built. Turn off for unattended generation.
         </TooltipContent>
       </Tooltip>
+
+      {/* ── Book style (ebooks) ── */}
+      {showFactCheck && (
+        <Select value={bookStyle ?? 'advanced'} onValueChange={(v) => onBookStyleChange?.(v as BookStyle)}>
+          <SelectTrigger
+            size="sm"
+            className={cn(pillActive, 'h-7 w-auto gap-1.5 border-0 shadow-none focus-visible:ring-0')}
+            aria-label="Book style"
+          >
+            <BookOpen className="size-3.5" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            {Object.values(BOOK_STYLES).map((style) => (
+              <SelectItem key={style.id} value={style.id} textValue={style.label}>
+                <div className="flex flex-col">
+                  <span>{style.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {style.hint} · ~{style.pages} pages
+                  </span>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
 
       {/* ── Fact-check (ebooks) ── */}
       {showFactCheck && (

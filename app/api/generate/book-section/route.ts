@@ -21,6 +21,7 @@ import { extractClaims } from '@/lib/book/llm';
 import { buildProjectContext, extractProjectFilesDetailed, recordProjectFiles } from '@/lib/book/project';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import { formatPremises, formatPrinciples, readPrinciples } from '@/lib/book/principles';
+import { getBookStyle } from '@/lib/book/styles';
 import {
   countWords,
   listSectionRefs,
@@ -107,7 +108,8 @@ export async function POST(req: NextRequest) {
     const chapter = book.outline[ref.chapterIndex];
     const chapterRefs = refs.filter((r) => r.chapterIndex === ref.chapterIndex);
     const isLastInChapter = chapterRefs[chapterRefs.length - 1]?.id === ref.id;
-    const isSummary = /summary|exercise|review/i.test(ref.title);
+    const isSummary = /summary|exercise|review|recap|checklist|practice/i.test(ref.title);
+    const style = getBookStyle(book.bookStyle);
 
     // Continuity: the end of the previous section (in book order).
     const previousRef = refs[refs.indexOf(ref) - 1];
@@ -168,10 +170,11 @@ export async function POST(req: NextRequest) {
         if (missing.length) log.warn(`${ref.sectionNumber}: spec mentions non-existent ${missing.join(', ')}`);
       }
     }
-    const targetWords = isSummary ? '900-1,400' : '1,600-2,300';
+    const targetWords = isSummary ? style.summaryWords : style.sectionWords;
 
     const prompts = buildPrompt(PROMPT_IDS.BOOK_SECTION, {
       targetWords,
+      styleGuidance: style.writerGuidance,
       imageInstructions: imagesEnabled ? IMAGE_INSTRUCTIONS_ENABLED : IMAGE_INSTRUCTIONS_DISABLED,
       bookTitle: book.title,
       bookSubtitle: book.subtitle ? `*${book.subtitle}*` : '',

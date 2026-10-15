@@ -33,6 +33,8 @@ export interface BookRecord {
   projectSpec?: import('./project').ProjectSpec | null;
   /** Verify claims against local docs / web and run a technical review per section. */
   factCheck?: boolean;
+  /** quick | beginner | advanced — see lib/book/styles. Missing = advanced. */
+  bookStyle?: import('./styles').BookStyle;
   /** Premise check of the request: verdicts + how the book treats each premise. */
   premises?: import('./principles').PremiseFinding[];
   createdAt: string;

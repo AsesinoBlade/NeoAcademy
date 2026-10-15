@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
       outline: SceneOutline[];
       coverImagePrompt?: string;
       premises?: import('@/lib/book/principles').PremiseFinding[];
+      bookStyle?: import('@/lib/book/styles').BookStyle;
     };
     if (!body.id || !body.title || !Array.isArray(body.outline) || body.outline.length === 0) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'id, title and outline are required');
@@ -53,6 +54,7 @@ export async function POST(request: NextRequest) {
       outline: body.outline,
       coverImagePrompt: body.coverImagePrompt,
       ...(Array.isArray(body.premises) ? { premises: body.premises } : {}),
+      ...(body.bookStyle ? { bookStyle: body.bookStyle } : {}),
     });
     return apiSuccess({ book: record });
   } catch (error) {

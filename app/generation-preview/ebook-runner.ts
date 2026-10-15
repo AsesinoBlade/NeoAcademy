@@ -22,6 +22,8 @@ export interface EbookRunContext {
   fallbackTitle: string;
   /** Premise check results, saved with the book for writers and reviewers. */
   premises?: import('@/lib/book/principles').PremiseFinding[];
+  /** quick | beginner | advanced. */
+  bookStyle?: import('@/lib/book/styles').BookStyle;
   referenceMaterial?: string;
   userProfile?: string;
   imageGenerationEnabled: boolean;
@@ -87,6 +89,7 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       outline: ctx.outline,
       coverImagePrompt: ctx.imageGenerationEnabled ? first?.coverImagePrompt : undefined,
       premises: ctx.premises,
+      bookStyle: ctx.bookStyle,
     },
     {},
     signal,

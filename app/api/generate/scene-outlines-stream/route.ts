@@ -34,6 +34,7 @@ import { apiError } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
 import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
 import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { getBookStyle, sizeGuidance } from '@/lib/book/styles';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 const log = createLogger('Outlines Stream');
@@ -173,8 +174,6 @@ async function saveOutlineDebug(text: string, label: string): Promise<string | n
   }
 }
 
-/** A deep-dive book needs many chapters; fewer means the model stopped early. */
-const MIN_BOOK_CHAPTERS = 8;
 
 export async function POST(req: NextRequest) {
   try {
@@ -187,8 +186,10 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Requirements are required');
     }
 
-    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision, mode, premises } =
+    const { requirements, pdfText, pdfImages, imageMapping, researchContext, agents, revision, mode, premises, bookStyle } =
       body as {
+        /** Ebooks: quick | beginner | advanced (see lib/book/styles). */
+        bookStyle?: string;
         /** Ebooks: premise check results the plan must follow. */
         premises?: import('@/lib/book/principles').PremiseFinding[];
         /** 'ebook' plans a book (chapters → sections) instead of a class. */
@@ -267,6 +268,15 @@ export async function POST(req: NextRequest) {
         ? `## Reader Profile\n\nReader: ${requirements.userNickname || 'Unknown'}${requirements.userBio ? ` — ${requirements.userBio}` : ''}\n\nAdapt depth, examples and assumed background to this reader.\n\n---`
         : '';
 
+    const styleProfile = getBookStyle(bookStyle);
+    const styleVars = {
+      sizeGuidance: sizeGuidance(styleProfile),
+      closingSection: styleProfile.closingSection,
+      styleGuidance: styleProfile.outlineGuidance,
+      chapterRange: `${styleProfile.chapters[0]}–${styleProfile.chapters[1]}`,
+      sectionRange: `${styleProfile.sectionsPerChapter[0]}–${styleProfile.sectionsPerChapter[1]}`,
+    };
+
     const prompts =
       mode === 'ebook'
         ? buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_BOOK_OUTLINE, {
@@ -275,6 +285,7 @@ export async function POST(req: NextRequest) {
             pdfContent: pdfText ? pdfText.substring(0, MAX_SOURCE_TEXT_CHARS) : 'None',
             researchContext: researchContext || 'None',
             userProfile: userProfileText,
+            ...styleVars,
             imagePolicy: imageGenerationEnabled
               ? 'available — generated illustrations and photo-realistic pictures, for things that need no readable text or exact detail (equipment, settings, people, historical scenes, conceptual illustrations). Image models cannot render text, so never plan pictures of screenshots, user interfaces, file/directory trees, code, diagrams, grids, tables or anything with numbers or labels — plan code blocks, Mermaid diagrams, tables or charts for those. Also give the FIRST chapter a "coverImagePrompt": a description of an elegant, text-free cover illustration for the book.'
               : 'NOT available (image generation is disabled) — do not plan pictures; rely on charts, diagrams and tables.',
@@ -508,9 +519,9 @@ export async function POST(req: NextRequest) {
             !/\]\s*(```)?\s*$/.test(text.trim()) ||
             // A closed array is not proof of completeness for a book: a model
             // that copies a one-item example will close the array after it.
-            (mode === 'ebook' && parsedOutlines.length < MIN_BOOK_CHAPTERS);
+            (mode === 'ebook' && parsedOutlines.length < styleProfile.minChapters);
 
-          if (mode === 'ebook' && parsedOutlines.length > 0 && parsedOutlines.length < MIN_BOOK_CHAPTERS) {
+          if (mode === 'ebook' && parsedOutlines.length > 0 && parsedOutlines.length < styleProfile.minChapters) {
             const debugFile = await saveOutlineDebug(lastFullText, 'book-short');
             log.warn(
               `Book outline has only ${parsedOutlines.length} chapter(s); asking the model to continue` +
@@ -537,9 +548,9 @@ export async function POST(req: NextRequest) {
             const continuationPrompt =
               prompts.user +
               `\n\n## CONTINUATION REQUEST\n` +
-              (mode === 'ebook' && parsedOutlines.length < MIN_BOOK_CHAPTERS
+              (mode === 'ebook' && parsedOutlines.length < styleProfile.minChapters
                 ? `Your previous output stopped after only ${parsedOutlines.length} chapter(s), but this book needs ` +
-                  `14–22 chapters covering everything the request asks for (every named technique/topic must get its own section). `
+                  `${styleProfile.chapters[0]}–${styleProfile.chapters[1]} chapters covering everything the request asks for (every named technique/topic must get its own section). `
                 : `Your previous output was cut off. `) +
               `These ${unit} already exist:\n${soFar}\n\n` +
               `Output ONLY a JSON array containing the REMAINING ${unit}, starting at ${mode === 'ebook' ? 'chapter' : 'scene'} ${parsedOutlines.length + 1} ` +

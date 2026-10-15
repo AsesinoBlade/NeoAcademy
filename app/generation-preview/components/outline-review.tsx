@@ -119,6 +119,7 @@ export function OutlineReviewPanel({
   isPausing,
   mode = 'class',
   premises,
+  bookStyle,
 }: {
   outlines: SceneOutline[];
   /** Called on every edit so the parent can keep the latest draft. */
@@ -129,6 +130,8 @@ export function OutlineReviewPanel({
   mode?: 'class' | 'ebook';
   /** Ebooks: premise check results, shown above the outline. */
   premises?: PremiseFinding[];
+  /** Ebooks: book style, for the page estimate. */
+  bookStyle?: 'quick' | 'beginner' | 'advanced';
 }) {
   const labels = LABELS[mode];
   const [draft, setDraft] = useState<SceneOutline[]>(outlines);
@@ -192,7 +195,7 @@ export function OutlineReviewPanel({
                     draft.reduce(
                       (sum, o) => sum + (o.keyPoints || []).filter((p) => p.trim()).length,
                       0,
-                    ) * 4.5,
+                    ) * (bookStyle === 'quick' ? 2 : bookStyle === 'beginner' ? 3.2 : 4.5),
                   )} pages)`
                 : Object.entries(counts).length > 0 &&
                   ` · ${Object.entries(counts)

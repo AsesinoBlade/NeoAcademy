@@ -4926,6 +4926,7 @@ function GenerationPreviewContent() {
               revision,
               mode: isEbook ? 'ebook' : 'class',
               premises: isEbook ? currentSession.premises : undefined,
+              bookStyle: isEbook ? currentSession.requirements.bookStyle : undefined,
             }),
             signal,
           })
@@ -5136,6 +5137,7 @@ function GenerationPreviewContent() {
           language: currentSession.requirements.language || 'en-US',
           fallbackTitle: stage.name,
           premises: currentSession.premises,
+          bookStyle: currentSession.requirements.bookStyle,
           referenceMaterial: referenceMaterial || undefined,
           userProfile:
             currentSession.requirements.userNickname || currentSession.requirements.userBio
@@ -6258,6 +6260,7 @@ function GenerationPreviewContent() {
           isPausing={isPausing}
           mode={reviewMode}
           premises={reviewMode === 'ebook' ? session?.premises : undefined}
+          bookStyle={reviewMode === 'ebook' ? session?.requirements.bookStyle : undefined}
         />
       )}
 
