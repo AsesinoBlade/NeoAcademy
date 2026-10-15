@@ -67,7 +67,7 @@ function runTool(tool: string, args: string[], timeoutMs = 15000): Promise<strin
     execFile(
       tool,
       args,
-      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true, encoding: 'utf-8' },
+      { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, windowsHide: true, encoding: 'utf-8' },
       (error, stdout, stderr) => {
         // Unknown names make cmake exit non-zero with a message: that's an answer, not a failure.
         const out = `${stdout ?? ''}${stderr ?? ''}`;
@@ -109,7 +109,7 @@ const firstLines = (text: string, n = 18) => text.split('\n').slice(0, n).join('
 
 // ── CMake: local documentation oracle ─────────────────────────────────────
 
-async function checkCMake(claim: Claim): Promise<Evidence | null> {
+async function checkCMakeSpecific(claim: Claim): Promise<Evidence | null> {
   if (!(await toolAvailable('cmake'))) return null;
   const id = claim.identifier.trim();
 
@@ -219,6 +219,171 @@ async function checkCMake(claim: Claim): Promise<Evidence | null> {
   }
 
   return null;
+}
+
+// ── CMake: robust verdicts ────────────────────────────────────────────────
+//
+// The specific lookups above (--help-command / --help-variable / ...) only
+// cover exact names of one kind. Many real things are documented differently:
+// command lines ("cmake -S . -B build"), templated names (CMAKE_CXX_COMPILER is
+// documented as CMAKE_<LANG>_COMPILER, ZLIB_FOUND as <PackageName>_FOUND),
+// keywords (PUBLIC, RUNTIME), generator names, files (CMakeCache.txt) and
+// preset fields (configurePresets). So "not found" is only reported when the
+// name appears NOWHERE in CMake's complete documentation.
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Whole-token search: the name must not be part of a longer identifier/option. */
+function findToken(haystack: string, token: string): number {
+  if (!token) return -1;
+  const re = new RegExp(`(?<![\\w-])${escapeRe(token)}(?![\\w-])`);
+  return haystack.search(re);
+}
+
+let cmakeFullDocs: Promise<string | null> | null = null;
+function fullCMakeDocs(): Promise<string | null> {
+  cmakeFullDocs ??= runTool('cmake', ['--help-full'], 60000);
+  return cmakeFullDocs;
+}
+
+/** Templated documentation names (<LANG>, <CONFIG>, <PackageName>...) as regexes. */
+const templateCache = new Map<string, Promise<RegExp[]>>();
+function templatedNames(listFlag: string): Promise<RegExp[]> {
+  if (!templateCache.has(listFlag)) {
+    templateCache.set(
+      listFlag,
+      (listFlag === '--help-full' ? fullCMakeDocs() : runTool('cmake', [listFlag])).then((out) => {
+        const text = out ?? '';
+        // Lists: one name per line. Full docs: any identifier-like token with a
+        // <placeholder>, e.g. <PackageName>_DIR, FETCHCONTENT_SOURCE_DIR_<uppercaseName>.
+        const names =
+          listFlag === '--help-full'
+            ? [...new Set(text.match(/[A-Za-z0-9_]*<[A-Za-z][A-Za-z_-]*>[A-Za-z0-9_<>-]*/g) ?? [])]
+            : text.split('\n').map((l) => l.trim());
+        return names
+          .filter((l) => l.includes('<'))
+          // Require real literal text outside the placeholders ("<name>" alone would match anything).
+          .filter((l) => l.replace(/<[^>]+>/g, '').replace(/[^A-Za-z0-9]/g, '').length >= 3)
+          .map((l) => new RegExp(`^${l.split(/<[^>]+>/).map(escapeRe).join('[A-Za-z0-9_]+')}$`));
+      }),
+    );
+  }
+  return templateCache.get(listFlag)!;
+}
+
+/** Normalise what the model wrote: ${VAR} → VAR, set(X 17) → set, quotes, trailing punctuation. */
+function normaliseCMakeIdentifier(raw: string): string {
+  let id = raw.trim().replace(/^[`'"]+|[`'",.;:]+$/g, '');
+  const varRef = id.match(/^\$\{([^}]+)\}$/);
+  if (varRef) id = varRef[1];
+  if (/^[A-Za-z_][\w]*\s*\(/.test(id)) id = id.replace(/\s*\([\s\S]*$/, '');
+  return id;
+}
+
+async function checkCMake(claim: Claim): Promise<Evidence | null> {
+  if (!(await toolAvailable('cmake'))) return null;
+  const id = normaliseCMakeIdentifier(claim.identifier);
+
+  // 1. Command lines: check the program and each option it uses. A bare
+  //    option ("--output-on-failure") belongs to the claimed program.
+  const program0 = ['ctest', 'cpack'].includes(claim.tool ?? '') ? claim.tool! : 'cmake';
+  const asCli = /^--?[A-Za-z]/.test(id) ? `${program0} ${id}` : id;
+  const cli = asCli.match(/^(cmake|ctest|cpack)(\s.*)?$/);
+  if (cli) {
+    const program = cli[1];
+    const options = [...new Set((cli[2] ?? '').split(/\s+/).filter((t) => /^--?[A-Za-z]/.test(t)).map((t) => t.split('=')[0]))];
+    if (options.length === 0) {
+      return { claim, verdict: 'confirmed', source: 'local-docs', reference: `${program} --version`, excerpt: `${program} is installed.` };
+    }
+    const manual = (await runTool('cmake', ['--help-manual', `${program}.1`])) ?? '';
+    // Build/install modes print their own option lists; the full docs mention
+    // options the manual's text may not.
+    const help = [
+      (await runTool(program, ['--help'])) ?? '',
+      program === 'cmake' && options.includes('--build') ? ((await runTool('cmake', ['--build'])) ?? '') : '',
+      program === 'cmake' && options.includes('--install') ? ((await runTool('cmake', ['--install'])) ?? '') : '',
+      (await fullCMakeDocs()) ?? '',
+    ].join('\n');
+    const missing = options.filter((o) => findToken(manual, o) < 0 && findToken(help, o) < 0);
+    return {
+      claim,
+      verdict: missing.length ? 'not-found' : 'confirmed',
+      source: 'local-docs',
+      reference: `cmake --help-manual ${program}.1 / ${program} --help`,
+      excerpt: missing.length
+        ? `${program} has no option ${missing.join(', ')}.`
+        : options
+            .map((o) => {
+              const i = findToken(manual, o);
+              return i >= 0 ? excerptAround(manual, i, 0, 4) : `${o}: listed in ${program} --help`;
+            })
+            .join('\n')
+            .slice(0, 1500),
+    };
+  }
+
+  // 2. Exact lookup of the claimed kind (command, variable, property, module, genex...).
+  const specific = await checkCMakeSpecific({ ...claim, identifier: id });
+  if (specific && specific.verdict !== 'not-found') return specific;
+  // These checks are already exact: "is X an argument of command Y" and the
+  // generator-expression manual. A token existing elsewhere doesn't make them true.
+  if (specific && (claim.kind === 'command-argument' || claim.kind === 'generator-expression')) return specific;
+
+  // 3. Templated names: CMAKE_CXX_COMPILER ↔ CMAKE_<LANG>_COMPILER, ZLIB_FOUND ↔ <PackageName>_FOUND.
+  for (const [flag, label] of [
+    ['--help-variable-list', 'variable'],
+    ['--help-property-list', 'property'],
+    ['--help-full', 'name'],
+  ] as const) {
+    // CMake's own namespaces (CMAKE_*, CTEST_*, CPACK_*) are documented by name
+    // or by templates that start with that prefix — never by "<PackageName>_..."
+    // (which would make CMAKE_INCLUDE_DIRS look like a package variable).
+    const ownNamespace = /^(CMAKE|CTEST|CPACK)_/.test(id);
+    const match = (await templatedNames(flag)).find(
+      (re) => re.test(id) && !(ownNamespace && re.source.startsWith('^[A-Za-z0-9_]+')),
+    );
+    if (match) {
+      return {
+        claim,
+        verdict: 'confirmed',
+        source: 'local-docs',
+        reference: `cmake ${flag}`,
+        excerpt: `${id} matches the documented ${label} pattern ${match.source.replace(/\[A-Za-z0-9_\]\+/g, '<…>').replace(/\\/g, '')}.`,
+      };
+    }
+  }
+
+  // 4. Anywhere in the complete documentation (keywords, generators, files, preset fields...).
+  const docs = await fullCMakeDocs();
+  if (docs) {
+    const index = findToken(docs, id);
+    if (index >= 0) {
+      return { claim, verdict: 'confirmed', source: 'local-docs', reference: 'cmake --help-full', excerpt: excerptAround(docs, index, 1, 8) };
+    }
+  }
+
+  // 5. Third-party names (fmt::fmt, fmt-config.cmake) are outside CMake's own
+  //    documentation: unknown, not "non-existent".
+  if (/::|-config\.cmake$|Config\.cmake$/i.test(id) && !/^CMake::/i.test(id)) {
+    return {
+      claim,
+      verdict: 'unknown',
+      source: 'local-docs',
+      reference: 'cmake --help-full',
+      excerpt: `${id} is not part of CMake itself (a third-party package or target); CMake's documentation cannot confirm or deny it.`,
+    };
+  }
+
+  if (specific) return specific; // genuinely not found
+  return docs
+    ? {
+        claim,
+        verdict: 'not-found',
+        source: 'local-docs',
+        reference: 'cmake --help-full',
+        excerpt: `"${id}" does not appear anywhere in the CMake documentation.`,
+      }
+    : null;
 }
 
 // ── Generic tools: `<tool> --help` for CLI options ─────────────────────────
