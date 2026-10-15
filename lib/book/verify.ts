@@ -211,9 +211,27 @@ export async function runProjectBuild(bookId: string, commands: string[]): Promi
       multiConfig = adapted.multiConfig;
     }
     // Multi-config generators (Visual Studio) need a configuration for tests.
-    if (program === 'ctest' && multiConfig && !argv.includes('-C')) argv = [...argv, '-C', 'Debug'];
+    if (program === 'ctest' && multiConfig && !argv.includes('-C') && !argv.includes('--build-config')) {
+      argv = [...argv, '-C', 'Debug'];
+      note = (note ? `${note} ` : '') + 'Added -C Debug (multi-config generator).';
+    }
 
     const result = await run(argv, work, 15 * 60 * 1000);
+
+    // Multi-config generators (Visual Studio — CMake's default on Windows —
+    // Xcode, Ninja Multi-Config) are detected from the generated cache, not
+    // from the command line: `cmake -S . -B build` with no -G is multi-config
+    // on Windows, and ctest then needs -C <config>.
+    if (program === 'cmake' && result.code === 0 && !argv.includes('--build') && !argv.includes('--install')) {
+      const bIndex = argv.findIndex((a) => a === '-B' || (a.startsWith('-B') && a.length > 2));
+      const buildDir = bIndex < 0 ? '.' : argv[bIndex] === '-B' ? argv[bIndex + 1] ?? '.' : argv[bIndex].slice(2);
+      const cache = await fs.readFile(path.join(work, buildDir, 'CMakeCache.txt'), 'utf-8').catch(() => '');
+      const generator = cache.match(/^CMAKE_GENERATOR:INTERNAL=(.+)$/m)?.[1]?.trim() ?? '';
+      if (generator) {
+        multiConfig = /visual studio|xcode|multi-config/i.test(generator);
+        toolchain.add(`Generator: ${generator}`);
+      }
+    }
     // ctest exits 0 when it finds no tests at all (e.g. enable_testing()
     // missing from the top-level CMakeLists.txt) — that is a failure here.
     if (program === 'ctest' && result.code === 0 && /No tests were found/i.test(result.output)) {

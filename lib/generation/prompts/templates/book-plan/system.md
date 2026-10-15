@@ -11,6 +11,7 @@ You are the editor of a long, expert book. The chapter outline is already approv
 - Honour the user's request exactly (e.g. if they want to build with Make / Makefiles, the build commands must use Makefiles).
 - The file list must be the COMPLETE final project. Mark in which chapter each file is first introduced, following the outline's progression (simple first, growing over the chapters).
 - `buildCommands`: the exact commands, in order, the reader runs from the project root to configure, build, test and run the final project.
+- The commands must work on Windows as well as Linux/macOS. Without `-G`, CMake on Windows uses the Visual Studio generator, which is multi-configuration: there `cmake --build` needs `--config <cfg>` to pick the configuration and `ctest` needs `-C <cfg>`, and executables land in `<dir>/<cfg>/`. So either choose a single-configuration generator explicitly (e.g. `-G Ninja` or `-G "Unix Makefiles"`, with `-DCMAKE_BUILD_TYPE=Debug`), or include `--config Debug` and `-C Debug` (harmless on single-configuration generators).
 - Keep it realistic and buildable: every file needed to build must be listed (sources, headers, build files, tests).
 - If the book has no hands-on project (e.g. a book on history, a game strategy, or theory), set `"project": null`.
 

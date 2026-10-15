@@ -310,11 +310,19 @@ async function cached<T>(key: string, producer: () => Promise<T>): Promise<T> {
 
 type Provider = import('@/lib/web-search/search').WebSearchProviderChoice;
 
+/** Searches allowed for one gatherEvidence() call; cached answers are free. */
+interface SearchBudget {
+  left: number;
+}
+
 async function search(
   query: string,
-  provider?: Provider,
+  provider: Provider | undefined,
+  budget: SearchBudget,
 ): Promise<Array<{ title: string; url: string; content: string }>> {
   return cached(`search:${query}`, async () => {
+    if (budget.left <= 0) return [];
+    budget.left--;
     const { webSearch } = await import('@/lib/web-search/search');
     return (await webSearch(query, { maxResults: 4, provider })).map((r) => ({
       title: r.title,
@@ -354,7 +362,7 @@ function coreIdentifier(identifier: string): string {
   return id.replace(/\(.*$/, '').split(/[\s=]/)[0];
 }
 
-async function checkWeb(claim: Claim, provider?: Provider): Promise<Evidence | null> {
+async function checkWeb(claim: Claim, provider: Provider | undefined, budget: SearchBudget): Promise<Evidence | null> {
   const tool = (claim.tool || '').toLowerCase();
   const domain = OFFICIAL_DOCS[tool];
   const core = coreIdentifier(claim.identifier);
@@ -363,13 +371,13 @@ async function checkWeb(claim: Claim, provider?: Provider): Promise<Evidence | n
     // 1. Official documentation site first.
     let results: Array<{ title: string; url: string; content: string }> = [];
     if (domain && claim.kind !== 'fact') {
-      results = await search(`${core} site:${domain.split('/')[0]}`, provider);
+      results = await search(`${core} site:${domain.split('/')[0]}`, provider, budget);
       results = results.filter((r) => r.url.includes(domain.split('/')[0]));
     }
     const official = results.length > 0;
     // 2. Otherwise the model's own query.
     if (!official) {
-      results = await search(claim.query || `${tool} ${core} documentation`.trim(), provider);
+      results = await search(claim.query || `${tool} ${core} documentation`.trim(), provider, budget);
     }
     if (results.length === 0) return null;
 
@@ -411,14 +419,10 @@ export async function gatherEvidence(
   options: { webSearch: boolean; provider?: Provider; maxWebLookups?: number },
 ): Promise<Evidence[]> {
   const evidence: Evidence[] = [];
-  // Web lookups are the scarce resource (upstream engines rate-limit); local
-  // documentation checks are unlimited.
-  let webBudget = options.maxWebLookups ?? 6;
-  const webAllowed = () => {
-    if (!options.webSearch || webBudget <= 0) return false;
-    webBudget--;
-    return true;
-  };
+  // Web searches are the scarce resource (upstream engines rate-limit);
+  // local documentation checks are unlimited and cached searches are free.
+  const budget: SearchBudget = { left: options.maxWebLookups ?? 6 };
+  const webAllowed = () => !!options.webSearch && budget.left > 0;
   for (const claim of claims) {
     const isCMake = (claim.tool || '').toLowerCase() === 'cmake' || claim.identifier.startsWith('$<');
     let found: Evidence | null = null;
@@ -427,7 +431,7 @@ export async function gatherEvidence(
       if (!found) found = await checkPython(claim);
       if (!found) found = await checkCliOption(claim);
       if (!found && (claim.kind !== 'fact' || claim.query) && webAllowed()) {
-        found = await checkWeb(claim, options.provider);
+        found = await checkWeb(claim, options.provider, budget);
       }
     } catch (error) {
       log.warn(`Reference lookup failed for ${claim.identifier}:`, error);

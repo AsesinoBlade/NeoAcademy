@@ -86,6 +86,11 @@ export async function webSearch(query: string, opts: SearchOptions = {}): Promis
   for (const id of order) {
     const engine = engines[id];
     if (!engine) continue;
+    if (id === 'searxng' && searxngDegraded()) {
+      // Paused after SearXNG's engines were all found blocked: answer empty
+      // without a request (and without spilling over to DuckDuckGo).
+      return [];
+    }
     try {
       const results = await engine.run();
       log.info(`Web search via ${engine.name}: ${results.length} results`);
@@ -265,6 +270,26 @@ async function searxngSearch(baseUrl: string, query: string, maxResults: number)
     })) as Promise<SearchResult[]>;
 }
 
+/** SearXNG's enabled web ("general") engines, from its /config endpoint (cached 10 min). */
+let searxEngines: { at: number; names: Set<string> } | null = null;
+async function searxngGeneralEngines(baseUrl: string): Promise<Set<string> | null> {
+  if (searxEngines && Date.now() - searxEngines.at < 10 * 60 * 1000) return searxEngines.names;
+  try {
+    const res = await fetch(new URL('/config', baseUrl), { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { engines?: Array<{ name?: string; enabled?: boolean; categories?: string[] }> };
+    const names = new Set(
+      (data.engines ?? [])
+        .filter((e) => e.enabled && e.name && (e.categories ?? []).includes('general') && !/wiki/i.test(e.name))
+        .map((e) => e.name!.toLowerCase()),
+    );
+    searxEngines = { at: Date.now(), names };
+    return names;
+  } catch {
+    return null;
+  }
+}
+
 async function searxngRequest(baseUrl: string, query: string, maxResults: number): Promise<SearchResult[]> {
   const url = new URL('/search', baseUrl);
   url.searchParams.set('q', query);
@@ -280,7 +305,15 @@ async function searxngRequest(baseUrl: string, query: string, maxResults: number
   if (unresponsive.length) {
     log.warn(`SearXNG engines not answering: ${unresponsive.map(([name, why]) => `${name} (${why})`).join(', ')}`);
   }
-  if (found === 0 && unresponsive.some(([, why]) => /suspended|too many|captcha|access denied/i.test(why))) {
+  const blocked = new Set(
+    unresponsive.filter(([, why]) => /suspended|too many|captcha|access denied/i.test(why)).map(([n]) => n.toLowerCase()),
+  );
+  // An empty result is normal for a niche query. Only treat SearXNG as
+  // degraded when EVERY enabled web engine is blocked (from /config), or —
+  // if /config is unavailable — when no web engine answered and several are blocked.
+  const general = found === 0 && blocked.size > 0 ? await searxngGeneralEngines(baseUrl) : null;
+  const allBlocked = general && general.size > 0 ? [...general].every((n) => blocked.has(n)) : blocked.size >= 3;
+  if (found === 0 && blocked.size > 0 && allBlocked) {
     searx.backoffMs = Math.min(searx.backoffMs ? searx.backoffMs * 2 : SEARX_BACKOFF_START_MS, SEARX_BACKOFF_MAX_MS);
     searx.degradedUntil = Date.now() + searx.backoffMs;
     log.warn(

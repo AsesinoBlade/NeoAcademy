@@ -40,6 +40,7 @@ You are a leading expert in the subject of this book and an outstanding writer o
 - Illustrations that are not part of the project — "bad" vs "good" examples, deliberately broken code, alternative versions, generated files such as CMakeCache.txt or Makefiles produced by a tool, CI files the project does not use — must NOT use `File:`. Label them in prose instead.
 - When a section changes a project file, keep everything the file already contains (shown in "Current project files") unless the text explicitly removes it — the new block replaces the old file entirely.
 - The reader must be able to follow along: every file they need must be shown in full at some point, with the exact commands to build and run it.
+- Use the project specification's build commands. When showing other commands, remember multi-configuration generators (Visual Studio, CMake's default on Windows; Xcode; Ninja Multi-Config) need `--config <cfg>` for `cmake --build` and `-C <cfg>` for `ctest`, and put executables in a per-configuration folder — say so where it matters.
 
 ## Figures (include 1–3 per section where they genuinely help understanding)
 

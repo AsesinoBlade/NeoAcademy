@@ -158,6 +158,7 @@ export async function POST(req: NextRequest) {
       if (claims.length > 0) {
         const evidence = await gatherEvidence(claims, {
           webSearch: !!body.webSearch,
+          maxWebLookups: 3,
           provider: (req.headers.get('x-web-search-provider') || undefined) as
             | import('@/lib/web-search/search').WebSearchProviderChoice
             | undefined,
