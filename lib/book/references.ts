@@ -293,7 +293,16 @@ async function checkCMake(claim: Claim): Promise<Evidence | null> {
   const cli = asCli.match(/^(cmake|ctest|cpack)(\s.*)?$/);
   if (cli) {
     const program = cli[1];
-    const options = [...new Set((cli[2] ?? '').split(/\s+/).filter((t) => /^--?[A-Za-z]/.test(t)).map((t) => t.split('=')[0]))];
+    // -D<VAR>=<value> / -U<VAR>: check the -D/-U option itself; the variable may
+    // be the project's own cache variable, which documentation can't rule out.
+    const options = [
+      ...new Set(
+        (cli[2] ?? '')
+          .split(/\s+/)
+          .filter((t) => /^--?[A-Za-z]/.test(t))
+          .map((t) => (/^-[DU][A-Za-z_]/.test(t) ? t.slice(0, 2) : t.split('=')[0])),
+      ),
+    ];
     if (options.length === 0) {
       return { claim, verdict: 'confirmed', source: 'local-docs', reference: `${program} --version`, excerpt: `${program} is installed.` };
     }
@@ -306,7 +315,15 @@ async function checkCMake(claim: Claim): Promise<Evidence | null> {
       program === 'cmake' && options.includes('--install') ? ((await runTool('cmake', ['--install'])) ?? '') : '',
       (await fullCMakeDocs()) ?? '',
     ].join('\n');
-    const missing = options.filter((o) => findToken(manual, o) < 0 && findToken(help, o) < 0);
+    let missing = options.filter((o) => findToken(manual, o) < 0 && findToken(help, o) < 0);
+    // A bare option may belong to a sibling program (ctest's --output-on-failure labelled "cmake").
+    if (missing.length && asCli !== id) {
+      for (const sibling of ['cmake', 'ctest', 'cpack'].filter((p) => p !== program)) {
+        const text = `${(await runTool('cmake', ['--help-manual', `${sibling}.1`])) ?? ''}\n${(await runTool(sibling, ['--help'])) ?? ''}`;
+        missing = missing.filter((o) => findToken(text, o) < 0);
+        if (!missing.length) break;
+      }
+    }
     return {
       claim,
       verdict: missing.length ? 'not-found' : 'confirmed',
@@ -376,6 +393,21 @@ async function checkCMake(claim: Claim): Promise<Evidence | null> {
     };
   }
 
+  // File names (winmm.lib, libfoo.a) and phrases ("targets not files") are not
+  // CMake names: CMake's documentation can't rule them out.
+  const notACMakeName =
+    (/\s/.test(id) && !cli) ||
+    (/\.[A-Za-z0-9]{1,5}$/.test(id) && !/\.cmake$/i.test(id) && !/^CMake\w*\.txt$/i.test(id)) ||
+    claim.kind === 'fact';
+  if (notACMakeName) {
+    return {
+      claim,
+      verdict: 'unknown',
+      source: 'none',
+      reference: 'cmake --help-full',
+      excerpt: `"${id}" is not a CMake command, variable, property or option, so CMake's documentation cannot confirm or rule it out.`,
+    };
+  }
   if (specific) return specific; // genuinely not found
   return docs
     ? {
@@ -589,6 +621,8 @@ export async function gatherEvidence(
     maxWebLookups?: number;
     /** The book's reference libraries (documentation folders / zips on this PC). */
     libraries?: import('./library').ReferenceLibrary[];
+    /** Text of the book's project files: names it DEFINES are not "non-existent". */
+    projectText?: string;
   },
 ): Promise<Evidence[]> {
   const evidence: Evidence[] = [];
@@ -598,7 +632,7 @@ export async function gatherEvidence(
   const webAllowed = () => !!options.webSearch && budget.left > 0;
   for (const claim of claims) {
     const isCMake = (claim.tool || '').toLowerCase() === 'cmake' || claim.identifier.startsWith('$<');
-    let found: Evidence | null = null;
+    let found: Evidence | null = null as Evidence | null;
     try {
       // 1. The book's own reference libraries (any topic: Ghidra, TypeScript, ...).
       if (options.libraries?.length) {
@@ -615,6 +649,21 @@ export async function gatherEvidence(
     } catch (error) {
       log.warn(`Reference lookup failed for ${claim.identifier}:`, error);
     }
+    // A name the documentation doesn't know may be one the book's project defines
+    // (its own option, variable, target, class or function).
+    if ((!found || found.verdict === 'not-found' || found.verdict === 'unknown') && options.projectText) {
+      const name = claim.identifier.trim().replace(/^\$\{|\}$/g, '').replace(/^-D/, '').split(/[=(\s]/)[0];
+      const definition = definedInProject(options.projectText, name);
+      if (definition) {
+        found = {
+          claim,
+          verdict: 'confirmed',
+          source: 'local-docs',
+          reference: "defined in this book's project",
+          excerpt: definition,
+        };
+      }
+    }
     evidence.push(
       found ?? {
         claim,
@@ -626,6 +675,33 @@ export async function gatherEvidence(
     );
   }
   return evidence;
+}
+
+/** Where the project DEFINES a name (any common language), or null. */
+export function definedInProject(projectText: string, name: string): string | null {
+  if (!name || name.length < 3 || !/^[A-Za-z_][\w.:-]*$/.test(name)) return null;
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    // CMake
+    new RegExp(`\\b(set|option|project|add_library|add_executable|add_custom_target|function|macro|cmake_dependent_option)\\s*\\(\\s*${n}\\b`, 'i'),
+    // C/C++ and friends
+    new RegExp(`#\\s*define\\s+${n}\\b`),
+    new RegExp(`\\b(class|struct|enum|union|namespace|interface|record|type|typedef)\\s+(class\\s+)?${n}\\b`),
+    // Functions / variables in common languages
+    new RegExp(`\\b(def|function|func|fn|sub|procedure|var|let|const|val)\\s+${n}\\b`),
+    new RegExp(`\\b${n}\\s*\\([^;{)]*\\)\\s*(const\\s*)?\\{`),
+    // Command-line definitions in the project's own build files
+    new RegExp(`-D${n}(=|\\b)`),
+  ];
+  for (const re of patterns) {
+    const m = re.exec(projectText);
+    if (m) {
+      const start = projectText.lastIndexOf('\n', m.index) + 1;
+      const end = projectText.indexOf('\n', m.index);
+      return projectText.slice(start, end < 0 ? undefined : end).trim().slice(0, 200);
+    }
+  }
+  return null;
 }
 
 export function formatEvidence(evidence: Evidence[]): string {

@@ -450,7 +450,9 @@ export async function POST(req: NextRequest) {
               // Recover outlines the incremental parser missed (stray quotes).
               {
                 const known = new Set(parsedOutlines.map((o) => o.title.trim().toLowerCase()));
+                const recoveredAny = { value: false };
                 for (const outline of recoverMissedOutlines(fullText, known)) {
+                  recoveredAny.value = true;
                   const enriched = { ...outline, id: outline.id || nanoid(), order: parsedOutlines.length + 1 };
                   parsedOutlines.push(enriched);
                   controller.enqueue(
@@ -459,6 +461,21 @@ export async function POST(req: NextRequest) {
                     ),
                   );
                   log.warn(`Recovered outline missed by the stream parser: "${enriched.title}"`);
+                }
+                // Put recovered items back in their original position in the model's output.
+                if (recoveredAny.value) {
+                  const full = parseJsonResponse<unknown>(fullText);
+                  const position = new Map<string, number>(
+                    (Array.isArray(full) ? full : [])
+                      .map((o, i) => [String((o as { title?: unknown })?.title ?? '').trim().toLowerCase(), i] as [string, number])
+                      .filter(([t]) => t),
+                  );
+                  parsedOutlines.sort(
+                    (a, b) =>
+                      (position.get(a.title.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER) -
+                      (position.get(b.title.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER),
+                  );
+                  parsedOutlines.forEach((o, i) => (o.order = i + 1));
                 }
               }
 

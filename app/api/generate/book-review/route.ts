@@ -96,6 +96,9 @@ export async function POST(req: NextRequest) {
     const evidence = await gatherEvidence(claims, {
       webSearch: !!webSearch,
       libraries: bookLibraries(book),
+          projectText: book.projectSpec
+            ? (await listProjectFiles(book.id)).map((f) => f.content).join('\n')
+            : undefined,
       provider: (req.headers.get('x-web-search-provider') || undefined) as
         | import('@/lib/web-search/search').WebSearchProviderChoice
         | undefined,
