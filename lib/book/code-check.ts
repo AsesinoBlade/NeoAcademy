@@ -249,6 +249,14 @@ async function checkPython(samples: CodeSample[], ctx: RunCtx): Promise<CodeSamp
 
 /** A check from the book's approved verification plan, for any language. */
 async function checkPlanned(samples: CodeSample[], check: PlanCheck, plan: VerificationPlan, ctx: RunCtx): Promise<CodeSampleResult[]> {
+  // A planned check is only trusted once it has passed its own known-good snippet.
+  if (check.calibration?.status !== 'passed') {
+    const why =
+      check.calibration?.status === 'failed'
+        ? `the check "${check.label}" failed on a correct example, so it is not used`
+        : `the check "${check.label}" has not been validated`;
+    return samples.map((sample) => ({ sample, status: 'unverifiable' as const, messages: [why] }));
+  }
   const results: CodeSampleResult[] = [];
   const fixtures = Object.fromEntries(plan.fixtures.filter((f) => f.path).map((f) => [f.name, f.path!]));
   for (const sample of samples) {
@@ -290,17 +298,59 @@ async function checkPlanned(samples: CodeSample[], check: PlanCheck, plan: Verif
       continue;
     }
     const failedByOutput = check.failureOutput ? new RegExp(check.failureOutput, 'm').test(res.output) : false;
+    const outLines = res.output.split('\n');
     const ok = (check.successExitCodes ?? [0]).includes(res.code) && !failedByOutput && !res.reason;
-    const errors = ok
-      ? []
-      : (res.output.split('\n').filter((l) => /error|fatal|exception|traceback|failed|not found|undefined/i.test(l)).slice(0, 6).map((l) => l.trim()) || []);
+    // Each error line plus the indented lines that explain it.
+    const errors: string[] = [];
+    if (!ok) {
+      outLines.forEach((l, i) => {
+        if (!/error|fatal|exception|traceback|failed|not found|undefined/i.test(l) || errors.length >= 6) return;
+        const detail = outLines.slice(i + 1, i + 4).filter((x) => /^\s+\S/.test(x)).map((x) => x.trim());
+        errors.push([l.trim(), ...detail].join(' — ').split(ctx.work).join(''));
+      });
+    }
     results.push({
       sample,
       status: ok ? 'ok' : 'errors',
       messages: ok ? [] : errors.length ? errors : [res.reason ?? res.output.trim().split('\n').slice(-3).join(' ')],
     });
   }
+  // Every sample failing with the same first error means the check, not the code, is wrong.
+  const failed = results.filter((r) => r.status === 'errors');
+  const signature = (r: CodeSampleResult) => (r.messages[0] ?? '').replace(/s\d+\/|line \d+|:\d+/g, '').replace(/\(\w+\)/g, '()');
+  if (failed.length >= 2 && failed.length === results.filter((r) => r.status !== 'unverifiable').length && new Set(failed.map(signature)).size === 1) {
+    for (const r of failed) {
+      r.status = 'unverifiable';
+      r.messages = [`every sample failed "${check.label}" the same way, so the check itself is unreliable here: ${r.messages[0]}`];
+    }
+  }
   return results;
+}
+
+/** Run each planned check on its known-good snippet; only checks that pass are used. */
+export async function calibrateChecks(plan: VerificationPlan): Promise<void> {
+  for (const check of plan.checks) {
+    if (!check.knownGood) {
+      check.calibration = { status: 'untested', detail: 'no known-good example was provided' };
+      continue;
+    }
+    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'neoacademy-calibrate-'));
+    try {
+      const sample: CodeSample = { id: 'k1', lang: null, fence: check.languages[0], code: check.knownGood, quote: 'known-good example' };
+      const res = await checkPlanned([sample], { ...check, calibration: { status: 'passed' } }, plan, {
+        work,
+        includeDirs: [],
+        allowHostCode: !!plan.decision?.allowHostCode,
+      });
+      const r = res[0];
+      check.calibration =
+        r.status === 'ok'
+          ? { status: 'passed' }
+          : { status: r.status === 'errors' ? 'failed' : 'untested', detail: r.messages.join(' | ').slice(0, 500) };
+    } finally {
+      await fs.rm(work, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -384,7 +434,12 @@ export function formatCodeReport(report: CodeCheckReport): string {
   if (report.results.length === 0 && report.unavailable.length === 0) return '(no checkable code samples)';
   const lines: string[] = [];
   for (const r of report.results) {
-    if (r.status === 'errors') {
+    if (r.status === 'errors' && !r.sample.lang) {
+      lines.push(
+        `- CHECK REPORTED ERRORS (book-specific check) — sample starting \`${r.sample.quote}\`:\n${r.messages.map((m) => `    ${m}`).join('\n')}\n` +
+          `    Fix the code only if the error is about the code itself. If it is about the checking environment (e.g. "not scriptable", a missing file the book never provides), leave the code unchanged and do not invent explanations.`,
+      );
+    } else if (r.status === 'errors') {
       lines.push(`- DOES NOT COMPILE — sample starting \`${r.sample.quote}\`:\n${r.messages.map((m) => `    ${m}`).join('\n')}`);
     } else if (r.status === 'ok') {
       lines.push(`- OK — sample starting \`${r.sample.quote}\``);

@@ -42,6 +42,7 @@ import {
   parseSectionSpec,
   readBook,
   readSection,
+  writeBook,
   writeSection,
 } from '@/lib/book/storage';
 
@@ -132,6 +133,13 @@ export async function POST(req: NextRequest) {
     });
 
     // Code samples: compiled with the real compilers.
+    // Plans approved before check calibration existed: calibrate on first use.
+    if (book.verificationPlan?.decision?.approved && book.verificationPlan.checks.some((c) => !c.calibration)) {
+      const { calibrateChecks } = await import('@/lib/book/code-check');
+      await calibrateChecks(book.verificationPlan);
+      await writeBook(book);
+      for (const c of book.verificationPlan.checks) log.info(`Check "${c.label}": ${c.calibration?.status}`);
+    }
     const codeOptions = {
       skipProjectFiles: !!book.projectSpec,
       projectRoot: book.projectSpec ? projectDir(bookId) : undefined,

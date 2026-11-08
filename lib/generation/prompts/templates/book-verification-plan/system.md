@@ -20,6 +20,8 @@ Your plan is shown to the user for approval before anything runs. Be concrete an
    - `completeWhen`: a regex a sample must match to be a complete unit (e.g. "^\\s*(program|unit|library)\\b" for Pascal); fragments are skipped.
    - `failureOutput`: a regex on the output meaning failure even when the exit code is 0 (e.g. Blender prints "Error:" / "Traceback" but may exit 0 — or add "--python-exit-code", "1").
    - `executesCode`: true if the command runs the sample rather than just compiling/checking it.
+   - `knownGood`: a typical, CORRECT snippet exactly as the book will show one (not a trivial hello-world if the book's snippets look different). The check is run on it first; if it fails, the check is discarded.
+   - Only propose a check that can validate an ISOLATED snippet of that kind. Build-file fragments, configuration excerpts and snippets that only make sense inside a larger project cannot be checked alone — e.g. CMakeLists.txt snippets must NOT be checked with `cmake -P` (script mode rejects project commands such as add_library); the book's project build verifies those. When in doubt, propose no check.
    - Only propose checks for samples the book will actually contain. Languages already handled automatically — TypeScript/JavaScript, C, C++, Java, Python syntax — need no check unless the book needs a specific runtime (e.g. Blender's Python with `bpy`).
 6. **fixtures** — inputs the user must provide for a check, e.g. {"name": "crash-dump", "description": "a crash dump (.dmp) of a 64-bit Windows program"}; refer to them as {fixture:crash-dump}.
 

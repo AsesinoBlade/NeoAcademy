@@ -61,6 +61,10 @@ export interface PlanCheck {
   timeoutSec?: number;
   /** Runs the sample (not just compile/syntax-check): flagged in the approval UI. */
   executesCode: boolean;
+  /** A typical CORRECT snippet as it will appear in the book: the check must pass it. */
+  knownGood?: string;
+  /** Result of running the check on knownGood. Only a check that passed is trusted. */
+  calibration?: { status: 'passed' | 'failed' | 'untested'; detail?: string };
 }
 
 export interface PlanFixture {
@@ -249,6 +253,7 @@ export function sanitisePlan(raw: unknown): Omit<VerificationPlan, 'createdAt'> 
         successExitCodes: arr<unknown>(c.successExitCodes).filter((n): n is number => typeof n === 'number').slice(0, 5),
         timeoutSec: typeof c.timeoutSec === 'number' ? Math.min(Math.max(c.timeoutSec, 5), 300) : 60,
         executesCode: c.executesCode === true,
+        knownGood: typeof c.knownGood === 'string' && c.knownGood.trim() ? c.knownGood.slice(0, 4000) : undefined,
       };
       for (const re of [check.completeWhen, check.failureOutput]) {
         if (re) {

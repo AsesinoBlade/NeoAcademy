@@ -26,8 +26,14 @@ export async function POST(req: NextRequest) {
 
     const assembled = await assembleReferences(book);
     const fresh = (await readBook(bookId)) ?? book;
-    if (fresh.verificationPlan && assembled) {
-      fresh.verificationPlan.assembled = assembled;
+    if (fresh.verificationPlan) {
+      // Test each planned check on its known-good snippet before trusting it.
+      const { calibrateChecks } = await import('@/lib/book/code-check');
+      await calibrateChecks(fresh.verificationPlan);
+      for (const c of fresh.verificationPlan.checks) {
+        log.info(`Check "${c.label}": ${c.calibration?.status}${c.calibration?.detail ? ` (${c.calibration.detail.slice(0, 160)})` : ''}`);
+      }
+      if (assembled) fresh.verificationPlan.assembled = assembled;
       await writeBook(fresh);
     }
     log.info(
