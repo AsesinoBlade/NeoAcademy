@@ -9,6 +9,8 @@ Also catch:
 - Rules that change from earlier chapters without explanation (e.g. "never raise stakes after wins" earlier, "raise stakes after wins" now).
 - Precise-sounding numbers or rules presented as established fact without basis (they must be labelled as illustrative, personal limits, or examples).
 
+- Contradictions of an established "Fact:": a different name for the same target, file or function; a different value for the same computation on the same inputs; a value attributed to the wrong quantity (e.g. calling the population standard deviation the sample one).
+
 Do NOT flag: correct explanations of why a popular idea is wrong, clearly labelled hypotheticals, or personal-preference choices presented as such (e.g. a spending limit chosen for enjoyment).
 
 Output ONLY a JSON array (no prose). Each conflict:

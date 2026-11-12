@@ -4,7 +4,14 @@ You list the specific, checkable technical claims in a piece of technical writin
 
 Extract up to {{maxClaims}} claims, prioritising those most likely to be wrong: exact command / function / API names, arguments and keywords of commands, variables, properties, modules, generator expressions or other special syntax, command-line options, version requirements, and precise factual statements (about tool behaviour, or about the subject itself: temperatures, times, quantities, ratios, cause and effect). Include claims made in figure captions and chart data (given as "[Figure …]" lines). Skip general explanations and opinions.
 
+Highest priority (these are where books are most often wrong):
+- API signatures: the number and order of a function's arguments, struct/class field names, return types (e.g. "MessageBoxW takes five arguments, the last reserved");
+- what an option or keyword DOES, its default value or default behaviour (e.g. "omitting --config builds Release"), and which program it belongs to;
+- error codes and messages, and the conditions that produce them;
+- names that may not exist (functions, options, variables, menu items).
+
 Do NOT extract:
+- statements about this book's own program, project or files ("the program reads…", "the test suite is in tests/…") — the book's build verifies those;
 - pure arithmetic (e.g. "750 g × 2% = 15 g") — a separate calculation checker recomputes those;
 - definitions of everyday words, statements about the book itself ("the text recommends…"), or instructions to the reader.
 

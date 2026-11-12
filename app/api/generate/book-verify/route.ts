@@ -196,6 +196,8 @@ export async function POST(req: NextRequest) {
       reason: result.passed ? undefined : `Still failing at: ${result.failedStep?.command ?? 'unknown step'}`,
       verifiedAt: new Date().toISOString(),
       toolchain: result.toolchain,
+      platforms: result.platforms,
+      notCompiled: result.notCompiled,
       notes: result.steps.filter((s) => s.note).map((s) => `${s.command}: ${s.note}`),
       steps: result.steps,
       fixRounds,

@@ -40,7 +40,7 @@ const CLAIM_KINDS = new Set([
 export async function extractClaims(req: NextRequest, text: string, maxClaims: number): Promise<Claim[]> {
   const prompts = buildPrompt(PROMPT_IDS.BOOK_CLAIMS, { text, maxClaims });
   if (!prompts) return [];
-  const raw = await generateBookText(req, prompts.system, prompts.user, 3000, 'book-claims');
+  const raw = await generateBookText(req, prompts.system, prompts.user, Math.max(3000, maxClaims * 220), 'book-claims');
   const parsed = parseJsonResponse<unknown>(raw);
   if (!Array.isArray(parsed)) return [];
   return parsed

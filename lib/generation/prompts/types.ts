@@ -29,7 +29,8 @@ export type PromptId =
   | 'book-cross-check'
   | 'book-cross-compare'
   | 'book-cross-judge'
-  | 'book-resolution';
+  | 'book-resolution'
+  | 'book-doc-check';
 
 /**
  * Snippet identifier

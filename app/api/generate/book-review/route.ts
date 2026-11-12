@@ -30,6 +30,7 @@ import { buildProjectContext, extractProjectFiles, listProjectFiles, projectDir,
 import { checkCodeSamples, formatCodeReport, type CodeCheckReport } from '@/lib/book/code-check';
 import { bookLibraries } from '@/lib/book/auto-references';
 import { crossCheckUnverified } from '@/lib/book/cross-check';
+import { checkAgainstDocumentation } from '@/lib/book/doc-check';
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import {
   checkConsistency,
@@ -97,7 +98,9 @@ export async function POST(req: NextRequest) {
 
     // 1-2. Claims and evidence
     // Figures (chart data, captions) are fact-checked too, as plain sentences.
-    const claims = await extractClaims(req, figuresAsText(original).slice(0, 20000), 12).catch(() => []);
+    // Dense technical sections need more checks: about one claim per 90 words, 12–30.
+    const maxClaims = Math.min(30, Math.max(12, Math.round(countWords(original) / 90)));
+    const claims = await extractClaims(req, figuresAsText(original).slice(0, 24000), maxClaims).catch(() => []);
     const evidence = await gatherEvidence(claims, {
       webSearch: !!webSearch,
       libraries: bookLibraries(book),
@@ -108,6 +111,13 @@ export async function POST(req: NextRequest) {
         | import('@/lib/web-search/search').WebSearchProviderChoice
         | undefined,
     });
+    // Documentation-confirmed names: does the book describe them correctly?
+    const docContradictions = await checkAgainstDocumentation(req, evidence).catch((error) => {
+      log.warn(`Documentation meaning check failed for ${ref.sectionNumber}:`, error);
+      return 0;
+    });
+    if (docContradictions) log.info(`${ref.sectionNumber}: ${docContradictions} claim(s) contradict their documentation`);
+
     // Claims nothing could verify get an independent cross-check.
     const crossChecked = await crossCheckUnverified(req, evidence, `${book.title} — ${ref.title}`).catch((error) => {
       log.warn(`Cross-check failed for ${ref.sectionNumber}:`, error);
@@ -279,6 +289,55 @@ export async function POST(req: NextRequest) {
       }
     }
     for (const e of open) if (!afterReview.has(e)) afterReview.set(e, 'still');
+
+    // Claims found wrong (by documentation or a judged cross-check) that the
+    // review left in the text get one targeted fix round, then a re-check.
+    const stillWrong = open.filter((e) => (e.verdict === 'not-found' || e.verdict === 'disputed') && afterReview.get(e) === 'still');
+    if (accepted && stillWrong.length) {
+      log.warn(`${ref.sectionNumber}: ${stillWrong.length} claim(s) found wrong but still in the text — targeted fix`);
+      const fixPrompts = buildPrompt(PROMPT_IDS.BOOK_REVIEW, {
+        bookTitle: book.title,
+        tableOfContents: tableOfContents(book.outline, (p) => parseSectionSpec(p).title),
+        projectContext,
+        evidence:
+          'ONLY fix these claims: each was found WRONG and is still in the section. Correct every place in the section that makes the claim (prose, tables, code, captions), using the evidence.\n\n' +
+          formatEvidence(stillWrong),
+        mathReport: '(already reviewed)',
+        codeReport: '(already reviewed)',
+        consistency: '(already reviewed)',
+        premiseStance: formatPremises(book.premises),
+        sectionNumber: ref.sectionNumber,
+        sectionTitle: ref.title,
+        section: revised,
+      });
+      if (fixPrompts) {
+        const fixRaw = await generateBookText(req, fixPrompts.system, fixPrompts.user, 14000, 'book-review-claims-fix').catch(() => '');
+        const fixed = cleanEditorialArtifacts((fixRaw.match(/<section>([\s\S]*?)(?:<\/section>|$)/i)?.[1] ?? '').trim().replace(/^#{1,2}\s+[^\n]*\n+/, ''));
+        if (fixed && countWords(fixed) >= countWords(original) * 0.75 && figureCount(fixed) >= figureCount(original)) {
+          const recheck = buildPrompt(PROMPT_IDS.BOOK_RESOLUTION, {
+            statements: stillWrong.map((e, i) => `s${i + 1}. ${e.claim.statement}`).join('\n'),
+            section: figuresAsText(fixed).slice(0, 24000),
+          });
+          const raw = recheck ? await generateBookText(req, recheck.system, recheck.user, 1200, 'book-resolution').catch(() => '') : '';
+          const parsed = parseJsonResponse<unknown>(raw);
+          let resolved = 0;
+          for (const item of Array.isArray(parsed) ? parsed : []) {
+            const { id, status } = (item ?? {}) as { id?: string; status?: string };
+            const e = stillWrong[Number(String(id).replace(/^s/, '')) - 1];
+            if (e && (status === 'changed' || status === 'removed')) {
+              afterReview.set(e, status);
+              resolved++;
+            }
+          }
+          if (resolved > 0) {
+            revised = fixed;
+            corrections.push(...(fixRaw.match(/<corrections>([\s\S]*?)<\/corrections>/i)?.[1] ?? '')
+              .split('\n').map((l) => l.replace(/^\s*[-*]\s*/, '').trim()).filter((l) => l && !/^none\.?$/i.test(l)));
+          }
+          log.info(`${ref.sectionNumber}: targeted fix corrected ${resolved} of ${stillWrong.length} claim(s)`);
+        }
+      }
+    }
 
     if (accepted) {
       const imagesEnabled = req.headers.get('x-image-generation-enabled') === 'true';

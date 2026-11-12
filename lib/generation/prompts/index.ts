@@ -45,4 +45,5 @@ export const PROMPT_IDS = {
   BOOK_CROSS_COMPARE: 'book-cross-compare',
   BOOK_CROSS_JUDGE: 'book-cross-judge',
   BOOK_RESOLUTION: 'book-resolution',
+  BOOK_DOC_CHECK: 'book-doc-check',
 } as const;

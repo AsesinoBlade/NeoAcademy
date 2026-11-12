@@ -30,11 +30,22 @@ const BUILD_TOOLS = new Set([
   'cargo', 'rustc', 'go', 'dotnet', 'javac', 'mvn', 'gradle',
 ]);
 
+/** Where the project was actually built: what the verification note reports. */
+export interface BuildPlatform {
+  name: string;
+  generator?: string;
+  compiler?: string;
+  passed: boolean;
+}
+
 export interface VerifyReport {
   status: 'passed' | 'failed' | 'skipped';
   reason?: string;
   verifiedAt: string;
   toolchain: string[];
+  platforms?: BuildPlatform[];
+  /** Parts of the project that no build compiled (e.g. Windows-only code without a Windows runner). */
+  notCompiled?: string[];
   notes: string[];
   steps: VerifyStep[];
   fixRounds: Array<{ round: number; failedCommand: string; summary: string; files: string[] }>;
@@ -144,6 +155,8 @@ const looksLikeProgramRun = (program: string) =>
 
 export interface VerifyRunResult {
   passed: boolean;
+  platforms?: BuildPlatform[];
+  notCompiled?: string[];
   /** Could not run at all (no sandbox and running code on this PC not allowed). */
   skipped?: boolean;
   steps: VerifyStep[];
@@ -315,7 +328,77 @@ export async function runProjectBuild(bookId: string, commands: string[], option
   if (cmakeVersion.code === 0) toolchain.add(cmakeVersion.output.split('\n')[0].replace(/^cmake version/i, 'CMake').trim());
 
   const ran = steps.filter((s) => s.status !== 'skipped');
-  return { passed: ran.length > 0 && ran.every((s) => s.status === 'passed'), steps, toolchain: [...toolchain] };
+  const linuxPassed = ran.length > 0 && ran.every((s) => s.status === 'passed');
+  const platforms: BuildPlatform[] = [];
+  const notCompiled: string[] = [];
+  const toolchainList = [...toolchain];
+  const generatorUsed = toolchainList.find((t) => t.startsWith('Generator: '))?.slice('Generator: '.length);
+  const compilerUsed = toolchainList.find((t) => /^(GNU|Clang|AppleClang|MSVC)\b/.test(t));
+  platforms.push({
+    name: sandbox.ready ? 'Linux sandbox' : 'this computer',
+    generator: generatorUsed,
+    compiler: compilerUsed,
+    passed: linuxPassed,
+  });
+
+  // A Windows-targeted project is not verified by a Linux build alone: its
+  // Windows-only code (#ifdef _WIN32, windows.h, MSVC) was never compiled.
+  if (linuxPassed && sandbox.ready && (await targetsWindows(work, commands))) {
+    const { runnerConfig } = await import('./windows-runner');
+    if (runnerConfig() && options.allowHostCode) {
+      const remote = await buildOnWindowsRunner(work, commands, prefetch.cmakeArgs);
+      if (remote) {
+        const remoteTools = remote.toolchain;
+        platforms.push({
+          name: 'Windows (Windows runner)',
+          generator: remoteTools.find((t) => t.startsWith('Generator: '))?.slice('Generator: '.length),
+          compiler: remoteTools.find((t) => /^MSVC\b/.test(t)),
+          passed: remote.passed,
+        });
+        const combinedSteps = [
+          ...steps.map((s) => ({ ...s, note: s.note ? `[Linux] ${s.note}` : '[Linux]' })),
+          ...remote.steps.map((s) => ({ ...s, note: s.note ? `[Windows] ${s.note}` : '[Windows]' })),
+        ];
+        return {
+          passed: remote.passed,
+          steps: combinedSteps,
+          failedStep: remote.failedStep,
+          toolchain: [...toolchainList, ...remoteTools],
+          platforms,
+          skipped: remote.skipped,
+        };
+      }
+      notCompiled.push('Windows-specific code: the Windows runner could not be reached');
+    } else {
+      notCompiled.push(
+        runnerConfig()
+          ? 'Windows-specific code: running book code on the Windows runner is not enabled for this book'
+          : 'Windows-specific code (MSVC, the Visual Studio generator, #ifdef _WIN32 sections): no Windows runner is configured',
+      );
+    }
+  }
+
+  return { passed: linuxPassed, steps, toolchain: toolchainList, platforms, notCompiled };
+}
+
+/** Does this project have Windows-only parts a Linux build can't compile? */
+async function targetsWindows(work: string, commands: string[]): Promise<boolean> {
+  if (commands.some((c) => /visual studio|-A\s+(x64|Win32|ARM64)/i.test(c))) return true;
+  const walk = async (dir: string, depth: number): Promise<boolean> => {
+    if (depth > 6) return false;
+    for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (e.name.startsWith('.') || e.name === '_deps' || e.name === 'build' || e.name === 'node_modules') continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (await walk(p, depth + 1)) return true;
+      } else if (/\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/i.test(e.name) || e.name === 'CMakeLists.txt' || e.name.endsWith('.cmake')) {
+        const text = await fs.readFile(p, 'utf-8').catch(() => '');
+        if (/#\s*include\s*[<"](windows|winsock2|tchar|shlobj|commctrl)\.h[>"]|\b_WIN32\b|\b_MSC_VER\b|if\s*\(\s*(WIN32|MSVC)\s*\)/i.test(text)) return true;
+      }
+    }
+    return false;
+  };
+  return walk(work, 0);
 }
 
 /**

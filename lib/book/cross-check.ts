@@ -20,7 +20,7 @@ import { buildPrompt, PROMPT_IDS } from '@/lib/generation/prompts';
 import { generateBookText } from './llm';
 import type { Evidence } from './references';
 
-const MAX_CROSS_CHECKS = 5;
+const MAX_CROSS_CHECKS = 8;
 
 type Answer = { id: string; answer: string; confidence?: string };
 

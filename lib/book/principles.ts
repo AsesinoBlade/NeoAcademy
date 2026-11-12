@@ -43,7 +43,7 @@ export interface ConsistencyConflict {
 }
 
 const VERDICTS = new Set(['supported', 'contested', 'unsupported', 'false']);
-const MAX_PRINCIPLES = 80;
+const MAX_PRINCIPLES = 200; // principles and established facts
 
 // ── Premises ────────────────────────────────────────────────────────────
 
@@ -125,7 +125,7 @@ export async function recordSectionPrinciples(
     sectionNumber,
     sectionTitle,
     section: markdown.slice(0, 20000),
-    maxNew: Math.min(6, MAX_PRINCIPLES - others.length),
+    maxNew: Math.min(10, MAX_PRINCIPLES - others.length),
   });
   if (!prompts) return 0;
   const raw = await generateBookText(req, prompts.system, prompts.user, 1500, 'book-principles');

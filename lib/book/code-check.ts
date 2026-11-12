@@ -171,7 +171,51 @@ async function checkCpp(samples: CodeSample[], ctx: RunCtx): Promise<CodeSampleR
       .slice(0, 6);
     results.push({ sample, status: errors.length ? 'errors' : 'ok', messages: errors });
   }
+  // Samples that need Windows headers can't compile on Linux: compile them with
+  // MSVC on the Windows runner instead (compile only — nothing is run).
+  const windowsOnly = results.filter(
+    (r) => r.status === 'unverifiable' && /needs (windows|winsock2|tchar|shlobj|commctrl|winuser|wingdi)\.h/i.test(r.messages[0] ?? ''),
+  );
+  if (windowsOnly.length) await compileOnWindowsRunner(windowsOnly, ctx);
   return results;
+}
+
+/** Compile Windows-only C/C++ samples with MSVC on the Windows runner; updates the results in place. */
+async function compileOnWindowsRunner(pending: CodeSampleResult[], ctx: RunCtx): Promise<void> {
+  const runner = await import('./windows-runner');
+  if (!runner.runnerConfig() || !(await runner.runnerStatus()).ok) return;
+  const cmake = await runner.resolveRemoteProgram('cmake');
+  if (!cmake) return;
+  const dir = path.join(ctx.work, 'win');
+  await fs.mkdir(dir, { recursive: true });
+  const includes = ctx.includeDirs.map((d) => d.replace(/^\/work\//, '${CMAKE_SOURCE_DIR}/../'));
+  const lines = [
+    'cmake_minimum_required(VERSION 3.16)',
+    'project(samples CXX C)',
+    'set(CMAKE_CXX_STANDARD 17)',
+    ...(includes.length ? [`include_directories(${includes.map((i) => `"${i}"`).join(' ')})`] : []),
+  ];
+  for (const r of pending) {
+    const ext = r.sample.lang === 'c' ? 'c' : 'cpp';
+    await fs.writeFile(path.join(dir, `${r.sample.id}.${ext}`), r.sample.code, 'utf-8');
+    lines.push(`add_library(${r.sample.id} OBJECT ${r.sample.id}.${ext})`);
+  }
+  await fs.writeFile(path.join(dir, 'CMakeLists.txt'), lines.join('\n') + '\n', 'utf-8');
+  const session = await runner.openSession(ctx.work);
+  if (!session) return;
+  try {
+    const conf = await runner.runInSession(session, cmake, ['-S', '/work/win', '-B', '/work/win/build'], 300);
+    if (conf.code !== 0) return;
+    const build = await runner.runInSession(session, cmake, ['--build', '/work/win/build', '--config', 'Debug'], 600);
+    for (const r of pending) {
+      const re = new RegExp(`[\\\\/]${r.sample.id}\\.(?:cpp|c)\\((\\d+)[^)]*\\)\\s*:\\s*(?:fatal )?error ([A-Z]+\\d+):\\s*(.+)`, 'g');
+      const errors = [...new Set([...build.output.matchAll(re)].map((m) => `line ${m[1]}: ${m[2]}: ${m[3].trim()}`))].slice(0, 6);
+      r.status = errors.length ? 'errors' : 'ok';
+      r.messages = errors.length ? errors.map((e) => `[MSVC on the Windows runner] ${e}`) : [];
+    }
+  } finally {
+    await runner.closeSession(session);
+  }
 }
 
 async function javaClasspath(): Promise<string | null> {
