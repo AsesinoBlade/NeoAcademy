@@ -252,3 +252,27 @@ Promise<ImageJob[]> {
         Date.parse(a.createdAt),
     );
 }
+/**
+ * Image jobs still queued or generating (updated within maxAgeMs; older ones
+ * are treated as abandoned). Used so idle clean-up never stops ComfyUI or the
+ * LLM under a running job.
+ */
+export async function listActiveImageJobIds(maxAgeMs = 2 * 60 * 60 * 1000): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(JOBS_ROOT);
+  } catch {
+    return [];
+  }
+  const active: string[] = [];
+  for (const id of entries) {
+    try {
+      const job = JSON.parse(await fs.readFile(path.join(JOBS_ROOT, id, 'job.json'), 'utf-8')) as ImageJob;
+      const age = Date.now() - new Date(job.updatedAt ?? job.createdAt).getTime();
+      if ((job.status === 'queued' || job.status === 'generating') && age < maxAgeMs) active.push(id);
+    } catch {
+      /* not a job folder */
+    }
+  }
+  return active;
+}

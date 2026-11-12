@@ -1,11 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 
-import { unloadAllLocalOllamaModels } from '@/lib/server/local-llm';
-import { stopLocalComfyUi } from '@/lib/server/local-comfyui';
-import { stopLocalSpeechServicesIfIdle } from '@/lib/server/local-speech-services';
+import { unloadAllLocalOllamaModels } from "@/lib/server/local-llm";
+import { stopLocalComfyUi } from "@/lib/server/local-comfyui";
+import { stopLocalSpeechServicesIfIdle } from "@/lib/server/local-speech-services";
+import { listActiveImageJobIds } from "@/lib/media/image-job-store";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 interface CleanupResult {
   service: string;
@@ -20,37 +21,52 @@ export async function POST() {
   const cleanupStartedAt = Date.now();
   const results: CleanupResult[] = [];
 
-  try {
-    const result = await unloadAllLocalOllamaModels();
-
+  // Never pull the LLM or ComfyUI out from under a running image job.
+  const activeImageJobs = await listActiveImageJobIds();
+  if (activeImageJobs.length > 0) {
     results.push({
-      service: 'ollama',
-      success: result.success,
-      result,
-    });
-  } catch (error) {
-    results.push({
-      service: 'ollama',
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+      service: "comfyui",
+      success: true,
+      result: {
+        skipped: true,
+        reason: `image job(s) running: ${activeImageJobs.join(", ")}`,
+      },
+    } as CleanupResult);
   }
 
-  try {
-    const result = await stopLocalComfyUi();
+  if (activeImageJobs.length === 0)
+    try {
+      const result = await unloadAllLocalOllamaModels();
 
-    results.push({
-      service: 'comfyui',
-      success: result.success,
-      result,
-    });
-  } catch (error) {
-    results.push({
-      service: 'comfyui',
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+      results.push({
+        service: "ollama",
+        success: result.success,
+        result,
+      });
+    } catch (error) {
+      results.push({
+        service: "ollama",
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+  if (activeImageJobs.length === 0)
+    try {
+      const result = await stopLocalComfyUi();
+
+      results.push({
+        service: "comfyui",
+        success: result.success,
+        result,
+      });
+    } catch (error) {
+      results.push({
+        service: "comfyui",
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
   /*
    * Stop speech last because this may also shut down Docker Desktop
@@ -60,13 +76,13 @@ export async function POST() {
     const result = await stopLocalSpeechServicesIfIdle(cleanupStartedAt);
 
     results.push({
-      service: 'speech',
+      service: "speech",
       success: result.success,
       result,
     });
   } catch (error) {
     results.push({
-      service: 'speech',
+      service: "speech",
       success: false,
       error: error instanceof Error ? error.message : String(error),
     });

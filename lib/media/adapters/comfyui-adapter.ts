@@ -593,9 +593,16 @@ async function waitForImageOutput(
   promptId: string,
   outputNodeId: string,
 ): Promise<ComfyUiImageAsset> {
+  // A cold start includes loading the models into the GPU, which can take
+  // several minutes on smaller cards: 15 minutes by default, adjustable with
+  // COMFYUI_IMAGE_TIMEOUT_SEC.
+  const timeoutSec =
+    Number(process.env.COMFYUI_IMAGE_TIMEOUT_SEC) > 0
+      ? Number(process.env.COMFYUI_IMAGE_TIMEOUT_SEC)
+      : 900;
   for (
     let attempt = 0;
-    attempt < 300;
+    attempt < timeoutSec;
     attempt += 1
   ) {
     await new Promise(
@@ -666,7 +673,7 @@ async function waitForImageOutput(
   }
 
   throw new Error(
-    `Timed out waiting for ComfyUI image generation: ${promptId}`,
+    `Timed out after ${timeoutSec}s waiting for ComfyUI image generation: ${promptId} (raise COMFYUI_IMAGE_TIMEOUT_SEC in .env.local if it needs longer)`,
   );
 }
 

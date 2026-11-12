@@ -130,15 +130,32 @@ async function checkHealth(baseUrl: string): Promise<boolean> {
   }
 }
 
-async function waitForHealth(baseUrl: string, timeoutMs = 300000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+/**
+ * Wait for ComfyUI to answer. Recent ComfyUI versions can take several minutes
+ * to start (e.g. GPU memory hooks being set up), so the default is 15 minutes,
+ * adjustable with COMFYUI_START_TIMEOUT_SEC. Fails at once if the process exits.
+ */
+async function waitForHealth(baseUrl: string, pid?: number): Promise<void> {
+  const timeoutSec = Number(process.env.COMFYUI_START_TIMEOUT_SEC) > 0 ? Number(process.env.COMFYUI_START_TIMEOUT_SEC) : 900;
+  const started = Date.now();
+  const deadline = started + timeoutSec * 1000;
+  let nextNote = started + 60000;
 
   while (Date.now() < deadline) {
     if (await checkHealth(baseUrl)) return;
+    if (pid !== undefined && !processExists(pid)) {
+      throw new Error('ComfyUI exited during start-up; see its comfyui.log for the reason');
+    }
+    if (Date.now() >= nextNote) {
+      log.info(`ComfyUI still starting at ${baseUrl} (${Math.round((Date.now() - started) / 1000)}s so far)`);
+      nextNote += 60000;
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  throw new Error(`ComfyUI did not become ready within ${timeoutMs / 1000} seconds`);
+  throw new Error(
+    `ComfyUI did not become ready within ${timeoutSec} seconds (raise COMFYUI_START_TIMEOUT_SEC in .env.local if it needs longer)`,
+  );
 }
 
 async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -234,6 +251,8 @@ export async function startLocalComfyUi(options: { logPath?: string } = {}) {
       config.host,
       '--port',
       config.port,
+      // Extra ComfyUI options from .env.local, e.g. COMFYUI_EXTRA_ARGS=--lowvram
+      ...(process.env.COMFYUI_EXTRA_ARGS ?? '').split(/\s+/).filter(Boolean),
     ],
     {
       cwd: config.root,
@@ -261,7 +280,7 @@ export async function startLocalComfyUi(options: { logPath?: string } = {}) {
   writeManagedState(config.stateFile, state);
 
   try {
-    await waitForHealth(config.baseUrl);
+    await waitForHealth(config.baseUrl, child.pid);
     log.info(`Managed ComfyUI ready at ${config.baseUrl} (pid=${child.pid})`);
   } catch (error) {
     log.error(`Managed ComfyUI failed to become ready at ${config.baseUrl} (pid=${child.pid})`);
