@@ -170,7 +170,7 @@ async function checkPdfBrowser(): Promise<PreflightCheck> {
 
 async function checkComfyUi(): Promise<PreflightCheck> {
   const base = { id: 'comfyui', label: 'ComfyUI (pictures)', blocking: true };
-  const url = process.env.IMAGE_COMFYUI_BASE_URL || process.env.VIDEO_COMFYUI_BASE_URL || 'http://127.0.0.1:3100';
+  const url = (await comfyUiUrl());
   const turnOff = 'Or turn image generation off in Settings to write the book without pictures (charts and diagrams are unaffected).';
   const healthy = await fetch(new URL('/system_stats', url), { signal: AbortSignal.timeout(4000) })
     .then((r) => r.ok)
@@ -309,7 +309,18 @@ async function checkWebSearch(provider?: string): Promise<PreflightCheck> {
  */
 async function checkGpuFreeForLlm(): Promise<PreflightCheck> {
   const base = { id: 'gpu-comfyui', label: 'GPU free for the LLM', blocking: true };
-  const url = process.env.IMAGE_COMFYUI_BASE_URL || process.env.VIDEO_COMFYUI_BASE_URL || 'http://127.0.0.1:3100';
+  const url = (await comfyUiUrl());
+  // ComfyUI on another PC uses that PC's graphics card, not this one's.
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return '127.0.0.1';
+    }
+  })();
+  if (!/^(127\.|localhost$|::1$|\[::1\]$|0\.0\.0\.0$)/i.test(host)) {
+    return { ...base, status: 'ok', detail: `ComfyUI runs on another PC (${host}), so it does not compete with the LLM for this computer's GPU.` };
+  }
   const healthy = await fetch(new URL('/system_stats', url), { signal: AbortSignal.timeout(3000), cache: 'no-store' })
     .then((r) => r.ok)
     .catch(() => false);
@@ -341,6 +352,17 @@ async function checkGpuFreeForLlm(): Promise<PreflightCheck> {
   };
 }
 
+/** The ComfyUI address the image generator uses: server-providers.yml, then .env.local. */
+async function comfyUiUrl(): Promise<string> {
+  const { resolveImageBaseUrl } = await import('@/lib/server/provider-config');
+  return (
+    resolveImageBaseUrl('comfyui', undefined) ||
+    process.env.IMAGE_COMFYUI_BASE_URL ||
+    process.env.VIDEO_COMFYUI_BASE_URL ||
+    'http://127.0.0.1:3100'
+  );
+}
+
 /** The Docker sandbox in which book code is compiled, built, tested and run. */
 async function checkSandbox(): Promise<PreflightCheck> {
   const { sandboxStatus, resetSandboxState, SANDBOX_IMAGE } = await import('./sandbox');
@@ -362,6 +384,27 @@ async function checkSandbox(): Promise<PreflightCheck> {
         ? ['Start Docker Desktop.', RESTART_NOTE]
         : [`In ${process.cwd()}: docker build -t ${SANDBOX_IMAGE} docker/sandbox   (one-time, a few minutes)`, RESTART_NOTE],
     ifIgnored: 'Code samples are only checked by compilers that do not run code; builds, tests and running samples are skipped (unless you allow running book code on this PC for a book).',
+  };
+}
+
+/** The Windows runner (another PC over SSH) for Windows-only checks. */
+async function checkWindowsRunner(): Promise<PreflightCheck> {
+  const runner = await import('./windows-runner');
+  runner.resetRunnerState();
+  const status = await runner.runnerStatus();
+  const cfg = runner.runnerConfig();
+  const base = { id: 'windows-runner', label: 'Windows runner', blocking: false };
+  if (status.ok) return { ...base, status: 'ok', detail: `${cfg?.host} is reachable; Windows-only checks run there.` };
+  return {
+    ...base,
+    status: 'warning',
+    detail: status.reason ?? 'The Windows runner is not reachable.',
+    fix: [
+      `Make sure the Windows PC is on, and that this works from a terminal here: ssh ${cfg?.key ? `-i ${cfg.key} ` : ''}${cfg?.host} "echo ready"`,
+      'On the Windows PC (PowerShell as administrator), check the SSH server: Get-Service sshd',
+      RESTART_NOTE,
+    ],
+    ifIgnored: 'Windows-only checks (MSVC, WinDbg, Windows game tools) are skipped; everything else is still verified.',
   };
 }
 
@@ -547,6 +590,7 @@ export async function runPreflight(options: {
       if (options.webSearch) checks.push(await checkWebSearch(options.webSearchProvider));
       if (options.factCheck) checks.push(await checkMathPython());
       if (options.factCheck) checks.push(await checkSandbox());
+      if (options.factCheck && process.env.WINDOWS_RUNNER_HOST) checks.push(await checkWindowsRunner());
       for (const lib of options.referenceLibraries ?? []) {
         const { describeLibrary } = await import('./library');
         const d = await describeLibrary(lib);

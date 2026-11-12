@@ -26,22 +26,26 @@ export const runtime = 'nodejs';
 export const maxDuration = 600;
 
 /** Where each program would run: the sandbox, this PC, or nowhere (not installed). */
-function placements(plan: VerificationPlan, sandboxReady: boolean): Record<string, 'sandbox' | 'host' | 'missing'> {
-  const out: Record<string, 'sandbox' | 'host' | 'missing'> = {};
+function placements(plan: VerificationPlan, sandboxReady: boolean): Record<string, 'sandbox' | 'host' | 'windows' | 'missing'> {
+  const out: Record<string, 'sandbox' | 'host' | 'windows' | 'missing'> = {};
   const programs = new Set<string>();
   for (const t of plan.tools) if (t.executable) programs.add(t.executable.toLowerCase());
   for (const c of plan.checks) programs.add(c.command[0].toLowerCase());
   for (const d of plan.docSources) if (d.command?.[0]) programs.add(d.command[0].toLowerCase());
   for (const p of programs) {
     const tool = plan.tools.find((t) => t.executable?.toLowerCase() === p);
-    out[p] = sandboxReady && inSandboxImage(p) ? 'sandbox' : tool?.resolvedPath ? 'host' : 'missing';
+    out[p] = sandboxReady && inSandboxImage(p) ? 'sandbox' : tool?.resolvedPath ? 'host' : tool?.remotePath ? 'windows' : 'missing';
   }
   return out;
 }
 
 function platformLine(): string {
+  const runner = process.env.WINDOWS_RUNNER_HOST
+    ? ' A Windows PC is also available as a "Windows runner": Windows-only tools (MSVC, WinDbg/cdb, Windows game tools) can be used for checks there.'
+    : '';
+  if (process.platform === 'darwin') return `macOS on Apple silicon. Book code is compiled and run in a Linux Docker sandbox.${runner}`;
   if (process.platform === 'win32') return `Windows ${os.release().startsWith('10.0.2') ? '11' : '10/11'} (${process.arch}). Book code is compiled and run in a Linux Docker sandbox; Windows-only tools run on the PC itself for help output and compile-only checks.`;
-  return `${process.platform} (${process.arch})`;
+  return `${process.platform} (${process.arch}).${runner}`;
 }
 
 export async function POST(req: NextRequest) {

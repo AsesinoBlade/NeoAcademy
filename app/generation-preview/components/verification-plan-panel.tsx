@@ -14,13 +14,19 @@ export interface VerificationDecision {
   fixtures: Record<string, string>;
 }
 
-type Placement = 'sandbox' | 'host' | 'missing';
+type Placement = 'sandbox' | 'host' | 'windows' | 'missing';
 
 function Where({ placement }: { placement: Placement | undefined }) {
   if (placement === 'sandbox')
     return (
       <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
         <Box className="size-3" /> Sandbox
+      </span>
+    );
+  if (placement === 'windows')
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
+        <Monitor className="size-3" /> Windows PC
       </span>
     );
   if (placement === 'host')
@@ -59,7 +65,7 @@ export function VerificationPlanPanel({
   const [fixtures, setFixtures] = useState<Record<string, string>>({});
   const place = (program?: string) => (program ? placements[program.toLowerCase()] : undefined);
   const hostCodeCommands = [...plan.checks, ...plan.docSources.filter((d) => d.kind === 'tool-help')].filter(
-    (c) => c.executesCode && place('command' in c && c.command ? c.command[0] : undefined) === 'host',
+    (c) => c.executesCode && ['host', 'windows'].includes(place('command' in c && c.command ? c.command[0] : undefined) ?? ''),
   );
 
   return (
@@ -204,7 +210,7 @@ export function VerificationPlanPanel({
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={allowHostCode} onChange={(e) => setAllowHostCode(e.target.checked)} />
               <span>
-                Allow running the book&apos;s code on this PC when the sandbox can&apos;t (Windows-only tools)
+                Allow running the book&apos;s code on this PC or the Windows PC when the sandbox can&apos;t (Windows-only tools)
                 <span className="block text-xs text-muted-foreground">
                   Off is safer: Windows-only tools then only show help or compile/syntax-check
                   {hostCodeCommands.length ? `; ${hostCodeCommands.length} command(s) above would need this` : ''}. Code that uses the network,

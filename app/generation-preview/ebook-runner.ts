@@ -9,10 +9,10 @@
  * Every step checks the AbortSignal, so Pause stops between requests and a
  * later Resume continues with the first unwritten section / missing image.
  */
-import type { SceneOutline } from '@/lib/types/generation';
-import { createLogger } from '@/lib/logger';
+import type { SceneOutline } from "@/lib/types/generation";
+import { createLogger } from "@/lib/logger";
 
-const log = createLogger('Ebook');
+const log = createLogger("Ebook");
 
 export interface EbookRunContext {
   bookId: string;
@@ -21,11 +21,11 @@ export interface EbookRunContext {
   language: string;
   fallbackTitle: string;
   /** Premise check results, saved with the book for writers and reviewers. */
-  premises?: import('@/lib/book/principles').PremiseFinding[];
+  premises?: import("@/lib/book/principles").PremiseFinding[];
   /** Documentation on this PC that claims are checked against. */
   referenceLibraries?: Array<{ tool: string; path: string }>;
   /** quick | beginner | advanced. */
-  bookStyle?: import('@/lib/book/styles').BookStyle;
+  bookStyle?: import("@/lib/book/styles").BookStyle;
   referenceMaterial?: string;
   userProfile?: string;
   imageGenerationEnabled: boolean;
@@ -43,10 +43,15 @@ export interface EbookRunContext {
    * web docs, running code on this PC, fixture files). Throws AbortError on pause.
    */
   requestVerificationApproval?: (
-    plan: import('@/lib/book/verification-plan').VerificationPlan,
+    plan: import("@/lib/book/verification-plan").VerificationPlan,
     sandbox: { ready: boolean; reason?: string },
-    placements: Record<string, 'sandbox' | 'host' | 'missing'>,
-  ) => Promise<{ approved: boolean; allowWeb: boolean; allowHostCode: boolean; fixtures: Record<string, string> }>;
+    placements: Record<string, "sandbox" | "host" | "windows" | "missing">,
+  ) => Promise<{
+    approved: boolean;
+    allowWeb: boolean;
+    allowHostCode: boolean;
+    fixtures: Record<string, string>;
+  }>;
   /** Called once the book has a real title (from the outline or the planner). */
   onTitle?: (title: string, subtitle?: string) => void | Promise<void>;
   signal: AbortSignal;
@@ -56,7 +61,7 @@ export interface EbookRunContext {
   logProgress: (message: string) => void;
 }
 
-const abortError = () => new DOMException('Generation aborted', 'AbortError');
+const abortError = () => new DOMException("Generation aborted", "AbortError");
 
 async function postJson<T>(
   url: string,
@@ -65,14 +70,16 @@ async function postJson<T>(
   signal: AbortSignal,
 ): Promise<T> {
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.success === false) {
-    throw new Error(data.error || data.details || `${url} failed (${response.status})`);
+    throw new Error(
+      data.error || data.details || `${url} failed (${response.status})`,
+    );
   }
   return data as T;
 }
@@ -80,17 +87,21 @@ async function postJson<T>(
 /** Split "Title — spec" the same way the server does, for status messages. */
 function sectionTitle(raw: string): string {
   const text = raw.trim();
-  const m = text.match(/^(.{3,140}?)\s+(?:—|–|-{1,2})\s+/) ?? text.match(/^(.{3,100}?):\s+/);
+  const m =
+    text.match(/^(.{3,140}?)\s+(?:—|–|-{1,2})\s+/) ??
+    text.match(/^(.{3,100}?):\s+/);
   return (m ? m[1] : text).slice(0, 90);
 }
 
-export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl: string }> {
+export async function runEbookGeneration(
+  ctx: EbookRunContext,
+): Promise<{ pdfUrl: string }> {
   const { signal } = ctx;
   const first = ctx.outline[0];
 
   // 1. Book record (idempotent: on resume this just refreshes the outline).
   await postJson(
-    '/api/books',
+    "/api/books",
     {
       id: ctx.bookId,
       title: first?.bookTitle?.trim() || ctx.fallbackTitle,
@@ -98,7 +109,9 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
       requirement: ctx.requirement,
       language: ctx.language,
       outline: ctx.outline,
-      coverImagePrompt: ctx.imageGenerationEnabled ? first?.coverImagePrompt : undefined,
+      coverImagePrompt: ctx.imageGenerationEnabled
+        ? first?.coverImagePrompt
+        : undefined,
       premises: ctx.premises,
       bookStyle: ctx.bookStyle,
       referenceLibraries: ctx.referenceLibraries,
@@ -109,17 +122,22 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
 
   // Plan: a proper title (never the prompt) and, for hands-on books, the
   // canonical project spec every section must follow.
-  ctx.setStatus('Planning the book and its running project...');
-  ctx.logProgress('[Ebook] Planning title and project specification');
+  ctx.setStatus("Planning the book and its running project...");
+  ctx.logProgress("[Ebook] Planning title and project specification");
   const plan = await postJson<{
     title: string;
     subtitle?: string;
     hasProject: boolean;
     skipped?: boolean;
-  }>('/api/generate/book-plan', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+  }>(
+    "/api/generate/book-plan",
+    { bookId: ctx.bookId },
+    ctx.apiHeaders(),
+    signal,
+  );
   if (!plan.skipped) {
     ctx.logProgress(
-      `[Ebook] "${plan.title}"${plan.hasProject ? ' — running project planned' : ''}`,
+      `[Ebook] "${plan.title}"${plan.hasProject ? " — running project planned" : ""}`,
     );
   }
   await ctx.onTitle?.(plan.title, plan.subtitle);
@@ -134,60 +152,95 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   // Verification plan: how THIS book's claims and samples can be checked.
   // Nothing in it runs until the user approves it.
   if (ctx.factCheck) {
-    ctx.setStatus('Planning how this book will be verified...');
+    ctx.setStatus("Planning how this book will be verified...");
     type PlanResponse = {
-      plan: import('@/lib/book/verification-plan').VerificationPlan;
+      plan: import("@/lib/book/verification-plan").VerificationPlan;
       sandbox: { ready: boolean; reason?: string };
-      placements: Record<string, 'sandbox' | 'host' | 'missing'>;
+      placements: Record<string, "sandbox" | "host" | "windows" | "missing">;
     };
-    let vp = await postJson<PlanResponse>('/api/generate/book-verification-plan', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+    let vp = await postJson<PlanResponse>(
+      "/api/generate/book-verification-plan",
+      { bookId: ctx.bookId },
+      ctx.apiHeaders(),
+      signal,
+    );
     if (!vp.plan.decision) {
-      const needsApproval = vp.plan.checks.length + vp.plan.docSources.length + vp.plan.fixtures.length > 0;
+      const needsApproval =
+        vp.plan.checks.length +
+          vp.plan.docSources.length +
+          vp.plan.fixtures.length >
+        0;
       const decision =
         needsApproval && ctx.requestVerificationApproval
-          ? await ctx.requestVerificationApproval(vp.plan, vp.sandbox, vp.placements)
-          : { approved: needsApproval ? false : true, allowWeb: false, allowHostCode: false, fixtures: {} };
+          ? await ctx.requestVerificationApproval(
+              vp.plan,
+              vp.sandbox,
+              vp.placements,
+            )
+          : {
+              approved: needsApproval ? false : true,
+              allowWeb: false,
+              allowHostCode: false,
+              fixtures: {},
+            };
       vp = await postJson<PlanResponse>(
-        '/api/generate/book-verification-plan',
-        { bookId: ctx.bookId, action: 'decide', ...decision },
+        "/api/generate/book-verification-plan",
+        { bookId: ctx.bookId, action: "decide", ...decision },
         ctx.apiHeaders(),
         signal,
       );
     }
     ctx.logProgress(
-      `[Ebook] Verification plan ${vp.plan.decision?.approved ? 'approved' : 'not approved'}: ` +
+      `[Ebook] Verification plan ${vp.plan.decision?.approved ? "approved" : "not approved"}: ` +
         `${vp.plan.checks.length} check(s), ${vp.plan.docSources.length} documentation source(s)`,
     );
     if (vp.plan.decision?.approved && !vp.plan.assembled) {
-      ctx.setStatus('Assembling reference documentation (help output, bundled docs, official pages)...');
-      const assembled = await postJson<{ libraries: Array<{ tool: string; files: number }>; notes: string[] }>(
-        '/api/generate/book-references',
+      ctx.setStatus(
+        "Assembling reference documentation (help output, bundled docs, official pages)...",
+      );
+      const assembled = await postJson<{
+        libraries: Array<{ tool: string; files: number }>;
+        notes: string[];
+      }>(
+        "/api/generate/book-references",
         { bookId: ctx.bookId },
         ctx.apiHeaders(),
         signal,
       );
       ctx.logProgress(
-        `[Ebook] Reference library: ${assembled.libraries.map((l) => `${l.tool} (${l.files} files)`).join(', ') || 'nothing assembled'}`,
+        `[Ebook] Reference library: ${assembled.libraries.map((l) => `${l.tool} (${l.files} files)`).join(", ") || "nothing assembled"}`,
       );
     }
   }
 
-  const statusResponse = await fetch(`/api/books?id=${encodeURIComponent(ctx.bookId)}`, {
-    cache: 'no-store',
-    signal,
-  });
+  const statusResponse = await fetch(
+    `/api/books?id=${encodeURIComponent(ctx.bookId)}`,
+    {
+      cache: "no-store",
+      signal,
+    },
+  );
   const statusData = await statusResponse.json();
-  const written = new Set<string>(statusData?.progress?.writtenSectionIds ?? []);
-  const reviewed = new Set<string>(statusData?.progress?.reviewedSectionIds ?? []);
+  const written = new Set<string>(
+    statusData?.progress?.writtenSectionIds ?? [],
+  );
+  const reviewed = new Set<string>(
+    statusData?.progress?.reviewedSectionIds ?? [],
+  );
 
   // 2. Sections, in book order.
-  const sectionPlan: Array<{ id: string; chapter: number; section: number; title: string }> = [];
+  const sectionPlan: Array<{
+    id: string;
+    chapter: number;
+    section: number;
+    title: string;
+  }> = [];
   ctx.outline.forEach((chapter, ci) =>
     (chapter.keyPoints || [])
       .filter((p) => p.trim())
       .forEach((point, si) =>
         sectionPlan.push({
-          id: `c${String(ci + 1).padStart(2, '0')}s${String(si + 1).padStart(2, '0')}`,
+          id: `c${String(ci + 1).padStart(2, "0")}s${String(si + 1).padStart(2, "0")}`,
           chapter: ci + 1,
           section: si + 1,
           title: sectionTitle(point),
@@ -197,7 +250,10 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
 
   const total = sectionPlan.length;
   let done = sectionPlan.filter((p) => written.has(p.id)).length;
-  if (done > 0) ctx.logProgress(`[Ebook] Resuming: ${done} of ${total} sections already written`);
+  if (done > 0)
+    ctx.logProgress(
+      `[Ebook] Resuming: ${done} of ${total} sections already written`,
+    );
   ctx.logProgress(
     `[Ebook] Writing ${total - done} section(s) across ${ctx.outline.length} chapters`,
   );
@@ -209,7 +265,9 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   const runCheckpoint = async (chapter: number) => {
     if (!plan.hasProject) return;
     if (signal.aborted) throw abortError();
-    ctx.setStatus(`Checking that the project builds after chapter ${chapter}...`);
+    ctx.setStatus(
+      `Checking that the project builds after chapter ${chapter}...`,
+    );
     try {
       const report = await postJson<{
         status: string;
@@ -217,18 +275,20 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
         reason?: string;
         fixedFiles?: Array<{ path: string }>;
       }>(
-        '/api/generate/book-verify',
+        "/api/generate/book-verify",
         { bookId: ctx.bookId, checkpointChapter: chapter },
         ctx.apiHeaders(),
         signal,
       );
-      if (!report.skipped && report.status !== 'skipped') {
+      if (!report.skipped && report.status !== "skipped") {
         ctx.logProgress(
           `[Ebook] Chapter ${chapter} build checkpoint ${report.status}` +
             (report.fixedFiles?.length
-              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}`
-              : '') +
-            (report.status === 'failed' && report.reason ? ` (${report.reason})` : ''),
+              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(", ")}`
+              : "") +
+            (report.status === "failed" && report.reason
+              ? ` (${report.reason})`
+              : ""),
         );
       }
     } catch (error) {
@@ -241,7 +301,8 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
 
   for (const [index, item] of sectionPlan.entries()) {
     const endsChapter =
-      index === sectionPlan.length - 1 || sectionPlan[index + 1].chapter !== item.chapter;
+      index === sectionPlan.length - 1 ||
+      sectionPlan[index + 1].chapter !== item.chapter;
     const needsWriting = !written.has(item.id);
     const needsReview = ctx.factCheck && !reviewed.has(item.id);
     if (!needsWriting && !needsReview) {
@@ -253,7 +314,9 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
 
     if (needsWriting) {
       ctx.setStatus(`Writing section ${done + 1} of ${total} — ${label}`);
-      ctx.logProgress(`[Ebook] Writing section ${done + 1} of ${total}: ${label}`);
+      ctx.logProgress(
+        `[Ebook] Writing section ${done + 1} of ${total}: ${label}`,
+      );
 
       const body = {
         bookId: ctx.bookId,
@@ -266,16 +329,28 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
 
       let result: { words?: number };
       try {
-        result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
+        result = await postJson(
+          "/api/generate/book-section",
+          body,
+          ctx.apiHeaders(),
+          signal,
+        );
       } catch (error) {
         if (signal.aborted) throw abortError();
         log.warn(`Section ${item.id} failed, retrying once:`, error);
-        result = await postJson('/api/generate/book-section', body, ctx.apiHeaders(), signal);
+        result = await postJson(
+          "/api/generate/book-section",
+          body,
+          ctx.apiHeaders(),
+          signal,
+        );
       }
 
       done++;
       words += result.words ?? 0;
-      ctx.logProgress(`[Ebook] Completed section ${done} of ${total} (${result.words ?? 0} words)`);
+      ctx.logProgress(
+        `[Ebook] Completed section ${done} of ${total} (${result.words ?? 0} words)`,
+      );
     }
 
     // Fact-check + technical review (separate request, so pause/resume works
@@ -283,7 +358,11 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
     if (needsReview) {
       if (signal.aborted) throw abortError();
       ctx.setStatus(`Fact-checking ${label}`);
-      const reviewBody = { bookId: ctx.bookId, sectionId: item.id, webSearch: ctx.webSearch };
+      const reviewBody = {
+        bookId: ctx.bookId,
+        sectionId: item.id,
+        webSearch: ctx.webSearch,
+      };
       let review: {
         claims?: number;
         notFound?: number;
@@ -294,34 +373,45 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
         mathWrongAfter?: number | null;
       };
       try {
-        review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
+        review = await postJson(
+          "/api/generate/book-review",
+          reviewBody,
+          ctx.apiHeaders(),
+          signal,
+        );
       } catch (error) {
         if (signal.aborted) throw abortError();
         log.warn(`Review of ${item.id} failed, retrying once:`, error);
-        review = await postJson('/api/generate/book-review', reviewBody, ctx.apiHeaders(), signal);
+        review = await postJson(
+          "/api/generate/book-review",
+          reviewBody,
+          ctx.apiHeaders(),
+          signal,
+        );
       }
       if (review.corrections || review.mathWrong) {
         ctx.logProgress(
           `[Ebook] Reviewed ${label}: ${review.claims ?? 0} claims checked, ${review.notFound ?? 0} not found, ` +
             `${review.mathChecked ?? 0} calculations checked (${review.mathWrong ?? 0} wrong` +
-            `${review.mathWrongAfter != null ? ` → ${review.mathWrongAfter} after review` : ''}), ` +
-            `${review.corrections ?? 0} correction(s)${review.accepted ? ' applied' : ' (kept original)'}`,
+            `${review.mathWrongAfter != null ? ` → ${review.mathWrongAfter} after review` : ""}), ` +
+            `${review.corrections ?? 0} correction(s)${review.accepted ? " applied" : " (kept original)"}`,
         );
       }
-
     }
 
     if (endsChapter) await runCheckpoint(item.chapter);
   }
   if (words > 0)
-    ctx.logProgress(`[Ebook] Writing complete (+${words.toLocaleString()} words this run)`);
+    ctx.logProgress(
+      `[Ebook] Writing complete (+${words.toLocaleString()} words this run)`,
+    );
 
   // Build verification: compile/test the appendix project and fix it (needs
   // the LLM, so it runs before the model is unloaded).
   if (plan.hasProject) {
     if (signal.aborted) throw abortError();
-    ctx.setStatus('Verifying that the project builds...');
-    ctx.logProgress('[Ebook] Building and testing the project');
+    ctx.setStatus("Verifying that the project builds...");
+    ctx.logProgress("[Ebook] Building and testing the project");
     try {
       const report = await postJson<{
         status: string;
@@ -329,14 +419,19 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
         skipped?: boolean;
         fixRounds?: unknown[];
         fixedFiles?: Array<{ path: string }>;
-      }>('/api/generate/book-verify', { bookId: ctx.bookId }, ctx.apiHeaders(), signal);
+      }>(
+        "/api/generate/book-verify",
+        { bookId: ctx.bookId },
+        ctx.apiHeaders(),
+        signal,
+      );
       if (!report.skipped) {
         ctx.logProgress(
           `[Ebook] Build verification ${report.status}` +
             (report.fixedFiles?.length
-              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(', ')}`
-              : '') +
-            (report.reason ? ` (${report.reason})` : ''),
+              ? ` — fixed ${report.fixedFiles.map((f) => f.path).join(", ")}`
+              : "") +
+            (report.reason ? ` (${report.reason})` : ""),
         );
       }
     } catch (error) {
@@ -351,7 +446,10 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
   // 3. Pictures — separate phase so the LLM and ComfyUI never share VRAM.
   // Release the LLM before ComfyUI starts: both cannot share the GPU. The
   // ComfyUI start itself also refuses while a model is still resident.
-  const unload = await fetch('/api/unload-local-llm', { method: 'POST', signal })
+  const unload = await fetch("/api/unload-local-llm", {
+    method: "POST",
+    signal,
+  })
     .then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
     .catch((error) => {
       if (signal.aborted) throw abortError();
@@ -359,65 +457,89 @@ export async function runEbookGeneration(ctx: EbookRunContext): Promise<{ pdfUrl
     });
   if (!unload.ok) {
     ctx.logProgress(
-      `[Ebook] LLM unload reported a problem (${unload.data?.message ?? 'unknown'}); ` +
-        'ComfyUI will only start once the GPU is free.',
+      `[Ebook] LLM unload reported a problem (${unload.data?.message ?? "unknown"}); ` +
+        "ComfyUI will only start once the GPU is free.",
     );
   }
 
   if (ctx.imageGenerationEnabled) {
     if (signal.aborted) throw abortError();
     const probe = await postJson<{ remaining: number }>(
-      '/api/generate/book-image',
+      "/api/generate/book-image",
       { bookId: ctx.bookId, dryRun: true },
       {},
       signal,
     ).catch(() => ({ remaining: 1 }));
 
     if (probe.remaining > 0) {
-      ctx.setStatus('Starting the image generator...');
-      ctx.logProgress('[Ebook] Starting ComfyUI for illustrations');
-      await postJson('/api/local-comfyui', { action: 'start' }, {}, signal);
-
-      try {
-        let generated = 0;
-        for (;;) {
+      ctx.setStatus("Starting the image generator...");
+      ctx.logProgress("[Ebook] Starting ComfyUI for illustrations");
+      const started = await postJson(
+        "/api/local-comfyui",
+        { action: "start" },
+        {},
+        signal,
+      )
+        .then(() => true)
+        .catch((error) => {
           if (signal.aborted) throw abortError();
-          const step = await postJson<{ remaining: number; generated?: string; failed?: string }>(
-            '/api/generate/book-image',
-            { bookId: ctx.bookId },
-            ctx.apiHeaders(),
-            signal,
+          // No image generator available: finish the book without pictures.
+          ctx.logProgress(
+            `[Ebook] Pictures skipped: ${error instanceof Error ? error.message : String(error)}`,
           );
-          if (step.generated) generated++;
-          if (step.failed)
-            ctx.logProgress(`[Ebook] Picture ${step.failed} failed; will retry once`);
-          if (step.remaining === 0) break;
-          ctx.setStatus(`Generating pictures — ${generated} done, ${step.remaining} to go`);
+          return false;
+        });
+      if (started) {
+        try {
+          let generated = 0;
+          for (;;) {
+            if (signal.aborted) throw abortError();
+            const step = await postJson<{
+              remaining: number;
+              generated?: string;
+              failed?: string;
+            }>(
+              "/api/generate/book-image",
+              { bookId: ctx.bookId },
+              ctx.apiHeaders(),
+              signal,
+            );
+            if (step.generated) generated++;
+            if (step.failed)
+              ctx.logProgress(
+                `[Ebook] Picture ${step.failed} failed; will retry once`,
+              );
+            if (step.remaining === 0) break;
+            ctx.setStatus(
+              `Generating pictures — ${generated} done, ${step.remaining} to go`,
+            );
+          }
+          ctx.logProgress(`[Ebook] Pictures complete (${generated} generated)`);
+        } finally {
+          await fetch("/api/local-comfyui", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "stop" }),
+          }).catch(() => undefined);
         }
-        ctx.logProgress(`[Ebook] Pictures complete (${generated} generated)`);
-      } finally {
-        await fetch('/api/local-comfyui', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'stop' }),
-        }).catch(() => undefined);
       }
     }
   }
 
   // 4. PDF
   if (signal.aborted) throw abortError();
-  ctx.setStatus('Typesetting the book and printing the PDF...');
-  ctx.logProgress('[Ebook] Rendering PDF');
-  const pdf = await postJson<{ url: string; bytes: number; missingSections: number }>(
-    '/api/generate/book-pdf',
-    { bookId: ctx.bookId },
-    {},
-    signal,
-  );
+  ctx.setStatus("Typesetting the book and printing the PDF...");
+  ctx.logProgress("[Ebook] Rendering PDF");
+  const pdf = await postJson<{
+    url: string;
+    bytes: number;
+    missingSections: number;
+  }>("/api/generate/book-pdf", { bookId: ctx.bookId }, {}, signal);
   ctx.logProgress(
     `[Ebook] PDF ready (${(pdf.bytes / 1024 / 1024).toFixed(1)} MB)` +
-      (pdf.missingSections ? `, ${pdf.missingSections} section(s) missing` : ''),
+      (pdf.missingSections
+        ? `, ${pdf.missingSections} section(s) missing`
+        : ""),
   );
   return { pdfUrl: pdf.url };
 }

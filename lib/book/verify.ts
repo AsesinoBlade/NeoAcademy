@@ -286,8 +286,17 @@ export async function runProjectBuild(bookId: string, commands: string[], option
     }
     for (const m of result.output.matchAll(/The (?:CXX|C) compiler identification is ([^\n]+)/g)) toolchain.add(m[1].trim());
     if (exec.where === 'container' && result.code !== 0 && /windows\.h|<Windows\.h>|__declspec|winsock2|MSVC|_MSC_VER/i.test(result.output)) {
+      // Needs Windows: build it on the Windows runner instead, if the book allows running code there.
+      const { runnerConfig } = await import('./windows-runner');
+      if (runnerConfig() && options.allowHostCode) {
+        const remote = await buildOnWindowsRunner(work, commands, prefetch.cmakeArgs);
+        if (remote) {
+          remote.toolchain.unshift(...[...toolchain].filter((t) => t.startsWith('Dependencies')));
+          return remote;
+        }
+      }
       note = (note ? `${note} ` : '') +
-        'This code needs Windows and cannot be verified in the Linux sandbox; enable "run book code on this PC" for this book to verify it with your Windows toolchain.';
+        'This code needs Windows and cannot be verified in the Linux sandbox; configure a Windows runner (or use a Windows PC) and enable running book code for this book to verify it.';
     }
     const step: VerifyStep = {
       command: raw,
@@ -329,4 +338,77 @@ export function replaceFileBlock(markdown: string, filePath: string, newContent:
     return `${indent}${open}\n${bodyLines.map((l) => (indent ? indent + l : l)).join('\n')}\n${close}`;
   });
   return replaced ? out : null;
+}
+
+/**
+ * Build and test a Windows-only project on the Windows runner: one upload of
+ * the project (with its already-downloaded dependencies), then each command
+ * in that folder. Only called when the book allows running its code there.
+ */
+async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs: string[]): Promise<VerifyRunResult | null> {
+  const runner = await import('./windows-runner');
+  const session = await runner.openSession(work);
+  if (!session) return null;
+  const steps: VerifyStep[] = [];
+  const toolchain = new Set<string>(['Built on the Windows runner']);
+  let multiConfig = false;
+  try {
+    for (const raw of commands.flatMap((c) => c.split(/\s*&&\s*/)).filter((c) => c.trim())) {
+      if (/[|<>;`]|\$\(/.test(raw)) {
+        steps.push({ command: raw, status: 'skipped', note: 'Not run: contains shell operators.' });
+        continue;
+      }
+      let argv = splitArgs(raw);
+      const program = argv[0] ?? '';
+      if (looksLikeProgramRun(program)) {
+        steps.push({ command: raw, status: 'skipped', note: 'Not run: executes the finished program.' });
+        continue;
+      }
+      if (!BUILD_TOOLS.has(program.toLowerCase())) {
+        steps.push({ command: raw, status: 'skipped', note: `Not run: "${program}" is not an allowlisted build tool.` });
+        continue;
+      }
+      const remoteProgram = await runner.resolveRemoteProgram(program);
+      if (!remoteProgram) {
+        steps.push({ command: raw, argv, status: 'skipped', note: `Not run: ${program} is not installed on the Windows runner.` });
+        return { passed: false, steps, toolchain: [...toolchain], skipped: true };
+      }
+      const configure = program === 'cmake' && !argv.includes('--build') && !argv.includes('--install') && !argv.includes('-P');
+      if (configure) argv = [...argv, ...cmakeArgs];
+      if (program === 'ctest' && multiConfig && !argv.includes('-C') && !argv.includes('--build-config')) argv = [...argv, '-C', 'Debug'];
+
+      const res = await runner.runInSession(session, remoteProgram, argv.slice(1), 15 * 60);
+      let code = res.code;
+      let output = res.output;
+      if (configure && code === 0) {
+        const bIndex = argv.findIndex((a) => a === '-B' || (a.startsWith('-B') && a.length > 2));
+        const buildDir = bIndex < 0 ? '.' : argv[bIndex] === '-B' ? argv[bIndex + 1] ?? '.' : argv[bIndex].slice(2);
+        const cache = await runner.readSessionFile(session, `${buildDir.replace(/^\/work\/?/, '')}/CMakeCache.txt`);
+        const generator = cache.match(/^CMAKE_GENERATOR:INTERNAL=(.+)$/m)?.[1]?.trim() ?? '';
+        if (generator) {
+          multiConfig = /visual studio|xcode|multi-config/i.test(generator);
+          toolchain.add(`Generator: ${generator}`);
+        }
+      }
+      if (program === 'ctest' && code === 0 && /No tests were found/i.test(output)) {
+        code = 1;
+        output += '\nVERIFICATION: ctest found no tests (enable_testing() in the top-level CMakeLists.txt, add_test(...)).';
+      }
+      for (const m of output.matchAll(/The (?:CXX|C) compiler identification is ([^\r\n]+)/g)) toolchain.add(m[1].trim());
+      const step: VerifyStep = {
+        command: raw,
+        argv,
+        status: code === 0 ? 'passed' : 'failed',
+        exitCode: code,
+        note: 'Run on the Windows runner (allowed for this book).',
+        outputTail: output.slice(-8000),
+      };
+      steps.push(step);
+      if (code !== 0) return { passed: false, steps, failedStep: step, toolchain: [...toolchain] };
+    }
+  } finally {
+    await runner.closeSession(session);
+  }
+  const ran = steps.filter((s) => s.status !== 'skipped');
+  return { passed: ran.length > 0 && ran.every((s) => s.status === 'passed'), steps, toolchain: [...toolchain] };
 }

@@ -37,7 +37,7 @@ export interface ExecResult {
   code: number;
   output: string;
   durationMs: number;
-  where: 'container' | 'host' | 'skipped';
+  where: 'container' | 'host' | 'windows-runner' | 'skipped';
   reason?: string;
 }
 
@@ -122,6 +122,10 @@ export interface ExecRequest {
   stdin?: string;
   /** Compile/help-only commands may use this PC's tool even when the sandbox has one (e.g. javac with Ghidra's jars). */
   preferHost?: boolean;
+  /** Run on the Windows runner even if the sandbox has the program (Windows-only builds). */
+  preferRunner?: boolean;
+  /** An open runner session (builds: one upload for all their commands). */
+  runnerSession?: import('./windows-runner').RunnerSession;
 }
 
 /** Map a host path inside `work` to its container path. */
@@ -136,7 +140,11 @@ export async function runContained(req: ExecRequest): Promise<ExecResult> {
   const sandbox = await sandboxStatus();
 
   const useHost = !!req.preferHost && !req.runsCode && !req.network && !!req.hostProgram;
-  if (inSandboxImage(program) && sandbox.ready && !useHost) {
+  if (req.preferRunner && !req.network) {
+    const viaRunner = await runOnWindowsRunner(req, program, timeoutMs);
+    if (viaRunner) return viaRunner;
+  }
+  if (inSandboxImage(program) && sandbox.ready && !useHost && !req.preferRunner) {
     const name = `neoacademy-${randomBytes(6).toString('hex')}`;
     const args = [
       'run', '--rm', '--name', name,
@@ -159,6 +167,9 @@ export async function runContained(req: ExecRequest): Promise<ExecResult> {
     return { code: -1, output: '', durationMs: 0, where: 'skipped', reason: `downloads only happen inside the sandbox (${sandbox.reason ?? `${program} is not in the sandbox image`})` };
   }
   if (!req.hostProgram) {
+    // Not here: a Windows-only program may be on the Windows runner.
+    const viaRunner = await runOnWindowsRunner(req, program, timeoutMs);
+    if (viaRunner) return viaRunner;
     const why = inSandboxImage(program)
       ? `the Docker sandbox is not available (${sandbox.reason})`
       : `${program} is not installed on this PC`;
@@ -184,4 +195,42 @@ export async function runContained(req: ExecRequest): Promise<ExecResult> {
   const res = await spawn(argv[0], argv.slice(1), { cwd: req.work, env: hostEnv(), timeoutMs, input: req.stdin });
   if (res.timedOut) log.warn(`${program} timed out after ${req.timeoutSec ?? 120}s`);
   return { code: res.code, output: res.output, durationMs: res.durationMs, where: 'host', reason: res.timedOut ? 'timed out' : undefined };
+}
+
+/**
+ * The Windows runner (another PC over SSH): same policy as this PC — book code
+ * only with the per-book opt-in. Returns null when no runner has the program.
+ */
+async function runOnWindowsRunner(req: ExecRequest, program: string, timeoutMs: number): Promise<ExecResult | null> {
+  const runner = await import('./windows-runner');
+  if (!runner.runnerConfig()) return null;
+  const remoteProgram = await runner.resolveRemoteProgram(program);
+  if (!remoteProgram) return null;
+  if (req.runsCode && !req.allowHostCode) {
+    return {
+      code: -1,
+      output: '',
+      durationMs: 0,
+      where: 'skipped',
+      reason: `${program} is on the Windows runner, and running the book's code there is not enabled for this book`,
+    };
+  }
+  const { promises: fs } = await import('node:fs');
+  let session = req.runnerSession ?? null;
+  if (!session) {
+    // Fixtures travel with the job.
+    for (const [name, p] of Object.entries(req.fixtures ?? {})) {
+      await fs.mkdir(path.join(req.work, '_fixtures'), { recursive: true });
+      await fs.copyFile(p, path.join(req.work, '_fixtures', name)).catch(() => undefined);
+    }
+    session = await runner.openSession(req.work);
+    if (!session) return { code: -1, output: '', durationMs: 0, where: 'skipped', reason: 'the Windows runner could not be reached' };
+  }
+  const started = Date.now();
+  try {
+    const res = await runner.runInSession(session, remoteProgram, req.argv.slice(1), Math.round(timeoutMs / 1000));
+    return { code: res.code, output: res.output, durationMs: Date.now() - started, where: 'windows-runner', reason: res.timedOut ? 'timed out' : undefined };
+  } finally {
+    if (!req.runnerSession) await runner.closeSession(session);
+  }
 }

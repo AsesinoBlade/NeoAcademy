@@ -3465,14 +3465,14 @@ function GenerationPreviewContent() {
   const [verificationRequest, setVerificationRequest] = useState<{
     plan: VerificationPlan;
     sandbox: { ready: boolean; reason?: string };
-    placements: Record<string, 'sandbox' | 'host' | 'missing'>;
+    placements: Record<string, 'sandbox' | 'host' | 'windows' | 'missing'>;
   } | null>(null);
   const verificationResolveRef = useRef<((d: VerificationDecision | 'pause') => void) | null>(null);
 
   const requestVerificationApproval = (
     plan: VerificationPlan,
     sandbox: { ready: boolean; reason?: string },
-    placements: Record<string, 'sandbox' | 'host' | 'missing'>,
+    placements: Record<string, 'sandbox' | 'host' | 'windows' | 'missing'>,
     signal: AbortSignal,
   ) =>
     new Promise<VerificationDecision>((resolve, reject) => {
