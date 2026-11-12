@@ -330,7 +330,8 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
       ['Confirmed against official web documentation', coverage.byWeb],
       ['Cross-checked by an independent expert answer (no documentation available)', coverage.byCrossCheck],
       ['Found to be wrong and corrected during review', coverage.corrected],
-      ['Disputed — an independent answer disagreed (see below)', coverage.disputed],
+      ['Contradicted by documentation or a judged independent answer, still in the text (see below)', coverage.disputed],
+      ['Uncertain — an independent answer differed, no clear ruling (see below)', coverage.uncertain],
       ['Not verifiable with the sources available (see below)', coverage.unverified],
     ];
     const open = coverage.openClaims.slice(0, 200);
@@ -355,8 +356,8 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
           <p>${coverage.codeSamples} code sample(s) were compiled or run with the real tools${coverage.codeErrorsLeft ? ` (${coverage.codeErrorsLeft} still had errors after review)` : ''}; ${coverage.calculations} calculation(s) were recomputed exactly${coverage.calculationsWrongLeft ? ` (${coverage.calculationsWrongLeft} could not be corrected automatically)` : ''}.
           Code was only ever run in an isolated sandbox without network access; text from the web was used for facts only, never as code.</p>
           ${bySection.size ? `<h2>Please double-check</h2>
-          <p>These claims could not be confirmed. Disputed ones were contradicted by an independent answer; check them against your version's documentation.</p>
-          ${[...bySection.entries()].map(([sec, list]) => `<h3>${escapeHtml(sec)}</h3><ul>${list.map((c) => `<li><strong>${c.status === 'disputed' ? 'Disputed' : 'Unverified'}:</strong> ${escapeHtml(c.statement)}${c.note ? `<br><em>Independent answer: ${escapeHtml(c.note.split('\n')[0].slice(0, 300))}</em>` : ''}</li>`).join('')}</ul>`).join('\n')}
+          <p>These claims in the final text could not be confirmed. <strong>Contradicted</strong> ones were judged wrong but could not be corrected automatically; <strong>Uncertain</strong> ones met a differing independent answer that couldn't be settled. Check them against a trusted source.</p>
+          ${[...bySection.entries()].map(([sec, list]) => `<h3>${escapeHtml(sec)}</h3><ul>${list.map((c) => `<li><strong>${c.status === 'disputed' || c.status === 'not-found' ? 'Contradicted' : c.status === 'uncertain' ? 'Uncertain' : 'Unverified'}:</strong> ${escapeHtml(c.statement)}${c.note && c.note.trim() && c.note.trim() !== 'undefined' ? `<br><em>${escapeHtml(c.note.split('\n')[0].slice(0, 300))}</em>` : ''}</li>`).join('')}</ul>`).join('\n')}
           ${coverage.openClaims.length > open.length ? `<p>…and ${coverage.openClaims.length - open.length} more.</p>` : ''}` : '<p>Every checked claim was confirmed or corrected.</p>'}
         </section>
       </article>`,

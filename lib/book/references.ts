@@ -48,6 +48,8 @@ export interface Claim {
 export interface Evidence {
   claim: Claim;
   verdict: 'confirmed' | 'not-found' | 'unknown' | 'disputed';
+  /** Unverified, and an independent answer differed without a clear ruling: never a reason to change the text. */
+  contested?: boolean;
   source: 'local-docs' | 'web' | 'none' | 'cross-check';
   reference: string;
   excerpt: string;
@@ -710,7 +712,9 @@ export function formatEvidence(evidence: Evidence[]): string {
     .map((e, i) => {
       const label =
         e.verdict === 'disputed'
-          ? 'DISPUTED by an independent expert answer — investigate; correct it if the answer below is right, otherwise add a brief "> **Check your version:**" note'
+          ? 'WRONG according to an independent answer AND a separate judge — correct the statement (unless other evidence above clearly confirms it)'
+          : e.contested
+            ? 'UNCERTAIN — an independent answer differed but no ruling was possible: do NOT change the statement because of this; at most add one short "check" note if a reader could be misled'
           : e.verdict === 'confirmed' && e.source === 'cross-check'
             ? 'CROSS-CHECKED (an independent answer agrees; no documentation available)'
             : e.verdict === 'confirmed'

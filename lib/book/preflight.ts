@@ -483,11 +483,118 @@ async function checkProjectTools(spec: ProjectSpec, factCheck: boolean): Promise
     });
   }
 
-  // CMake toolchain probe: configure + build a hello-world with the book's generator.
-  if (programs.includes('cmake') && (await toolAvailable('cmake'))) {
-    checks.push(await probeCMakeToolchain(spec));
+  // CMake toolchain probe — where the book's builds will actually run:
+  // the sandbox when it is ready (else this computer), plus the Windows
+  // runner when the book uses a Windows-only generator.
+  if (programs.includes('cmake')) {
+    const { sandboxStatus } = await import('./sandbox');
+    const generator = specGenerator(spec);
+    if ((await sandboxStatus()).ready) {
+      checks.push(await probeCMakeInSandbox(spec, generator));
+    } else if (await toolAvailable('cmake')) {
+      checks.push(await probeCMakeToolchain(spec));
+    }
+    const { runnerConfig } = await import('./windows-runner');
+    if (/visual studio/i.test(generator) && runnerConfig()) {
+      checks.push(await probeCMakeOnWindowsRunner(generator));
+    }
   }
   return checks;
+}
+
+function specGenerator(spec: ProjectSpec): string {
+  const configure = spec.buildCommands.find((c) => /^cmake\s/.test(c.trim()) && !/--build|--install/.test(c));
+  const argv = configure ? splitArgs(configure) : [];
+  const gIndex = argv.findIndex((a) => a === '-G' || (a.startsWith('-G') && a.length > 2));
+  return gIndex < 0 ? '' : argv[gIndex] === '-G' ? argv[gIndex + 1] ?? '' : argv[gIndex].slice(2);
+}
+
+async function writeProbeProject(spec: ProjectSpec): Promise<{ dir: string; languages: string }> {
+  const languages = /\bc\b(?!\+\+)/i.test(spec.language) && !/c\+\+|cpp/i.test(spec.language) ? 'C' : 'CXX';
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'neoacademy-probe-'));
+  const source = languages === 'C' ? 'main.c' : 'main.cpp';
+  await fs.writeFile(path.join(dir, 'CMakeLists.txt'), `cmake_minimum_required(VERSION 3.16)\nproject(probe LANGUAGES ${languages})\nadd_executable(probe ${source})\n`);
+  await fs.writeFile(path.join(dir, source), languages === 'C' ? 'int main(void) { return 0; }\n' : '#include <iostream>\nint main() { std::cout << "ok"; }\n');
+  return { dir, languages };
+}
+
+/** The sandbox builds the book: probe there (Windows-only generators are replaced, as in verification). */
+async function probeCMakeInSandbox(spec: ProjectSpec, generator: string): Promise<PreflightCheck> {
+  const { runContained } = await import('./sandbox');
+  const portableGenerator = generator && !/visual studio|xcode/i.test(generator) ? generator : '';
+  const base = { id: 'cmake-toolchain', label: `C++ toolchain in the sandbox${portableGenerator ? ` for "${portableGenerator}"` : ''}`, blocking: false };
+  const { dir } = await writeProbeProject(spec);
+  try {
+    // Our own probe project, not book code.
+    const conf = await runContained({ argv: ['cmake', '-S', '/work', '-B', '/work/build', ...(portableGenerator ? ['-G', portableGenerator] : [])], work: dir, runsCode: false, timeoutSec: 180 });
+    const build = conf.code === 0 ? await runContained({ argv: ['cmake', '--build', '/work/build'], work: dir, runsCode: false, timeoutSec: 240 }) : null;
+    if (conf.code === 0 && build?.code === 0) {
+      const compiler = conf.output.match(/compiler identification is ([^\n]+)/)?.[1]?.trim();
+      return {
+        ...base,
+        status: 'ok',
+        detail:
+          `Builds are verified in the sandbox${compiler ? ` with ${compiler}` : ''}.` +
+          (generator && !portableGenerator ? ` The "${generator}" generator only exists on Windows; the sandbox uses CMake's default, and Windows-only code is built on the Windows runner if one is set up.` : ''),
+      };
+    }
+    return {
+      ...base,
+      status: 'missing',
+      detail: `A test project failed to build in the sandbox.\n\nCMake output (last lines):\n${(build?.output || conf.output).slice(-1200)}`,
+      fix: ['Rebuild the sandbox image: docker build -t neoacademy-sandbox:1 docker/sandbox', RESTART_NOTE],
+      ifIgnored: 'The book is written without build verification, so its project code is not compiled or tested.',
+    };
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/** Windows-only generators (Visual Studio): probe MSVC on the Windows runner. */
+async function probeCMakeOnWindowsRunner(generator: string): Promise<PreflightCheck> {
+  const runner = await import('./windows-runner');
+  const base = { id: 'cmake-toolchain-windows', label: `Windows toolchain for "${generator}" (Windows runner)`, blocking: false };
+  const ifIgnored = 'Windows-only code in the book (windows.h, MSVC) is not built; everything portable is still verified in the sandbox.';
+  if (!(await runner.runnerStatus()).ok) {
+    return { ...base, status: 'warning', detail: 'The Windows runner is not reachable (see the Windows runner check).', ifIgnored };
+  }
+  const cmake = await runner.resolveRemoteProgram('cmake');
+  if (!cmake) {
+    return {
+      ...base,
+      status: 'missing',
+      detail: 'CMake is not installed on the Windows PC.',
+      fix: ['On the Windows PC (administrator PowerShell): winget install -e --id Kitware.CMake --scope machine', RESTART_NOTE],
+      ifIgnored,
+    };
+  }
+  const { dir } = await writeProbeProject({ language: 'C++' } as ProjectSpec);
+  const session = await runner.openSession(dir);
+  await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  if (!session) return { ...base, status: 'warning', detail: 'Could not copy a test project to the Windows runner.', ifIgnored };
+  try {
+    const conf = await runner.runInSession(session, cmake, ['-S', '/work', '-B', '/work/build', '-G', generator], 300);
+    const build = conf.code === 0 ? await runner.runInSession(session, cmake, ['--build', '/work/build', '--config', 'Debug'], 300) : null;
+    if (conf.code === 0 && build?.code === 0) {
+      const compiler = conf.output.match(/compiler identification is ([^\r\n]+)/)?.[1]?.trim();
+      return { ...base, status: 'ok', detail: `A test project built on the Windows PC${compiler ? ` with ${compiler}` : ''}.` };
+    }
+    const output = (build?.output || conf.output).slice(-1200);
+    const noVs = /could not find any instance of Visual Studio/i.test(output);
+    return {
+      ...base,
+      status: 'missing',
+      detail: noVs
+        ? 'Visual Studio Build Tools (MSVC) are not installed on the Windows PC.'
+        : `A test project failed to build on the Windows PC.\n\nCMake output (last lines):\n${output}`,
+      fix: noVs
+        ? ['On the Windows PC (administrator PowerShell): winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"', RESTART_NOTE]
+        : ['Check the output above on the Windows PC, then click "Check again".'],
+      ifIgnored,
+    };
+  } finally {
+    await runner.closeSession(session);
+  }
 }
 
 async function probeCMakeToolchain(spec: ProjectSpec): Promise<PreflightCheck> {

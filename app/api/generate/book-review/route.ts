@@ -21,7 +21,10 @@ import path from 'node:path';
 import { buildPrompt, PROMPT_IDS } from '@/lib/generation/prompts';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { sanitiseSectionFigures } from '@/lib/book/figures';
+import { figuresAsText, sanitiseSectionFigures } from '@/lib/book/figures';
+import { cleanEditorialArtifacts } from '@/lib/book/cleanup';
+import { parseJsonResponse } from '@/lib/generation/json-repair';
+import type { Evidence } from '@/lib/book/references';
 import { checkSectionMath, extractClaims, generateBookText, tableOfContents } from '@/lib/book/llm';
 import { buildProjectContext, extractProjectFiles, listProjectFiles, projectDir, recordProjectFiles } from '@/lib/book/project';
 import { checkCodeSamples, formatCodeReport, type CodeCheckReport } from '@/lib/book/code-check';
@@ -93,7 +96,8 @@ export async function POST(req: NextRequest) {
     if (!original) return apiError('INVALID_REQUEST', 409, `Section ${sectionId} is not written yet`);
 
     // 1-2. Claims and evidence
-    const claims = await extractClaims(req, original.slice(0, 20000), 12).catch(() => []);
+    // Figures (chart data, captions) are fact-checked too, as plain sentences.
+    const claims = await extractClaims(req, figuresAsText(original).slice(0, 20000), 12).catch(() => []);
     const evidence = await gatherEvidence(claims, {
       webSearch: !!webSearch,
       libraries: bookLibraries(book),
@@ -251,6 +255,31 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (accepted) revised = cleanEditorialArtifacts(revised);
+
+    // What the final text says about each open claim: still claimed, changed or
+    // removed. The audit (and the book's verification appendix) reports this
+    // final state, not the draft's.
+    const reviewedText = accepted ? revised : original;
+    const open = evidence.filter((e) => e.verdict !== 'confirmed');
+    const afterReview = new Map<Evidence, 'still' | 'changed' | 'removed'>();
+    if (open.length && accepted) {
+      const resolution = buildPrompt(PROMPT_IDS.BOOK_RESOLUTION, {
+        statements: open.slice(0, 25).map((e, i) => `s${i + 1}. ${e.claim.statement}`).join('\n'),
+        section: figuresAsText(reviewedText).slice(0, 24000),
+      });
+      if (resolution) {
+        const raw = await generateBookText(req, resolution.system, resolution.user, 1500, 'book-resolution').catch(() => '');
+        const parsed = parseJsonResponse<unknown>(raw);
+        for (const item of Array.isArray(parsed) ? parsed : []) {
+          const { id, status } = (item ?? {}) as { id?: string; status?: string };
+          const e = open[Number(String(id).replace(/^s/, '')) - 1];
+          if (e && (status === 'still' || status === 'changed' || status === 'removed')) afterReview.set(e, status);
+        }
+      }
+    }
+    for (const e of open) if (!afterReview.has(e)) afterReview.set(e, 'still');
+
     if (accepted) {
       const imagesEnabled = req.headers.get('x-image-generation-enabled') === 'true';
       const cleaned = sanitiseSectionFigures(revised, sectionId, { imagesEnabled });
@@ -315,7 +344,9 @@ export async function POST(req: NextRequest) {
         verdict: e.verdict,
         source: e.source,
         reference: e.reference,
-        ...(e.verdict === 'disputed' ? { independentAnswer: e.excerpt.slice(0, 600) } : {}),
+        ...(e.verdict === 'disputed' || e.contested ? { independentAnswer: e.excerpt.slice(0, 600) } : {}),
+        ...(e.contested ? { contested: true } : {}),
+        ...(afterReview.has(e) ? { afterReview: afterReview.get(e) } : {}),
       })),
     };
     await fs.mkdir(path.dirname(reviewPath(bookId, sectionId)), { recursive: true });

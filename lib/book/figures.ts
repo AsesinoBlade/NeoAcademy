@@ -240,3 +240,38 @@ export async function renderChartSvg(spec: ChartSpec, width = 720, height = 380)
   chart.dispose();
   return svg;
 }
+
+/**
+ * Figures as plain sentences, for fact-checking: chart titles, axes, captions
+ * and data points, and picture captions. (Mermaid diagrams are already text.)
+ */
+export function figuresAsText(markdown: string): string {
+  return markdown.replace(FENCE_RE, (whole, kind: string, body: string) => {
+    if (kind === 'mermaid') return whole;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      return whole;
+    }
+    if (kind === 'image') {
+      return parsed.caption ? `[Figure — picture: ${String(parsed.caption)}]` : '';
+    }
+    const chart = parsed as unknown as ChartSpec;
+    const series = (Array.isArray(chart.series) ? chart.series : [])
+      .map((s) => {
+        const points = (Array.isArray(s.data) ? s.data : [])
+          .map((d, i) =>
+            Array.isArray(d) ? `${d[0]} → ${d[1]}` : `${chart.categories?.[i] ?? i + 1} → ${d}`,
+          )
+          .join(', ');
+        return `${s.name ? `${s.name}: ` : ''}${points}`;
+      })
+      .join('; ');
+    return (
+      `[Figure — chart "${chart.title ?? ''}"` +
+      `${chart.xLabel ? `, x axis: ${chart.xLabel}` : ''}${chart.yLabel ? `, y axis: ${chart.yLabel}` : ''}.` +
+      `${chart.caption ? ` Caption: ${String(chart.caption).replace(/[.\s]+$/, '')}.` : ''} Data: ${series}]`
+    );
+  });
+}

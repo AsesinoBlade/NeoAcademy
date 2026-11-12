@@ -22,6 +22,7 @@ import { buildProjectContext, extractProjectFilesDetailed, listProjectFiles, rec
 import { formatEvidence, gatherEvidence } from '@/lib/book/references';
 import { formatPremises, formatPrinciples, readPrinciples } from '@/lib/book/principles';
 import { getBookStyle } from '@/lib/book/styles';
+import { cleanEditorialArtifacts } from '@/lib/book/cleanup';
 import { bookLibraries } from '@/lib/book/auto-references';
 import {
   countWords,
@@ -249,7 +250,7 @@ export async function POST(req: NextRequest) {
       log.warn(`Section ${ref.sectionNumber} is short (${countWords(markdown)} words, target ${targetWords}) — keeping it`);
     }
 
-    const cleaned = sanitiseSectionFigures(markdown, ref.id, { imagesEnabled });
+    const cleaned = sanitiseSectionFigures(cleanEditorialArtifacts(markdown), ref.id, { imagesEnabled });
     await writeSection(book.id, ref.id, cleaned.markdown);
     let projectFiles = 0;
     if (book.projectSpec) {
