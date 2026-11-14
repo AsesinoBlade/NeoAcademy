@@ -16,6 +16,7 @@
  *
  * Writes data/books/<id>/verify/report.json. Skips if already passed.
  */
+import { runOncePerKey, peekJson } from '@/lib/book/inflight';
 import { type NextRequest } from 'next/server';
 import { promises as fs } from 'node:fs';
 
@@ -44,7 +45,7 @@ export const maxDuration = 3600;
 
 const MAX_FIX_ROUNDS = 4;
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest): Promise<Response> {
   try {
     const { bookId, force, checkpointChapter } = (await req.json()) as {
       bookId: string;
@@ -141,7 +142,13 @@ export async function POST(req: NextRequest) {
       return apiSuccess({ ...report });
     }
 
-    for (let round = 1; !result.passed && result.failedStep && round <= maxRounds; round++) {
+    if (result.environment) {
+      log.warn(`Build could not be verified here: ${result.environment} — not asking the model to change the project`);
+    }
+    // Only real code failures go to the model. An environment failure (no
+    // Visual Studio, no Windows runner, unreachable PC) must never make it
+    // rewrite the book's project to suit the verification machine.
+    for (let round = 1; !result.passed && result.failedStep && !result.environment && round <= maxRounds; round++) {
       const failed = result.failedStep;
       log.warn(`Build failed at "${failed.command}" (round ${round}) — asking the model for a fix`);
 
@@ -172,6 +179,7 @@ export async function POST(req: NextRequest) {
       }
       fixRounds.push({ round, failedCommand: failed.command, summary, files: changed.map((f) => f.path) });
       result = await runProjectBuild(bookId, commands, buildOptions);
+      if (result.environment) log.warn(`After the fix, the build stopped on the environment: ${result.environment}`);
     }
 
     // Write fixes back into the sections that last showed each file, so the
@@ -193,7 +201,12 @@ export async function POST(req: NextRequest) {
 
     const report = await save({
       status: result.passed ? 'passed' : 'failed',
-      reason: result.passed ? undefined : `Still failing at: ${result.failedStep?.command ?? 'unknown step'}`,
+      reason: result.passed
+        ? undefined
+        : result.environment
+          ? `Could not be built on the verification machines: ${result.environment}`
+          : `Still failing at: ${result.failedStep?.command ?? 'unknown step'}`,
+      ...(result.environment ? { environment: result.environment } : {}),
       verifiedAt: new Date().toISOString(),
       toolchain: result.toolchain,
       platforms: result.platforms,
@@ -214,4 +227,10 @@ export async function POST(req: NextRequest) {
     log.error('Book verification failed:', error);
     return apiError('GENERATION_FAILED', 500, error instanceof Error ? error.message : String(error));
   }
+}
+
+// A retried request for a step that is still running joins it (lib/book/inflight.ts).
+export async function POST(req: NextRequest) {
+  const b = await peekJson<{ bookId?: string; checkpointChapter?: number }>(req);
+  return runOncePerKey(b?.bookId ? `verify ${b.bookId}/${b.checkpointChapter ?? 'final'}` : null, () => handlePost(req));
 }

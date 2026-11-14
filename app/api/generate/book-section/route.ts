@@ -9,6 +9,7 @@
  * Markdown to data/books/<id>/sections/<sectionId>.md and returns stats.
  * Already-written sections are returned as-is (idempotent, resume-safe).
  */
+import { runOncePerKey, peekJson } from '@/lib/book/inflight';
 import { type NextRequest } from 'next/server';
 
 import { streamLLM } from '@/lib/ai/llm';
@@ -79,7 +80,7 @@ function cleanSectionText(text: string, sectionTitle: string): string {
   return out;
 }
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest): Promise<Response> {
   try {
     const body = (await req.json()) as {
       bookId: string;
@@ -287,4 +288,10 @@ export async function POST(req: NextRequest) {
     log.error('Book section generation failed:', error);
     return apiError('GENERATION_FAILED', 500, error instanceof Error ? error.message : String(error));
   }
+}
+
+// A retried request for a step that is still running joins it (lib/book/inflight.ts).
+export async function POST(req: NextRequest) {
+  const b = await peekJson<{ bookId?: string; sectionId?: string }>(req);
+  return runOncePerKey(b?.bookId && b?.sectionId ? `write ${b.bookId}/${b.sectionId}` : null, () => handlePost(req));
 }

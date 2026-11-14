@@ -61,9 +61,10 @@ function spawn(cmd: string, args: string[], timeoutMs: number, input?: Buffer): 
 }
 
 /** Pack a folder into a tar archive (bsdtar on macOS/Windows, GNU tar on Linux). */
-function packFolder(dir: string): Promise<Buffer | null> {
+function packFolder(dir: string, exclude: string[] = []): Promise<Buffer | null> {
+  const excludes = exclude.map((e) => `--exclude=./${e.replace(/^\.?\/+/, '').replace(/\/+$/, '')}`);
   return new Promise((resolve) => {
-    execFile('tar', ['-cf', '-', '-C', dir, '.'], { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 }, (error, stdout) =>
+    execFile('tar', ['-cf', '-', ...excludes, '-C', dir, '.'], { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 }, (error, stdout) =>
       resolve(error ? null : (stdout as unknown as Buffer)),
     );
   });
@@ -136,7 +137,7 @@ export interface RunnerSession {
 }
 
 /** Upload a local scratch folder to a fresh folder on the runner. */
-export async function openSession(localWork: string): Promise<RunnerSession | null> {
+export async function openSession(localWork: string, exclude: string[] = []): Promise<RunnerSession | null> {
   const cfg = runnerConfig();
   if (!cfg || !(await runnerStatus()).ok) return null;
   const remoteDir = `${cfg.dir}\\${randomBytes(6).toString('hex')}`;
@@ -144,7 +145,7 @@ export async function openSession(localWork: string): Promise<RunnerSession | nu
   if (mk.code !== 0) return null;
   // Stream a tar archive through SSH into Windows' built-in tar.exe (Windows 10/11):
   // no scp path quirks with drive letters.
-  const archive = await packFolder(localWork);
+  const archive = await packFolder(localWork, exclude);
   if (!archive) {
     log.warn('Could not pack the scratch folder for the Windows runner');
     await closeSession({ remoteDir });

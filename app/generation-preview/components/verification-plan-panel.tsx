@@ -210,7 +210,8 @@ export function VerificationPlanPanel({
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={allowHostCode} onChange={(e) => setAllowHostCode(e.target.checked)} />
               <span>
-                Allow running the book&apos;s code on this PC or the Windows PC when the sandbox can&apos;t (Windows-only tools)
+                Allow building and running the book&apos;s code on this PC or the Windows PC when the sandbox can&apos;t
+                (Windows-only tools, Visual Studio builds of the book&apos;s project)
                 <span className="block text-xs text-muted-foreground">
                   Off is safer: Windows-only tools then only show help or compile/syntax-check
                   {hostCodeCommands.length ? `; ${hostCodeCommands.length} command(s) above would need this` : ''}. Code that uses the network,

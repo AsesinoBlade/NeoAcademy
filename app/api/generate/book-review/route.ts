@@ -14,6 +14,7 @@
  *
  * Writes data/books/<id>/reviews/<sectionId>.json (audit trail). Idempotent.
  */
+import { runOncePerKey, peekJson } from '@/lib/book/inflight';
 import { type NextRequest } from 'next/server';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -78,7 +79,7 @@ function figureCount(markdown: string): number {
   return (markdown.match(/^[ \t]*```[ \t]*(chart|mermaid|image)\b/gm) || []).length;
 }
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest): Promise<Response> {
   try {
     const { bookId, sectionId, webSearch } = (await req.json()) as {
       bookId: string;
@@ -440,4 +441,10 @@ export async function POST(req: NextRequest) {
     log.error('Book review failed:', error);
     return apiError('GENERATION_FAILED', 500, error instanceof Error ? error.message : String(error));
   }
+}
+
+// A retried request for a step that is still running joins it (lib/book/inflight.ts).
+export async function POST(req: NextRequest) {
+  const b = await peekJson<{ bookId?: string; sectionId?: string }>(req);
+  return runOncePerKey(b?.bookId && b?.sectionId ? `review ${b.bookId}/${b.sectionId}` : null, () => handlePost(req));
 }

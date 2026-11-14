@@ -50,6 +50,8 @@ export interface VerifyReport {
   steps: VerifyStep[];
   fixRounds: Array<{ round: number; failedCommand: string; summary: string; files: string[] }>;
   fixedFiles: Array<{ path: string; writtenBackTo: string | null }>;
+  /** Set when the build failed because of the verification machine, not the book's code. */
+  environment?: string;
 }
 
 export const verifyDir = (bookId: string) => path.join(bookDir(bookId), 'verify');
@@ -162,6 +164,31 @@ export interface VerifyRunResult {
   steps: VerifyStep[];
   failedStep?: VerifyStep;
   toolchain: string[];
+  /**
+   * The failure is the verification machine's (missing generator or compiler,
+   * Windows-only code with no Windows runner, runner unreachable), not the
+   * book's code. The model must NOT be asked to "fix" the project for it.
+   */
+  environment?: string;
+}
+
+/**
+ * Recognise failures caused by where the build ran rather than by the
+ * project. Returns a short reason, or null when the code itself failed.
+ */
+export function environmentFailure(output: string): string | null {
+  const o = output;
+  const rules: Array<[RegExp, string]> = [
+    [/does not support platform specification|does not support toolset specification/i, 'the generator here does not support the Visual Studio platform/toolset options'],
+    [/Could not create named generator|Generator\s*\n?\s*"?[^"\n]*"?\s*could not find any instance of Visual Studio|could not find any instance of Visual Studio/i, 'the requested CMake generator (Visual Studio) is not installed where the build ran'],
+    [/No CMAKE_(C|CXX)_COMPILER could be found|CMAKE_(C|CXX)_COMPILER not set/i, 'no C/C++ compiler was found where the build ran'],
+    [/is not recognized as an internal or external command|: command not found/i, 'a build tool is missing where the build ran'],
+    [/Running '[^']*' '-version' failed|CMAKE_MAKE_PROGRAM is not set|Unable to find the requested Boost/i, 'the build tool chain is incomplete where the build ran'],
+    [/Cannot connect to the Docker daemon|docker: Error response from daemon/i, 'the Docker sandbox is not running'],
+    [/ssh: connect to host|Permission denied \(publickey|Connection timed out|Could not resolve hostname/i, 'the Windows PC could not be reached over SSH'],
+  ];
+  for (const [re, why] of rules) if (re.test(o)) return why;
+  return null;
 }
 
 /** Test commands (run only in the final verification, not at chapter checkpoints). */
@@ -237,6 +264,7 @@ export async function runProjectBuild(bookId: string, commands: string[], option
     }
 
     let note: string | undefined;
+    let needsWindows: string | null = null;
     const containerRun = sandbox.ready && inSandboxImage(program);
     if (program === 'cmake' && !argv.includes('--build') && !argv.includes('--install') && !argv.includes('-P')) {
       if (containerRun) {
@@ -245,6 +273,14 @@ export async function runProjectBuild(bookId: string, commands: string[], option
         if (g >= 0 && /visual studio|xcode/i.test(argv[g + 1] ?? '')) {
           note = `"${argv[g + 1]}" is not available in the Linux sandbox — verified with CMake's default generator.`;
           argv = [...argv.slice(0, g), ...argv.slice(g + 2)];
+        }
+        // Platform (-A x64) and toolset (-T v143) only exist for Visual Studio
+        // generators; Makefiles/Ninja reject them, so drop them in the sandbox.
+        const stripped = stripVsOnlyArgs(argv);
+        if (stripped.removed.length) {
+          argv = stripped.argv;
+          const what = `dropped ${stripped.removed.join(' ')} (Visual Studio only)`;
+          note = note ? `${note} Also ${what}.` : `Linux sandbox: ${what}.`;
         }
         argv = [...argv, ...prefetch.cmakeArgs];
       } else if (argv.some((a) => a === '-S' || a === '-B' || a === '..' || a === '.')) {
@@ -298,7 +334,29 @@ export async function runProjectBuild(bookId: string, commands: string[], option
       result.output += '\nVERIFICATION: ctest found no tests. The book tells the reader to run the tests, so tests must be registered (enable_testing() in the top-level CMakeLists.txt, add_test(...)).';
     }
     for (const m of result.output.matchAll(/The (?:CXX|C) compiler identification is ([^\n]+)/g)) toolchain.add(m[1].trim());
-    if (exec.where === 'container' && result.code !== 0 && /windows\.h|<Windows\.h>|__declspec|winsock2|MSVC|_MSC_VER/i.test(result.output)) {
+    const windowsOnlyFailure =
+      /windows\.h|<Windows\.h>|__declspec|winsock2|MSVC|_MSC_VER|cannot find -l(user32|kernel32|gdi32|shell32|ole32|advapi32|ws2_32|comctl32|winmm|dbghelp)\b|(requires|only supports?|only builds? on) Windows/i.test(
+        result.output,
+      );
+    if (
+      exec.where === 'container' &&
+      result.code !== 0 &&
+      !windowsOnlyFailure &&
+      options.allowHostCode &&
+      (await targetsWindows(work, commands))
+    ) {
+      // A Windows-targeted project failed in the Linux sandbox: the Windows
+      // build is the one that counts, so try it there before blaming the code.
+      const { runnerConfig } = await import('./windows-runner');
+      if (runnerConfig()) {
+        const remote = await buildOnWindowsRunner(work, commands, prefetch.cmakeArgs);
+        if (remote) {
+          remote.toolchain.unshift(...[...toolchain].filter((t) => t.startsWith('Dependencies')));
+          return remote;
+        }
+      }
+    }
+    if (exec.where === 'container' && result.code !== 0 && windowsOnlyFailure) {
       // Needs Windows: build it on the Windows runner instead, if the book allows running code there.
       const { runnerConfig } = await import('./windows-runner');
       if (runnerConfig() && options.allowHostCode) {
@@ -310,6 +368,11 @@ export async function runProjectBuild(bookId: string, commands: string[], option
       }
       note = (note ? `${note} ` : '') +
         'This code needs Windows and cannot be verified in the Linux sandbox; configure a Windows runner (or use a Windows PC) and enable running book code for this book to verify it.';
+      needsWindows = !runnerConfig()
+        ? 'the project needs Windows and no Windows runner is configured'
+        : options.allowHostCode
+          ? 'the project needs Windows and the Windows PC could not be reached'
+          : 'the project needs Windows and building on the Windows PC was not allowed for this book';
     }
     const step: VerifyStep = {
       command: raw,
@@ -321,7 +384,10 @@ export async function runProjectBuild(bookId: string, commands: string[], option
       outputTail: result.output.slice(-8000),
     };
     steps.push(step);
-    if (result.code !== 0) return { passed: false, steps, failedStep: step, toolchain: [...toolchain] };
+    if (result.code !== 0) {
+      const environment = needsWindows || environmentFailure(result.output);
+      return { passed: false, steps, failedStep: step, toolchain: [...toolchain], ...(environment ? { environment } : {}) };
+    }
   }
 
   const cmakeVersion = await runContained({ argv: ['cmake', '--version'], work, runsCode: false, hostProgram: await findExecutable('cmake'), timeoutSec: 60 });
@@ -366,6 +432,7 @@ export async function runProjectBuild(bookId: string, commands: string[], option
           toolchain: [...toolchainList, ...remoteTools],
           platforms,
           skipped: remote.skipped,
+          ...(remote.environment ? { environment: remote.environment } : {}),
         };
       }
       notCompiled.push('Windows-specific code: the Windows runner could not be reached');
@@ -430,7 +497,18 @@ export function replaceFileBlock(markdown: string, filePath: string, newContent:
  */
 async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs: string[]): Promise<VerifyRunResult | null> {
   const runner = await import('./windows-runner');
-  const session = await runner.openSession(work);
+  // Don't upload the Linux build folders: a CMakeCache.txt from the sandbox
+  // would make the Windows configure fail ("different generator/source").
+  const buildDirs = new Set<string>();
+  for (const c of commands) {
+    const argv = splitArgs(c);
+    const b = argv.findIndex((a) => a === '-B' || (a.startsWith('-B') && a.length > 2));
+    if (b >= 0) {
+      const dir = (argv[b] === '-B' ? argv[b + 1] ?? '' : argv[b].slice(2)).replace(/^\/work\/?/, '').replace(/^\.\//, '');
+      if (dir && dir !== '.' && !dir.includes('..')) buildDirs.add(dir);
+    }
+  }
+  const session = await runner.openSession(work, [...buildDirs]);
   if (!session) return null;
   const steps: VerifyStep[] = [];
   const toolchain = new Set<string>(['Built on the Windows runner']);
@@ -487,11 +565,35 @@ async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs:
         outputTail: output.slice(-8000),
       };
       steps.push(step);
-      if (code !== 0) return { passed: false, steps, failedStep: step, toolchain: [...toolchain] };
+      if (code !== 0) {
+        const environment = environmentFailure(output);
+        return { passed: false, steps, failedStep: step, toolchain: [...toolchain], ...(environment ? { environment } : {}) };
+      }
     }
   } finally {
     await runner.closeSession(session);
   }
   const ran = steps.filter((s) => s.status !== 'skipped');
   return { passed: ran.length > 0 && ran.every((s) => s.status === 'passed'), steps, toolchain: [...toolchain] };
+}
+
+/** Remove Visual-Studio-only CMake arguments (-A, -T and their -D forms). */
+export function stripVsOnlyArgs(argv: string[]): { argv: string[]; removed: string[] } {
+  const out: string[] = [];
+  const removed: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if ((a === '-A' || a === '-T') && i + 1 < argv.length) {
+      removed.push(`${a} ${argv[i + 1]}`);
+      i++;
+    } else if (/^-[AT]\S/.test(a) || /^-DCMAKE_GENERATOR_(PLATFORM|TOOLSET)(:\w+)?=/i.test(a)) {
+      removed.push(a);
+    } else if (/^-DCMAKE_GENERATOR_(PLATFORM|TOOLSET)(:\w+)?$/i.test(a) && i + 1 < argv.length) {
+      removed.push(`${a} ${argv[i + 1]}`);
+      i++;
+    } else {
+      out.push(a);
+    }
+  }
+  return { argv: out, removed };
 }

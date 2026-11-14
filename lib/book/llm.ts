@@ -7,7 +7,10 @@ import { streamLLM } from '@/lib/ai/llm';
 import { parseJsonResponse } from '@/lib/generation/json-repair';
 import { buildPrompt, PROMPT_IDS } from '@/lib/generation/prompts';
 import { resolveGenerationModelFromHeaders } from '@/lib/server/resolve-model';
+import { createLogger } from '@/lib/logger';
 import type { Claim } from './references';
+
+const log = createLogger('BookLLM');
 
 export function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*<\/?think>\s*/gi, '').trim();
@@ -25,9 +28,28 @@ export async function generateBookText(
   label: string,
 ): Promise<string> {
   const { model } = resolveGenerationModelFromHeaders(req);
+  const started = Date.now();
+  let firstTokenAt = 0;
   const result = streamLLM({ model, system, prompt, maxOutputTokens }, label);
   let text = '';
-  for await (const chunk of result.textStream) text += chunk;
+  for await (const chunk of result.textStream) {
+    if (!firstTokenAt && chunk) firstTokenAt = Date.now();
+    text += chunk;
+  }
+  // Slow-call diagnostics: waiting before the first token means the model was
+  // busy (another request queued ahead) or reading a long prompt; slow output
+  // after it means generation itself is slow (memory pressure/swap).
+  const total = (Date.now() - started) / 1000;
+  if (total > 240) {
+    const wait = ((firstTokenAt || Date.now()) - started) / 1000;
+    const gen = total - wait;
+    const tokens = Math.round(text.length / 4);
+    log.warn(
+      `Slow model call "${label}": ${Math.round(total)}s total — ${Math.round(wait)}s before the first token ` +
+        `(prompt ~${Math.round((system.length + prompt.length) / 4)} tokens), ${Math.round(gen)}s generating ~${tokens} tokens ` +
+        `(${gen > 0 ? (tokens / gen).toFixed(1) : '?'} tok/s)`,
+    );
+  }
   return stripThinking(text);
 }
 

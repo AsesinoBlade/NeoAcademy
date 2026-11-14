@@ -215,6 +215,9 @@ async function verificationNote(bookId: string): Promise<string> {
   if (report.status === 'passed') {
     return `<blockquote class="callout ${gaps ? 'callout-warning' : 'callout-tip'}"><p><strong class="callout-label">${gaps ? 'Partly verified' : 'Verified'}</strong> These files were built and tested automatically on ${date}${where}, using: ${ran.join(', ')}.</p>${gaps}</blockquote>`;
   }
+  if (report.environment) {
+    return `<blockquote class="callout callout-warning"><p><strong class="callout-label">Not verified</strong> These files could not be built automatically on ${date}: ${escapeHtml(report.environment)}. This is a limit of the verification setup, not evidence that the code is wrong — build it yourself before relying on it.</p></blockquote>`;
+  }
   return `<blockquote class="callout callout-warning"><p><strong class="callout-label">Not verified</strong> Automatic build verification on ${date} did not pass (${escapeHtml(report.reason || 'build failed')}). Check the build output carefully when you build this project.</p></blockquote>`;
 }
 

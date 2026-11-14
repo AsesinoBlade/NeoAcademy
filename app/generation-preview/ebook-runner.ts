@@ -165,11 +165,15 @@ export async function runEbookGeneration(
       signal,
     );
     if (!vp.plan.decision) {
+      // A book with a running project always asks: only the user can allow
+      // its code to be built on this PC or on the Windows PC.
       const needsApproval =
         vp.plan.checks.length +
           vp.plan.docSources.length +
           vp.plan.fixtures.length >
-        0;
+          0 ||
+        !!plan.hasProject ||
+        Object.values(vp.placements ?? {}).includes("windows");
       const decision =
         needsApproval && ctx.requestVerificationApproval
           ? await ctx.requestVerificationApproval(
@@ -338,6 +342,9 @@ export async function runEbookGeneration(
       } catch (error) {
         if (signal.aborted) throw abortError();
         log.warn(`Section ${item.id} failed, retrying once:`, error);
+        ctx.logProgress(
+          `[Ebook] Request for section ${item.id} dropped (${error instanceof Error ? error.message : String(error)}) — reconnecting`,
+        );
         result = await postJson(
           "/api/generate/book-section",
           body,
@@ -382,6 +389,9 @@ export async function runEbookGeneration(
       } catch (error) {
         if (signal.aborted) throw abortError();
         log.warn(`Review of ${item.id} failed, retrying once:`, error);
+        ctx.logProgress(
+          `[Ebook] Request for the review of ${item.id} dropped (${error instanceof Error ? error.message : String(error)}) — reconnecting`,
+        );
         review = await postJson(
           "/api/generate/book-review",
           reviewBody,

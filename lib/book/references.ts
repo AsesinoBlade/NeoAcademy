@@ -168,6 +168,39 @@ async function checkCMakeSpecific(claim: Claim): Promise<Evidence | null> {
     if (!result || result.missing) return null;
     const arg = id.replace(/[[\]<>]/g, '').trim();
     const index = result.out.indexOf(arg);
+    if (index < 0) {
+      // Only a KEYWORD of the command (PRIVATE, WIN32, IMPORTED...) can be
+      // ruled out by its documentation. Values the user supplies — library
+      // names (user32, kernel32), compiler/linker flags (/SUBSYSTEM:WINDOWS),
+      // definitions (UNICODE), target or file names — never appear there.
+      const userValueCommand =
+        /^(target_link_libraries|link_libraries|target_link_options|add_link_options|target_compile_options|add_compile_options|target_compile_definitions|add_compile_definitions|add_definitions|target_include_directories|include_directories|target_sources|target_link_directories|link_directories|message|set|list|string|option)$/i.test(
+          parent,
+        );
+      const keywordShaped = /^[A-Z][A-Z0-9_]*$/.test(arg);
+      if (userValueCommand || !keywordShaped) {
+        return {
+          claim,
+          verdict: 'unknown',
+          source: 'local-docs',
+          reference: `cmake --help-command ${parent}`,
+          excerpt: `"${arg}" is a value passed to ${parent}() (a name, flag or setting), not one of its keywords, so CMake's documentation cannot confirm or rule it out.`,
+        };
+      }
+      // Property-setting commands take property names: check those instead.
+      if (/propert(y|ies)$/i.test(parent)) {
+        const prop = await helpFor('--help-property', arg);
+        if (prop && !prop.missing) {
+          return {
+            claim,
+            verdict: 'confirmed',
+            source: 'local-docs',
+            reference: `cmake --help-property ${arg}`,
+            excerpt: firstLines(prop.out),
+          };
+        }
+      }
+    }
     return {
       claim,
       verdict: index >= 0 ? 'confirmed' : 'not-found',
@@ -408,6 +441,29 @@ async function checkCMake(claim: Claim): Promise<Evidence | null> {
       source: 'none',
       reference: 'cmake --help-full',
       excerpt: `"${id}" is not a CMake command, variable, property or option, so CMake's documentation cannot confirm or rule it out.`,
+    };
+  }
+
+  // Libraries (user32, kernel32), linker/compiler switches (SUBSYSTEM,
+  // /W4) and OS APIs are not CMake names either — the statement says what the
+  // identifier is. And CMake's own variables/properties are upper-case, so a
+  // lower-case "variable" is the project's own or something else entirely.
+  const aboutNonCMakeThing =
+    claim.kind !== 'command' &&
+    claim.kind !== 'module' &&
+    claim.kind !== 'generator-expression' &&
+    !cli &&
+    (/\b(librar(y|ies)|linker|link(ed|ing|s)? (to|against|with)|DLLs?|\.lib\b|import librar|Windows SDK|Win32|Windows API|system call|compiler (flag|option|switch)|linker (flag|option|switch)|MSVC (flag|option|switch)|subsystem|entry point|header file)\b/i.test(
+      claim.statement || '',
+    ) ||
+      ((claim.kind === 'variable' || claim.kind === 'property' || claim.kind === 'command-argument') && /^[a-z][a-z0-9_]*$/.test(id)));
+  if (aboutNonCMakeThing) {
+    return {
+      claim,
+      verdict: 'unknown',
+      source: 'none',
+      reference: 'cmake --help-full',
+      excerpt: `"${id}" is not something CMake itself defines (a library, compiler/linker setting or the project's own name), so CMake's documentation cannot confirm or rule it out.`,
     };
   }
   if (specific) return specific; // genuinely not found
