@@ -92,16 +92,26 @@ export function resetRunnerState(): void {
 export function runnerStatus(): Promise<{ ok: boolean; reason?: string }> {
   const cfg = runnerConfig();
   if (!cfg) return Promise.resolve({ ok: false, reason: 'No Windows runner is configured (WINDOWS_RUNNER_HOST).' });
-  reachable ??= runScript(cfg, `$PSVersionTable.PSVersion.Major; New-Item -ItemType Directory -Force -Path ${psLiteral(cfg.dir)} | Out-Null; 'ready'`, 20000).then(
-    (r) =>
-      r.code === 0 && /ready/.test(r.output)
-        ? { ok: true }
-        : { ok: false, reason: r.code === 127 ? 'ssh is not installed on this computer.' : `The Windows runner at ${cfg.host} did not answer: ${r.output.trim().split('\n').slice(-1)[0] || `exit ${r.code}`}` },
-  );
-  return reachable;
+  const current = (reachable ??= runScript(cfg, `$PSVersionTable.PSVersion.Major; New-Item -ItemType Directory -Force -Path ${psLiteral(cfg.dir)} | Out-Null; 'ready'`, 20000).then(
+    (r) => {
+      if (r.code === 0 && /ready/.test(r.output)) return { ok: true };
+      // Don't remember a failure: the PC may just have been asleep.
+      setTimeout(() => {
+        if (reachable === current) reachable = null;
+      }, 30000);
+      return { ok: false, reason: r.code === 127 ? 'ssh is not installed on this computer.' : `The Windows runner at ${cfg.host} did not answer: ${r.output.trim().split('\n').slice(-1)[0] || `exit ${r.code}`}` };
+    },
+  ));
+  return current;
 }
 
 const programs = new Map<string, Promise<string | null>>();
+
+/** Forget what was found on the Windows PC (after installing something there). */
+export function resetRunnerCache(): void {
+  reachable = null;
+  programs.clear();
+}
 
 /** Find a program on the Windows PC: PATH, then Windows Kits debuggers, then Program Files / Steam folders named like it. */
 export function resolveRemoteProgram(name: string): Promise<string | null> {
@@ -112,8 +122,15 @@ export function resolveRemoteProgram(name: string): Promise<string | null> {
   if (!programs.has(base.toLowerCase())) {
     const script = `
 $n = ${psLiteral(base)}
-$c = Get-Command "$n.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($c) { $c.Source; exit 0 }
+foreach ($ext in @('.exe', '.cmd', '.bat')) {
+  $c = Get-Command "$n$ext" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($c) { $c.Source; exit 0 }
+}
+# Per-user and package-manager tool folders (rustup/cargo, dotnet tools, Scoop, Chocolatey).
+foreach ($d in @("$env:USERPROFILE\\.cargo\\bin", "$env:USERPROFILE\\.dotnet\\tools", "$env:USERPROFILE\\scoop\\shims",
+    "$env:ProgramData\\scoop\\shims", "$env:ProgramData\\chocolatey\\bin")) {
+  foreach ($ext in @('.exe', '.cmd', '.bat')) { if (Test-Path "$d\\$n$ext") { "$d\\$n$ext"; exit 0 } }
+}
 $roots = @("$env:ProgramFiles", "\${env:ProgramFiles(x86)}", "$env:LOCALAPPDATA\\Programs",
   "\${env:ProgramFiles(x86)}\\Steam\\steamapps\\common",
   "\${env:ProgramFiles(x86)}\\Windows Kits\\10\\Debuggers\\x64", "$env:ProgramFiles\\Windows Kits\\10\\Debuggers\\x64") | Where-Object { $_ -and (Test-Path $_) }
@@ -124,7 +141,12 @@ foreach ($r in $roots) {
 exit 1`;
     programs.set(
       base.toLowerCase(),
-      runScript(cfg, script, 60000).then((r) => (r.code === 0 ? r.output.trim().split(/\r?\n/).pop() || null : null)),
+      runScript(cfg, script, 60000).then((r) => {
+        const found = r.code === 0 ? r.output.trim().split(/\r?\n/).pop() || null : null;
+        // A failed SSH call is not "not installed": ask again next time.
+        if (!found && r.code !== 1) setTimeout(() => programs.delete(base.toLowerCase()), 0);
+        return found;
+      }),
     );
   }
   return programs.get(base.toLowerCase())!;

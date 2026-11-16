@@ -22,7 +22,8 @@ Your plan is shown to the user for approval before anything runs. Be concrete an
    - `executesCode`: true if the command runs the sample rather than just compiling/checking it.
    - `knownGood`: a typical, CORRECT snippet exactly as the book will show one (not a trivial hello-world if the book's snippets look different). The check is run on it first; if it fails, the check is discarded.
    - Only propose a check that can validate an ISOLATED snippet of that kind. Build-file fragments, configuration excerpts and snippets that only make sense inside a larger project cannot be checked alone — e.g. CMakeLists.txt snippets must NOT be checked with `cmake -P` (script mode rejects project commands such as add_library); the book's project build verifies those. When in doubt, propose no check.
-   - Only propose checks for samples the book will actually contain. Languages already handled automatically — TypeScript/JavaScript, C, C++, Java, Python syntax — need no check unless the book needs a specific runtime (e.g. Blender's Python with `bpy`).
+   - Only propose checks for samples the book will actually contain. TypeScript/JavaScript is type-checked automatically and needs no check. If the reader's computer below says every check runs on a Windows PC, propose a check for EVERY other language the book's samples use, with the program a Windows developer would install for it. Otherwise C, C++, Java, Python and Rust are also checked automatically and need no check unless the book needs a specific runtime (e.g. Blender's Python with `bpy`).
+   - Commands must work for a standard (non-administrator) user and must not depend on a developer-prompt environment (e.g. plain `cl.exe` without vcvars will not find its headers).
 6. **fixtures** — inputs the user must provide for a check, e.g. {"name": "crash-dump", "description": "a crash dump (.dmp) of a 64-bit Windows program"}; refer to them as {fixture:crash-dump}.
 
 The reader's computer: {{platform}}.

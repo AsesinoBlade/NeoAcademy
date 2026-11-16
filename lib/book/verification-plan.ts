@@ -305,16 +305,21 @@ export async function discoverTools(plan: Omit<VerificationPlan, 'createdAt'>): 
   const found = new Map<string, string | null>();
   for (const [exe, toolName] of needed) found.set(exe, await findExecutable(exe, toolName));
   for (const t of plan.tools) if (t.executable) t.resolvedPath = found.get(t.executable.toLowerCase()) ?? undefined;
-  // Programs not on this PC may be on the Windows runner (another PC over SSH).
-  const runner = await import('./windows-runner');
-  if (runner.runnerConfig() && (await runner.runnerStatus()).ok) {
-    for (const t of plan.tools) {
-      if (t.executable && !t.resolvedPath) t.remotePath = (await runner.resolveRemoteProgram(t.executable)) ?? undefined;
-    }
-  }
+  // Programs used only by a check command are tools too.
   for (const exe of needed.keys()) {
     if (!plan.tools.some((t) => t.executable?.toLowerCase() === exe)) {
       plan.tools.push({ name: needed.get(exe) ?? exe, executable: exe, purpose: 'used by a verification command', resolvedPath: found.get(exe) ?? undefined });
+    }
+  }
+  // The Windows PC (runner over SSH). With Windows-first verification every
+  // tool is looked up there; otherwise only tools missing on this computer.
+  const runner = await import('./windows-runner');
+  const { windowsFirst, isMacOnlyTool } = await import('./verify-target');
+  if (runner.runnerConfig() && (await runner.runnerStatus()).ok) {
+    const all = windowsFirst();
+    for (const t of plan.tools) {
+      if (!t.executable || (all ? isMacOnlyTool(t.executable) : !!t.resolvedPath)) continue;
+      t.remotePath = (await runner.resolveRemoteProgram(t.executable)) ?? undefined;
     }
   }
 }

@@ -243,6 +243,17 @@ export async function runProjectBuild(bookId: string, commands: string[], option
   let multiConfig = false;
   const prefetch = sandbox.ready ? await prefetchDependencies(work) : { cmakeArgs: [], pipOffline: false, notes: [] };
   for (const n of prefetch.notes) toolchain.add(`Dependencies: ${n}`);
+  // Windows-first: the Windows PC is the build machine (book code runs there
+  // only with this book's permission, which the approval screen asks for).
+  const { windowsFirst } = await import('./verify-target');
+  if (windowsFirst() && options.allowHostCode) {
+    const remote = await buildOnWindowsRunner(work, commands, prefetch.cmakeArgs, options.approvedPrograms);
+    if (remote) {
+      remote.toolchain.unshift(...[...toolchain]);
+      return remote;
+    }
+    return { passed: false, steps: [], toolchain: [...toolchain], environment: 'the Windows PC could not be reached' };
+  }
   if (sandbox.ready) toolchain.add('Built in the NeoAcademy sandbox (Linux container, no network)');
 
   for (const raw of commands.flatMap((c) => c.split(/\s*&&\s*/)).filter((c) => c.trim())) {
@@ -495,7 +506,12 @@ export function replaceFileBlock(markdown: string, filePath: string, newContent:
  * the project (with its already-downloaded dependencies), then each command
  * in that folder. Only called when the book allows running its code there.
  */
-async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs: string[]): Promise<VerifyRunResult | null> {
+async function buildOnWindowsRunner(
+  work: string,
+  commands: string[],
+  cmakeArgs: string[],
+  approvedPrograms?: Record<string, unknown>,
+): Promise<VerifyRunResult | null> {
   const runner = await import('./windows-runner');
   // Don't upload the Linux build folders: a CMakeCache.txt from the sandbox
   // would make the Windows configure fail ("different generator/source").
@@ -511,7 +527,7 @@ async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs:
   const session = await runner.openSession(work, [...buildDirs]);
   if (!session) return null;
   const steps: VerifyStep[] = [];
-  const toolchain = new Set<string>(['Built on the Windows runner']);
+  const toolchain = new Set<string>(['Built on the Windows PC']);
   let multiConfig = false;
   try {
     for (const raw of commands.flatMap((c) => c.split(/\s*&&\s*/)).filter((c) => c.trim())) {
@@ -525,14 +541,15 @@ async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs:
         steps.push({ command: raw, status: 'skipped', note: 'Not run: executes the finished program.' });
         continue;
       }
-      if (!BUILD_TOOLS.has(program.toLowerCase())) {
-        steps.push({ command: raw, status: 'skipped', note: `Not run: "${program}" is not an allowlisted build tool.` });
+      if (!BUILD_TOOLS.has(program.toLowerCase()) && !approvedPrograms?.[program.toLowerCase()]) {
+        steps.push({ command: raw, status: 'skipped', note: `Not run: "${program}" is not an allowlisted or approved build tool.` });
         continue;
       }
       const remoteProgram = await runner.resolveRemoteProgram(program);
       if (!remoteProgram) {
-        steps.push({ command: raw, argv, status: 'skipped', note: `Not run: ${program} is not installed on the Windows runner.` });
-        return { passed: false, steps, toolchain: [...toolchain], skipped: true };
+        const environment = `${program} is not installed on the Windows PC (or the neorunner account can't see it)`;
+        steps.push({ command: raw, argv, status: 'skipped', note: `Not run: ${environment}.` });
+        return { passed: false, steps, toolchain: [...toolchain], environment };
       }
       const configure = program === 'cmake' && !argv.includes('--build') && !argv.includes('--install') && !argv.includes('-P');
       if (configure) argv = [...argv, ...cmakeArgs];
@@ -561,7 +578,7 @@ async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs:
         argv,
         status: code === 0 ? 'passed' : 'failed',
         exitCode: code,
-        note: 'Run on the Windows runner (allowed for this book).',
+        note: 'Run on the Windows PC (allowed for this book).',
         outputTail: output.slice(-8000),
       };
       steps.push(step);
@@ -574,7 +591,19 @@ async function buildOnWindowsRunner(work: string, commands: string[], cmakeArgs:
     await runner.closeSession(session);
   }
   const ran = steps.filter((s) => s.status !== 'skipped');
-  return { passed: ran.length > 0 && ran.every((s) => s.status === 'passed'), steps, toolchain: [...toolchain] };
+  const passed = ran.length > 0 && ran.every((s) => s.status === 'passed');
+  const tc = [...toolchain];
+  return {
+    passed,
+    steps,
+    toolchain: tc,
+    platforms: [{
+      name: 'Windows PC',
+      generator: tc.find((t) => t.startsWith('Generator: '))?.slice(11),
+      compiler: tc.find((t) => !/^(Built on|Generator:|Dependencies:)/.test(t)),
+      passed,
+    }],
+  };
 }
 
 /** Remove Visual-Studio-only CMake arguments (-A, -T and their -D forms). */

@@ -98,8 +98,19 @@ export function extractProjectFilesDetailed(
     const firstLine = body.split('\n', 1)[0] ?? '';
     const header = firstLine.match(FILE_HEADER_RE);
     if (!header) continue;
-    const filePath = safeProjectPath(header[1]);
+    let filePath = safeProjectPath(header[1]);
     if (!filePath) continue;
+    // Same file written with a different root ("src/main.rs" for the spec's
+    // "workspace/chapter03_game/src/main.rs", or the reverse): map it to the
+    // spec path when exactly one spec file matches.
+    if (allowed && !allowed.has(filePath.toLowerCase())) {
+      const lower = filePath.toLowerCase();
+      const matches = [...allowed].filter((a) => a.endsWith(`/${lower}`) || lower.endsWith(`/${a}`));
+      if (matches.length === 1) {
+        const original = (allowedPaths ?? []).find((p) => (safeProjectPath(p) ?? p).toLowerCase() === matches[0]);
+        filePath = safeProjectPath(original ?? matches[0]) ?? filePath;
+      }
+    }
 
     const reject = (reason: string) => decisions.push({ path: filePath, accepted: false, reason });
     const rest = (header[2] || '').replace(/\*\/|-->/g, '').trim();

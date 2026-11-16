@@ -157,6 +157,7 @@ export async function runEbookGeneration(
       plan: import("@/lib/book/verification-plan").VerificationPlan;
       sandbox: { ready: boolean; reason?: string };
       placements: Record<string, "sandbox" | "host" | "windows" | "missing">;
+      machine?: import("./components/verification-plan-panel").VerificationMachine;
     };
     let vp = await postJson<PlanResponse>(
       "/api/generate/book-verification-plan",
@@ -173,12 +174,13 @@ export async function runEbookGeneration(
           vp.plan.fixtures.length >
           0 ||
         !!plan.hasProject ||
+        !!vp.machine?.windowsFirst ||
         Object.values(vp.placements ?? {}).includes("windows");
       const decision =
         needsApproval && ctx.requestVerificationApproval
           ? await ctx.requestVerificationApproval(
               vp.plan,
-              vp.sandbox,
+              { ...vp.sandbox, machine: vp.machine } as typeof vp.sandbox,
               vp.placements,
             )
           : {
@@ -415,6 +417,31 @@ export async function runEbookGeneration(
     ctx.logProgress(
       `[Ebook] Writing complete (+${words.toLocaleString()} words this run)`,
     );
+
+  // Whole-book consistency: the same fact must be stated the same way in
+  // every chapter. Advisory — never fails the book.
+  if (ctx.factCheck) {
+    if (signal.aborted) throw abortError();
+    ctx.setStatus("Checking the chapters agree with each other...");
+    ctx.logProgress("[Ebook] Checking the whole book for contradictions between sections");
+    try {
+      const c = await postJson<{ facts: number; contradictions: number; resolved: number; open: number }>(
+        "/api/generate/book-consistency-final",
+        { bookId: ctx.bookId },
+        ctx.apiHeaders(),
+        signal,
+      );
+      ctx.logProgress(
+        `[Ebook] Consistency: ${c.facts} facts compared, ${c.contradictions} contradiction(s)` +
+          (c.contradictions ? ` — ${c.resolved} made consistent, ${c.open} listed for you to check` : ""),
+      );
+    } catch (error) {
+      if (signal.aborted) throw abortError();
+      ctx.logProgress(
+        `[Ebook] Consistency check could not run: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   // Build verification: compile/test the appendix project and fix it (needs
   // the LLM, so it runs before the model is unloaded).

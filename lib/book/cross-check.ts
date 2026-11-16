@@ -7,8 +7,12 @@
  * 2. Another call compares each answer with the book's statement.
  * 3. Disagreements go to a judge, because the independent answer comes from a
  *    language model too and can be the wrong one:
- *      - judge says the book is wrong (high confidence) → "disputed": the
- *        editor corrects it;
+ *      - judge says the book is wrong (high confidence) → only "uncertain" by
+ *        default: the judge, the answer and the book all come from the same
+ *        model, and letting it rewrite facts made books WORSE (correct US/UK
+ *        takeout rates were "corrected" to wrong ones). The claim is listed
+ *        for the reader in the appendix instead. BOOK_CROSS_CHECK_CORRECTS=1
+ *        restores automatic correction;
  *      - judge says the book is right → "confirmed" (cross-checked);
  *      - anything else → stays unverified, marked as contested; the editor
  *        must NOT change the text because of it.
@@ -98,7 +102,11 @@ export async function crossCheckUnverified(req: NextRequest, evidence: Evidence[
     for (const d of disagreements) {
       const r = rulings.get(d.id);
       const reason = r?.reason ? ` Judge: ${r.reason}` : '';
-      if (r?.winner === 'independent' && r.confidence === 'high') {
+      const mayCorrect = /^(1|true|yes)$/i.test(process.env.BOOK_CROSS_CHECK_CORRECTS ?? '');
+      if (r?.winner === 'independent' && r.confidence === 'high' && !mayCorrect) {
+        d.e.contested = true;
+        d.e.excerpt = `Uncertain — an independent answer differed (${d.answer.answer}) and a judge sided with it, but no documentation confirms either.${reason}`;
+      } else if (r?.winner === 'independent' && r.confidence === 'high') {
         d.e.verdict = 'disputed';
         d.e.source = 'cross-check';
         d.e.reference = 'independent expert answer, upheld by a judge';

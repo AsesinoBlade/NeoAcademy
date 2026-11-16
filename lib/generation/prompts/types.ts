@@ -30,7 +30,11 @@ export type PromptId =
   | 'book-cross-compare'
   | 'book-cross-judge'
   | 'book-resolution'
-  | 'book-doc-check';
+  | 'book-doc-check'
+  | 'book-facts'
+  | 'book-contradictions'
+  | 'book-harmonise'
+  | 'book-coverage';
 
 /**
  * Snippet identifier

@@ -25,6 +25,52 @@ const VERDICT_STYLES: Record<PremiseFinding['verdict'], string> = {
   supported: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
 };
 
+export interface CoverageItem {
+  requirement: string;
+  status: 'covered' | 'partial' | 'missing' | 'violated';
+  where: string[];
+  fix?: string;
+}
+
+const COVERAGE_STYLES: Record<CoverageItem['status'], string> = {
+  violated: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  missing: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+  partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  covered: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+};
+
+/** Coverage of the request: what was asked for vs what the outline plans. */
+function CoverageSummary({ items, onUseAsNotes }: { items: CoverageItem[]; onUseAsNotes: (notes: string) => void }) {
+  const gaps = items.filter((i) => i.status !== 'covered');
+  const notes = gaps.map((g) => `- ${g.fix || `Cover: ${g.requirement}`}`).join('\n');
+  return (
+    <div className="rounded-xl border bg-white p-3 text-sm shadow-sm dark:bg-slate-900">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">
+          {gaps.length ? `Your request vs this outline: ${gaps.length} gap(s)` : 'Your request vs this outline: everything is covered'}
+        </p>
+        {gaps.length > 0 && (
+          <Button variant="outline" size="sm" onClick={() => onUseAsNotes(notes)}>
+            <Sparkles className="mr-1.5 size-3.5" /> Use the gaps as revision notes
+          </Button>
+        )}
+      </div>
+      <ul className="space-y-1">
+        {[...gaps, ...items.filter((i) => i.status === 'covered')].map((i, n) => (
+          <li key={n} className="flex flex-wrap items-start gap-2">
+            <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', COVERAGE_STYLES[i.status])}>{i.status}</span>
+            <span className="flex-1">
+              {i.requirement}
+              {i.where.length > 0 && <span className="text-muted-foreground"> — {i.where.join(', ')}</span>}
+              {i.status !== 'covered' && i.fix && <span className="block text-xs text-muted-foreground">{i.fix}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** The premise check: what the request assumes and how the book treats it. */
 function PremiseSummary({ premises }: { premises: PremiseFinding[] }) {
   const flagged = premises.filter((p) => p.verdict !== 'supported');
@@ -120,6 +166,7 @@ export function OutlineReviewPanel({
   mode = 'class',
   premises,
   bookStyle,
+  coverage,
 }: {
   outlines: SceneOutline[];
   /** Called on every edit so the parent can keep the latest draft. */
@@ -132,6 +179,8 @@ export function OutlineReviewPanel({
   premises?: PremiseFinding[];
   /** Ebooks: book style, for the page estimate. */
   bookStyle?: 'quick' | 'beginner' | 'advanced';
+  /** Ebooks: does the outline cover what the request asked for? */
+  coverage?: CoverageItem[] | null;
 }) {
   const labels = LABELS[mode];
   const [draft, setDraft] = useState<SceneOutline[]>(outlines);
@@ -219,6 +268,9 @@ export function OutlineReviewPanel({
       {/* Scene list */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-4 py-4 space-y-2">
+          {coverage && coverage.length > 0 && (
+            <CoverageSummary items={coverage} onUseAsNotes={(notes) => setFeedback((f) => (f.trim() ? `${f.trim()}\n${notes}` : notes))} />
+          )}
           {premises && premises.length > 0 && <PremiseSummary premises={premises} />}
           {draft.map((outline, index) => {
             const isOpen = expanded.has(outline.id);

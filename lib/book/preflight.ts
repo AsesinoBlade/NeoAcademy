@@ -78,7 +78,28 @@ async function refreshWindowsPath(): Promise<void> {
 
 // ── Install instructions ─────────────────────────────────────────────────
 
-function installSteps(tool: string): string[] {
+/** How to install a tool on the Windows PC so the neorunner account can use it. */
+export function windowsPcInstallSteps(tool: string): string[] {
+  const t = tool.toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+  if (['rustc', 'cargo', 'rustup'].includes(t)) {
+    return [
+      'On the Windows PC, in an ADMINISTRATOR PowerShell (installs Rust for all users, including neorunner):',
+      '  [Environment]::SetEnvironmentVariable("RUSTUP_HOME", "C:\\Rust\\rustup", "Machine")',
+      '  [Environment]::SetEnvironmentVariable("CARGO_HOME", "C:\\Rust\\cargo", "Machine")',
+      '  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";C:\\Rust\\cargo\\bin", "Machine")',
+      '  Close and reopen the administrator PowerShell, then: winget install -e --id Rustlang.Rustup',
+      '  rustup default stable-x86_64-pc-windows-msvc',
+      '  Rust needs the MSVC linker: Visual Studio 2022 Build Tools with "Desktop development with C++".',
+    ];
+  }
+  const steps = installSteps(t, true);
+  return [
+    ...steps.map((s) => (s.startsWith('winget install') && !/--scope/.test(s) ? `${s} --scope machine` : s)),
+    'Install it for ALL USERS (an administrator install that adds it to the system PATH): the checks run as the neorunner account, which cannot see programs installed only for your own account.',
+  ];
+}
+
+function installSteps(tool: string, forWindows = isWindows): string[] {
   const win: Record<string, string[]> = {
     cmake: ['winget install -e --id Kitware.CMake', 'Or download the Windows x64 installer from https://cmake.org/download/ and tick "Add CMake to the system PATH".'],
     ctest: ['CTest ships with CMake: winget install -e --id Kitware.CMake'],
@@ -107,7 +128,7 @@ function installSteps(tool: string): string[] {
     git: process.platform === 'darwin' ? ['xcode-select --install'] : ['sudo apt install git'],
     python: process.platform === 'darwin' ? ['brew install python'] : ['sudo apt install python3'],
   };
-  const table = isWindows ? win : unix;
+  const table = forWindows ? win : unix;
   return table[tool] ?? [`Install "${tool}" and make sure it is on your PATH (check with: ${tool} --version).`];
 }
 
@@ -440,6 +461,32 @@ async function checkMathPython(): Promise<PreflightCheck> {
   };
 }
 
+/**
+ * Facts need a source other than the model itself. With neither web search
+ * nor reference documents, the "fact check" is the model agreeing with its
+ * own answers — say so before the book is written.
+ */
+function checkReferenceSources(webSearch: boolean, libraries: number): PreflightCheck {
+  const base = { id: 'reference-sources', label: 'Sources for fact-checking', blocking: false };
+  if (webSearch || libraries > 0) {
+    const what = [webSearch ? 'web search' : '', libraries ? `${libraries} reference document set(s)` : ''].filter(Boolean).join(' and ');
+    return { ...base, status: 'ok', detail: `Facts are checked against ${what}.` };
+  }
+  return {
+    ...base,
+    status: 'warning',
+    detail:
+      'Web search is off and no reference documents are attached, so facts (rates, rules, definitions) can only be checked by the model against its own answers. ' +
+      'That catches some slips but not what the model believes wrongly. Installed tools still check commands and code.',
+    fix: [
+      'Turn on web search (the globe on the main page) so facts are checked against real web pages, and/or',
+      'Add official documents with "Reference docs" on the main page: a folder or .zip of saved web pages (HTML), Markdown or text — e.g. the rules, glossary and bet-type pages of the official body for the subject.',
+      'Then start the book again.',
+    ],
+    ifIgnored: 'Facts are cross-checked by the model only; anything it is unsure about is listed in the "How this book was verified" appendix for you to check.',
+  };
+}
+
 // ── Project-stage checks ───────────────────────────────────────────────────
 
 const looksLikeProgramRun = (program: string) => /^(\.{1,2}[\\/]|build[\\/]|bin[\\/])/.test(program) || /\.(exe|out)$/i.test(program);
@@ -453,7 +500,29 @@ async function checkProjectTools(spec: ProjectSpec, factCheck: boolean): Promise
       .filter((p) => p && !looksLikeProgramRun(p)),
   )];
 
-  for (const program of programs) {
+  const { windowsFirst, isMacOnlyTool } = await import('./verify-target');
+  const onPc = windowsFirst();
+  for (const program of onPc ? programs.filter((p) => !isMacOnlyTool(p)) : []) {
+    const runner = await import('./windows-runner');
+    const status = await runner.runnerStatus();
+    const found = status.ok ? await runner.resolveRemoteProgram(program) : null;
+    checks.push(
+      found
+        ? { id: `tool-${program}`, label: `${program} (Windows PC)`, status: 'ok', blocking: false, detail: `Found on the Windows PC: ${found}` }
+        : {
+            id: `tool-${program}`,
+            label: `${program} (Windows PC)`,
+            status: status.ok ? 'missing' : 'warning',
+            blocking: false,
+            detail: status.ok
+              ? `"${program}" is not installed on the Windows PC (or the neorunner account can't see it). The book's project is built there with it.`
+              : `The Windows PC could not be reached to look for "${program}": ${status.reason}`,
+            fix: status.ok ? [...windowsPcInstallSteps(program), RESTART_NOTE] : ['Wake the Windows PC and make sure OpenSSH Server is running, then click "Check again".'],
+            ifIgnored: 'The book is written without build verification on the Windows PC.',
+          },
+    );
+  }
+  for (const program of onPc ? programs.filter((p) => isMacOnlyTool(p)) : programs) {
     const available = await toolAvailable(program);
     checks.push(
       available
@@ -486,7 +555,10 @@ async function checkProjectTools(spec: ProjectSpec, factCheck: boolean): Promise
   // CMake toolchain probe — where the book's builds will actually run:
   // the sandbox when it is ready (else this computer), plus the Windows
   // runner when the book uses a Windows-only generator.
-  if (programs.includes('cmake')) {
+  if (programs.includes('cmake') && onPc) {
+    // Builds run on the Windows PC: probe the toolchain there only.
+    checks.push(await probeCMakeOnWindowsRunner(specGenerator(spec)));
+  } else if (programs.includes('cmake')) {
     const { sandboxStatus } = await import('./sandbox');
     const generator = specGenerator(spec);
     if ((await sandboxStatus()).ready) {
@@ -526,8 +598,8 @@ async function probeCMakeInSandbox(spec: ProjectSpec, generator: string): Promis
   const { dir } = await writeProbeProject(spec);
   try {
     // Our own probe project, not book code.
-    const conf = await runContained({ argv: ['cmake', '-S', '/work', '-B', '/work/build', ...(portableGenerator ? ['-G', portableGenerator] : [])], work: dir, runsCode: false, timeoutSec: 180 });
-    const build = conf.code === 0 ? await runContained({ argv: ['cmake', '--build', '/work/build'], work: dir, runsCode: false, timeoutSec: 240 }) : null;
+    const conf = await runContained({ argv: ['cmake', '-S', '/work', '-B', '/work/build', ...(portableGenerator ? ['-G', portableGenerator] : [])], work: dir, runsCode: false, timeoutSec: 180, local: true });
+    const build = conf.code === 0 ? await runContained({ argv: ['cmake', '--build', '/work/build'], work: dir, runsCode: false, timeoutSec: 240, local: true }) : null;
     if (conf.code === 0 && build?.code === 0) {
       const compiler = conf.output.match(/compiler identification is ([^\n]+)/)?.[1]?.trim();
       return {
@@ -542,7 +614,7 @@ async function probeCMakeInSandbox(spec: ProjectSpec, generator: string): Promis
       ...base,
       status: 'missing',
       detail: `A test project failed to build in the sandbox.\n\nCMake output (last lines):\n${(build?.output || conf.output).slice(-1200)}`,
-      fix: ['Rebuild the sandbox image: docker build -t neoacademy-sandbox:1 docker/sandbox', RESTART_NOTE],
+      fix: ['Rebuild the sandbox image: docker build -t neoacademy-sandbox:2 docker/sandbox', RESTART_NOTE],
       ifIgnored: 'The book is written without build verification, so its project code is not compiled or tested.',
     };
   } finally {
@@ -553,8 +625,8 @@ async function probeCMakeInSandbox(spec: ProjectSpec, generator: string): Promis
 /** Windows-only generators (Visual Studio): probe MSVC on the Windows runner. */
 async function probeCMakeOnWindowsRunner(generator: string): Promise<PreflightCheck> {
   const runner = await import('./windows-runner');
-  const base = { id: 'cmake-toolchain-windows', label: `Windows toolchain for "${generator}" (Windows runner)`, blocking: false };
-  const ifIgnored = 'Windows-only code in the book (windows.h, MSVC) is not built; everything portable is still verified in the sandbox.';
+  const base = { id: 'cmake-toolchain-windows', label: `C/C++ toolchain on the Windows PC${generator ? ` for "${generator}"` : ''}`, blocking: false };
+  const ifIgnored = 'The book\'s C/C++ code is not built on the Windows PC.';
   if (!(await runner.runnerStatus()).ok) {
     return { ...base, status: 'warning', detail: 'The Windows runner is not reachable (see the Windows runner check).', ifIgnored };
   }
@@ -573,7 +645,7 @@ async function probeCMakeOnWindowsRunner(generator: string): Promise<PreflightCh
   await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   if (!session) return { ...base, status: 'warning', detail: 'Could not copy a test project to the Windows runner.', ifIgnored };
   try {
-    const conf = await runner.runInSession(session, cmake, ['-S', '/work', '-B', '/work/build', '-G', generator], 300);
+    const conf = await runner.runInSession(session, cmake, ['-S', '/work', '-B', '/work/build', ...(generator ? ['-G', generator] : [])], 300);
     const build = conf.code === 0 ? await runner.runInSession(session, cmake, ['--build', '/work/build', '--config', 'Debug'], 300) : null;
     if (conf.code === 0 && build?.code === 0) {
       const compiler = conf.output.match(/compiler identification is ([^\r\n]+)/)?.[1]?.trim();
@@ -698,6 +770,7 @@ export async function runPreflight(options: {
       if (options.factCheck) checks.push(await checkMathPython());
       if (options.factCheck) checks.push(await checkSandbox());
       if (options.factCheck && process.env.WINDOWS_RUNNER_HOST) checks.push(await checkWindowsRunner());
+      if (options.factCheck) checks.push(checkReferenceSources(options.webSearch, options.referenceLibraries?.length ?? 0));
       for (const lib of options.referenceLibraries ?? []) {
         const { describeLibrary } = await import('./library');
         const d = await describeLibrary(lib);

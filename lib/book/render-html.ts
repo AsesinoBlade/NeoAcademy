@@ -6,6 +6,7 @@
  * numbering run inside the PDF browser via an inline script, which sets
  * `window.__bookReady = true` once everything is laid out.
  */
+import { cleanEditorialArtifacts, extractReaderNotes } from './cleanup';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -106,6 +107,9 @@ async function renderSectionBody(markdown: string, ctx: RenderContext): Promise<
     .replace(/<p>\s*@@BLOCKZ(\d+)@@\s*<\/p>/g, (_m: string, i: string) => blocks[Number(i)])
     .replace(/@@BLOCKZ(\d+)@@/g, (_m: string, i: string) => blocks[Number(i)])
     .replace(/@@INLINEZ(\d+)@@/g, (_m: string, i: string) => blocks[Number(i)]);
+  // Collapsible <details> (e.g. "Solution") print closed in a PDF, hiding the
+  // content entirely — always render them expanded.
+  html = html.replace(/<details(?![^>]*\bopen\b)/gi, '<details open');
 
   // 6. Callout blockquotes: > **Note:** ...
   html = html.replace(
@@ -235,6 +239,8 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
 
   const toc: string[] = [];
   const chapters: string[] = [];
+  // "Check your version" notes, moved out of the text to the back of the book.
+  const readerNotes: Array<{ section: string; title: string; notes: string[] }> = [];
 
   for (let ci = 0; ci < book.outline.length; ci++) {
     const chapter = book.outline[ci];
@@ -256,11 +262,15 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
 
     const sections: string[] = [];
     for (const ref of chapterRefs) {
-      const markdown = await readSection(book.id, ref.id);
-      if (!markdown) {
+      const stored = await readSection(book.id, ref.id);
+      if (!stored) {
         missingSections++;
         continue;
       }
+      // Clean editorial leftovers (also fixes books written before the
+      // cleanup existed) and keep reader notes out of the running text.
+      const { text: markdown, notes } = extractReaderNotes(cleanEditorialArtifacts(stored));
+      if (notes.length) readerNotes.push({ section: ref.sectionNumber, title: ref.title, notes });
       const body = await renderSectionBody(markdown, ctx);
       sections.push(
         `<section class="book-section" id="sec-${ref.id}"><h2><span class="sec-num">${ref.sectionNumber}</span>${escapeHtml(
@@ -330,11 +340,55 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
     );
   }
 
+  // Appendix: things the reader should check for their own version, location
+  // or setup — collected from the notes the writer attached to each section.
+  if (readerNotes.length) {
+    const letter = String.fromCharCode(65 + chapters.filter((c) => c.includes('class="chapter appendix"')).length);
+    toc.push(`<li class="toc-chapter"><a href="#appendix-notes"><span class="toc-num">${letter}</span>Check for your situation</a></li>`);
+    chapters.push(
+      `<article class="chapter appendix" id="appendix-notes" data-chapter="${letter}">
+        <header class="chapter-opener">
+          <div class="chapter-kicker">Appendix ${letter}</div>
+          <h1>Check for your situation</h1>
+          <p class="chapter-intro">Details that depend on your version, location or setup. The sections they belong to are listed so you can check them when you get there.</p>
+        </header>
+        <section class="book-section">
+          ${readerNotes
+            .map(
+              (r) =>
+                `<h3><a href="#sec-${escapeHtml(refs.find((x) => x.sectionNumber === r.section)?.id ?? '')}">${escapeHtml(r.section)} ${escapeHtml(r.title)}</a></h3><ul>${r.notes
+                  .map((n) => `<li>${escapeHtml(n).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>')}</li>`)
+                  .join('')}</ul>`,
+            )
+            .join('\n')}
+        </section>
+      </article>`,
+    );
+  }
+
   // Final appendix: how the book was verified (versions, coverage, open claims).
   const { computeCoverage } = await import('./coverage');
   const coverage = await computeCoverage(book.id);
+  const { readFinalConsistency } = await import('./final-consistency');
+  const consistency = await readFinalConsistency(book.id);
+  const consistencyHtml = consistency
+    ? (() => {
+        const resolved = consistency.contradictions.filter((c) => c.applied.length > 0);
+        const open = consistency.contradictions.filter((c) => c.applied.length === 0);
+        const item = (c: (typeof consistency.contradictions)[number]) =>
+          `<li><strong>${escapeHtml(c.topic)}</strong> (sections ${c.sections.map(escapeHtml).join(', ')})${
+            c.versions.length ? `<br>The text said: ${c.versions.map((v) => `“${escapeHtml(v)}”`).join(' vs ')}` : ''
+          }<br>${c.applied.length ? 'Now reads' : 'Most likely correct'}: “${escapeHtml(c.correct)}”</li>`;
+        return `<h2>Consistency between chapters</h2>
+          <p>${consistency.facts} stated facts (numbers, definitions, rules) were compared across the whole book.${
+            consistency.contradictions.length ? '' : ' No contradictions were found.'
+          }</p>
+          ${resolved.length ? `<h3>Made consistent — please double-check</h3><p>These were stated differently in different sections. All sections now use the version the reviewer judged correct, without documentation to confirm it.</p><ul>${resolved.map(item).join('')}</ul>` : ''}
+          ${open.length ? `<h3>Still inconsistent — check these</h3><p>The sections listed still disagree; the reviewer could not tell which version is right.</p><ul>${open.map(item).join('')}</ul>` : ''}`;
+      })()
+    : '';
   if (coverage && coverage.claims > 0) {
-    const letter = chapters.some((c) => c.includes('id="appendix-project"')) ? 'B' : 'A';
+    const letter = String.fromCharCode(65 + chapters.filter((c) => c.includes('class="chapter appendix"')).length);
     const plan = book.verificationPlan;
     const pct = (n: number) => `${Math.round((100 * n) / Math.max(1, coverage.claims))}%`;
     const rows: Array<[string, number]> = [
@@ -366,12 +420,25 @@ export async function renderBookHtml(book: BookRecord): Promise<RenderedBook> {
           </tbody></table>
           <h2>Code and calculations</h2>
           <p>${coverage.codeSamples} code sample(s) were compiled or run with the real tools${coverage.codeErrorsLeft ? ` (${coverage.codeErrorsLeft} still had errors after review)` : ''}; ${coverage.calculations} calculation(s) were recomputed exactly${coverage.calculationsWrongLeft ? ` (${coverage.calculationsWrongLeft} could not be corrected automatically)` : ''}.
-          Code was only ever run in an isolated sandbox without network access; text from the web was used for facts only, never as code.</p>
+          Code was only ever run in isolated places (the sandbox, or a limited account on the verification PC); text from the web was used for facts only, never as code.</p>
           ${bySection.size ? `<h2>Please double-check</h2>
           <p>These claims in the final text could not be confirmed. <strong>Contradicted</strong> ones were judged wrong but could not be corrected automatically; <strong>Uncertain</strong> ones met a differing independent answer that couldn't be settled. Check them against a trusted source.</p>
           ${[...bySection.entries()].map(([sec, list]) => `<h3>${escapeHtml(sec)}</h3><ul>${list.map((c) => `<li><strong>${c.status === 'disputed' || c.status === 'not-found' ? 'Contradicted' : c.status === 'uncertain' ? 'Uncertain' : 'Unverified'}:</strong> ${escapeHtml(c.statement)}${c.note && c.note.trim() && c.note.trim() !== 'undefined' ? `<br><em>${escapeHtml(c.note.split('\n')[0].slice(0, 300))}</em>` : ''}</li>`).join('')}</ul>`).join('\n')}
           ${coverage.openClaims.length > open.length ? `<p>…and ${coverage.openClaims.length - open.length} more.</p>` : ''}` : '<p>Every checked claim was confirmed or corrected.</p>'}
+          ${consistencyHtml}
         </section>
+      </article>`,
+    );
+  } else if (consistencyHtml) {
+    const letter = String.fromCharCode(65 + chapters.filter((c) => c.includes('class="chapter appendix"')).length);
+    toc.push(`<li class="toc-chapter"><a href="#appendix-verification"><span class="toc-num">${letter}</span>How this book was verified</a></li>`);
+    chapters.push(
+      `<article class="chapter appendix" id="appendix-verification" data-chapter="${letter}">
+        <header class="chapter-opener">
+          <div class="chapter-kicker">Appendix ${letter}</div>
+          <h1>How this book was verified</h1>
+        </header>
+        <section class="book-section">${consistencyHtml}</section>
       </article>`,
     );
   }

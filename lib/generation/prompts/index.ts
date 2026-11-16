@@ -46,4 +46,8 @@ export const PROMPT_IDS = {
   BOOK_CROSS_JUDGE: 'book-cross-judge',
   BOOK_RESOLUTION: 'book-resolution',
   BOOK_DOC_CHECK: 'book-doc-check',
+  BOOK_FACTS: 'book-facts',
+  BOOK_CONTRADICTIONS: 'book-contradictions',
+  BOOK_HARMONISE: 'book-harmonise',
+  BOOK_COVERAGE: 'book-coverage',
 } as const;

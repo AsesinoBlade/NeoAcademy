@@ -3366,6 +3366,7 @@ function GenerationPreviewContent() {
 
   // Outline review step: generation awaits the learner's decision.
   const [outlineReview, setOutlineReview] = useState<SceneOutline[] | null>(null);
+  const [outlineCoverage, setOutlineCoverage] = useState<import('./components/outline-review').CoverageItem[] | null>(null);
   const [reviewMode, setReviewMode] = useState<'class' | 'ebook'>('class');
   const outlineReviewResolveRef = useRef<((decision: OutlineReviewDecision) => void) | null>(
     null,
@@ -5130,8 +5131,53 @@ function GenerationPreviewContent() {
 
       const reviewOutlineEnabled = currentSession.requirements.reviewOutline !== false;
 
+      // Ebooks: does the outline cover what was asked for (topics, scope,
+      // region)? Shown on the review screen; without a review, gaps are fed
+      // back to the planner once automatically.
+      const checkCoverage = async (list: SceneOutline[]) => {
+        if (!isEbook) return null;
+        setStatusMessage('Checking the outline covers your request...');
+        try {
+          const res = await fetch('/api/generate/book-coverage', {
+            method: 'POST',
+            headers: { ...getApiHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requirement: currentSession.requirements.requirement, outline: list }),
+            signal,
+          });
+          const data = await res.json();
+          const items = (data?.items ?? data?.data?.items ?? null) as import('./components/outline-review').CoverageItem[] | null;
+          if (items) {
+            const gaps = items.filter((i) => i.status !== 'covered');
+            logGenerationProgress(
+              `[Generation] Request coverage: ${items.length - gaps.length}/${items.length} covered` +
+                (gaps.length ? ` — gaps: ${gaps.map((g) => `${g.requirement} (${g.status})`).join('; ').slice(0, 300)}` : ''),
+            );
+          }
+          return items;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return null;
+        }
+      };
+
+      if (isEbook && outlines && outlines.length > 0 && !resumeHasScenes && !reviewOutlineEnabled) {
+        const items = await checkCoverage(outlines);
+        const gaps = (items ?? []).filter((i) => i.status !== 'covered');
+        if (gaps.length) {
+          setStatusMessage('Revising the outline to cover your whole request...');
+          setStreamingOutlines([]);
+          outlines = await streamOutlines({
+            previousOutlines: outlines,
+            feedback: gaps.map((g) => `- ${g.fix || `Cover: ${g.requirement}`}`).join('\n'),
+          });
+          saveOutlinesToSession(outlines);
+        }
+      }
+
       if (outlines && outlines.length > 0 && !resumeHasScenes && reviewOutlineEnabled) {
         for (;;) {
+          setStatusMessage('');
+          setOutlineCoverage(await checkCoverage(outlines));
           setStatusMessage('');
           const decision = await requestOutlineReview(outlines, signal);
           outlines = decision.outlines;
@@ -6321,6 +6367,7 @@ function GenerationPreviewContent() {
           mode={reviewMode}
           premises={reviewMode === 'ebook' ? session?.premises : undefined}
           bookStyle={reviewMode === 'ebook' ? session?.requirements.bookStyle : undefined}
+          coverage={reviewMode === 'ebook' ? outlineCoverage : undefined}
         />
       )}
 

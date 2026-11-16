@@ -20,12 +20,14 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('BookSandbox');
 
-export const SANDBOX_IMAGE = process.env.BOOK_SANDBOX_IMAGE?.trim() || 'neoacademy-sandbox:1';
+// :2 adds Rust. Bumping the tag makes the preflight ask for a rebuild.
+export const SANDBOX_IMAGE = process.env.BOOK_SANDBOX_IMAGE?.trim() || 'neoacademy-sandbox:2';
 
 /** Programs available inside the sandbox image (see docker/sandbox/Dockerfile). */
 const SANDBOX_TOOLS = new Set([
   'gcc', 'g++', 'cc', 'c++', 'clang', 'clang++', 'make', 'cmake', 'ctest', 'cpack', 'ninja',
   'python', 'python3', 'pip', 'pip3', 'node', 'npm', 'npx', 'tsc', 'fpc', 'java', 'javac', 'jar', 'git',
+  'rustc', 'cargo',
   ...(process.env.BOOK_SANDBOX_EXTRA_TOOLS ?? '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean),
 ]);
 
@@ -126,6 +128,8 @@ export interface ExecRequest {
   preferRunner?: boolean;
   /** An open runner session (builds: one upload for all their commands). */
   runnerSession?: import('./windows-runner').RunnerSession;
+  /** Keep this on this computer / in the sandbox (sandbox probes, dependency downloads). */
+  local?: boolean;
 }
 
 /** Map a host path inside `work` to its container path. */
@@ -140,9 +144,22 @@ export async function runContained(req: ExecRequest): Promise<ExecResult> {
   const sandbox = await sandboxStatus();
 
   const useHost = !!req.preferHost && !req.runsCode && !req.network && !!req.hostProgram;
-  if (req.preferRunner && !req.network) {
+  // Windows PC first: with a runner configured, every check runs there unless
+  // the tool only exists on macOS.
+  const { windowsFirst, isMacOnlyTool } = await import('./verify-target');
+  const pcFirst = !req.local && !req.network && windowsFirst() && !isMacOnlyTool(program);
+  if ((req.preferRunner || pcFirst) && !req.network && !req.local) {
     const viaRunner = await runOnWindowsRunner(req, program, timeoutMs);
     if (viaRunner) return viaRunner;
+    if (pcFirst) {
+      // Not installed on the Windows PC. The approval screen lists these
+      // before the book is written; until it is installed there, the sandbox
+      // is the only fallback (never tools installed on this computer).
+      if (!(inSandboxImage(program) && sandbox.ready)) {
+        return { code: -1, output: '', durationMs: 0, where: 'skipped', reason: `${program} is not installed on the Windows PC` };
+      }
+      log.warn(`${program} is not installed on the Windows PC — using the sandbox for this check`);
+    }
   }
   if (inSandboxImage(program) && sandbox.ready && !useHost && !req.preferRunner) {
     const name = `neoacademy-${randomBytes(6).toString('hex')}`;
@@ -204,6 +221,8 @@ export async function runContained(req: ExecRequest): Promise<ExecResult> {
 async function runOnWindowsRunner(req: ExecRequest, program: string, timeoutMs: number): Promise<ExecResult | null> {
   const runner = await import('./windows-runner');
   if (!runner.runnerConfig()) return null;
+  const status = await runner.runnerStatus();
+  if (!status.ok) return { code: -1, output: '', durationMs: 0, where: 'skipped', reason: `the Windows PC could not be reached (${status.reason})` };
   const remoteProgram = await runner.resolveRemoteProgram(program);
   if (!remoteProgram) return null;
   if (req.runsCode && !req.allowHostCode) {

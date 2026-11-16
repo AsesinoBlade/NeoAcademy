@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Box, CheckCircle2, Globe, Monitor, Pause, Play, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, Box, CheckCircle2, Globe, Monitor, Pause, Play, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -16,7 +16,18 @@ export interface VerificationDecision {
 
 type Placement = 'sandbox' | 'host' | 'windows' | 'missing';
 
-function Where({ placement }: { placement: Placement | undefined }) {
+/** The Windows PC that verifies the book (when one is configured). */
+export interface VerificationMachine {
+  configured: boolean;
+  /** Every check and build runs on the Windows PC. */
+  windowsFirst: boolean;
+  ok: boolean;
+  reason?: string;
+  host?: string;
+  bookId: string;
+}
+
+function Where({ placement, onPc }: { placement: Placement | undefined; onPc?: boolean }) {
   if (placement === 'sandbox')
     return (
       <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
@@ -37,7 +48,7 @@ function Where({ placement }: { placement: Placement | undefined }) {
     );
   return (
     <span className="inline-flex items-center gap-1 rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-      <XCircle className="size-3" /> Not installed
+      <XCircle className="size-3" /> {onPc ? 'Not on the Windows PC' : 'Not installed'}
     </span>
   );
 }
@@ -49,21 +60,51 @@ const Cmd = ({ argv }: { argv: string[] }) => (
 );
 
 export function VerificationPlanPanel({
-  plan,
+  plan: initialPlan,
   sandbox,
-  placements,
+  placements: initialPlacements,
   onDecision,
 }: {
   plan: VerificationPlan;
-  sandbox: { ready: boolean; reason?: string };
+  sandbox: { ready: boolean; reason?: string; machine?: VerificationMachine };
   placements: Record<string, Placement>;
   onDecision: (decision: VerificationDecision | 'pause') => void;
 }) {
+  const [plan, setPlan] = useState(initialPlan);
+  const [placements, setPlacements] = useState(initialPlacements);
+  const [machine, setMachine] = useState<VerificationMachine | undefined>(sandbox.machine);
+  const [rechecking, setRechecking] = useState(false);
+  const onPc = !!machine?.windowsFirst;
   const hasWeb = plan.docSources.some((d) => d.kind === 'web');
   const [allowWeb, setAllowWeb] = useState(hasWeb);
-  const [allowHostCode, setAllowHostCode] = useState(false);
+  // With a Windows PC as the verification machine, building and running the
+  // book's code there is the point — on by default (the user can untick it).
+  const [allowHostCode, setAllowHostCode] = useState(onPc && !!machine?.ok);
   const [fixtures, setFixtures] = useState<Record<string, string>>({});
   const place = (program?: string) => (program ? placements[program.toLowerCase()] : undefined);
+  const missingOnPc = onPc ? plan.tools.filter((t) => t.executable && place(t.executable) === 'missing') : [];
+
+  const recheck = async () => {
+    if (!machine?.bookId) return;
+    setRechecking(true);
+    try {
+      const res = await fetch('/api/generate/book-verification-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookId: machine.bookId, action: 'recheck' }),
+      });
+      const json = (await res.json()) as { success?: boolean; data?: { plan: VerificationPlan; placements: Record<string, Placement>; machine: VerificationMachine } } & Record<string, unknown>;
+      const data = (json.data ?? json) as { plan?: VerificationPlan; placements?: Record<string, Placement>; machine?: VerificationMachine };
+      if (data.plan) setPlan(data.plan);
+      if (data.placements) setPlacements(data.placements);
+      if (data.machine) {
+        setMachine(data.machine);
+        if (data.machine.ok && data.machine.windowsFirst) setAllowHostCode(true);
+      }
+    } finally {
+      setRechecking(false);
+    }
+  };
   const hostCodeCommands = [...plan.checks, ...plan.docSources.filter((d) => d.kind === 'tool-help')].filter(
     (c) => c.executesCode && ['host', 'windows'].includes(place('command' in c && c.command ? c.command[0] : undefined) ?? ''),
   );
@@ -76,14 +117,61 @@ export function VerificationPlanPanel({
             <ShieldCheck className="size-5" /> Approve how this book will be verified
           </h2>
           <p className="text-sm text-muted-foreground">
-            Nothing below runs until you approve it. Book code only runs in the sandbox (no network, isolated); text from
-            the web is used for facts only, never as code.
+            {onPc
+              ? `Nothing below runs until you approve it. Every check and build runs on the Windows PC (${machine?.host ?? 'runner'}) as the limited neorunner account; text from the web is used for facts only, never as code.`
+              : 'Nothing below runs until you approve it. Book code only runs in the sandbox (no network, isolated); text from the web is used for facts only, never as code.'}
           </p>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-4 text-sm">
+          {onPc && (
+            <div
+              className={cn(
+                'flex items-start gap-2 rounded-lg border p-3',
+                machine?.ok && missingOnPc.length === 0
+                  ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20'
+                  : 'border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/20',
+              )}
+            >
+              {machine?.ok && missingOnPc.length === 0 ? (
+                <CheckCircle2 className="mt-0.5 size-4 text-emerald-600" />
+              ) : (
+                <AlertTriangle className="mt-0.5 size-4 text-amber-600" />
+              )}
+              <div className="flex-1">
+                <p className="font-medium">
+                  {!machine?.ok
+                    ? 'The Windows PC is not reachable'
+                    : missingOnPc.length
+                      ? `The Windows PC is missing ${missingOnPc.length} tool(s)`
+                      : 'The Windows PC has everything this book needs'}
+                </p>
+                {!machine?.ok && <p className="text-muted-foreground">{machine?.reason} Wake it up and make sure OpenSSH Server is running.</p>}
+                {machine?.ok && missingOnPc.length > 0 && (
+                  <>
+                    <p className="text-muted-foreground">
+                      Install these on the Windows PC <strong>for all users</strong> (an administrator install that adds them to the
+                      system PATH — the checks run as the neorunner account, which can&apos;t see programs installed only for your
+                      account). Samples they check are otherwise marked &quot;not verified&quot;.
+                    </p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {missingOnPc.map((t) => (
+                        <li key={t.executable}>
+                          <span className="font-medium">{t.name}</span> ({t.executable}){t.installHint ? ` — ${t.installHint}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                <Button variant="outline" size="sm" className="mt-2" disabled={rechecking} onClick={recheck}>
+                  <RefreshCw className={cn('mr-1.5 size-3.5', rechecking && 'animate-spin')} /> Check the Windows PC again
+                </Button>
+              </div>
+            </div>
+          )}
+          {!onPc && (
           <div
             className={cn(
               'flex items-start gap-2 rounded-lg border p-3',
@@ -100,11 +188,12 @@ export function VerificationPlanPanel({
               </p>
               {!sandbox.ready && (
                 <code className="mt-1 block rounded bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-100 select-all">
-                  docker build -t neoacademy-sandbox:1 docker/sandbox
+                  docker build -t neoacademy-sandbox:2 docker/sandbox
                 </code>
               )}
             </div>
           </div>
+          )}
 
           {(plan.subjects.length > 0 || plan.versions.length > 0) && (
             <div className="rounded-lg border bg-white p-3 dark:bg-slate-900">
@@ -125,9 +214,9 @@ export function VerificationPlanPanel({
                 {plan.tools.map((t) => (
                   <li key={t.name + (t.executable ?? '')} className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{t.name}</span>
-                    {t.executable && <Where placement={place(t.executable)} />}
+                    {t.executable && <Where placement={place(t.executable)} onPc={onPc} />}
                     <span className="text-xs text-muted-foreground">{t.purpose}</span>
-                    {t.executable && place(t.executable) === 'missing' && t.installHint && (
+                    {!onPc && t.executable && place(t.executable) === 'missing' && t.installHint && (
                       <span className="w-full pl-1 text-xs">Install: {t.installHint}</span>
                     )}
                   </li>
@@ -145,7 +234,7 @@ export function VerificationPlanPanel({
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{c.label}</span>
                       <span className="text-xs text-muted-foreground">({c.languages.join(', ')} samples)</span>
-                      <Where placement={place(c.command[0])} />
+                      <Where placement={place(c.command[0])} onPc={onPc} />
                       {c.executesCode && (
                         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                           runs book code
@@ -169,7 +258,7 @@ export function VerificationPlanPanel({
                       {d.kind === 'web' ? <Globe className="size-3.5" /> : null}
                       <span className="font-medium">{d.tool}</span>
                       <span className="text-xs text-muted-foreground">{d.description}</span>
-                      {d.kind === 'tool-help' && <Where placement={place(d.command?.[0])} />}
+                      {d.kind === 'tool-help' && <Where placement={place(d.command?.[0])} onPc={onPc} />}
                     </div>
                     {d.kind === 'tool-help' && d.command && <Cmd argv={d.command} />}
                     {d.kind === 'local-path' && <code className="text-[11px]">{d.path}</code>}
@@ -210,8 +299,9 @@ export function VerificationPlanPanel({
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={allowHostCode} onChange={(e) => setAllowHostCode(e.target.checked)} />
               <span>
-                Allow building and running the book&apos;s code on this PC or the Windows PC when the sandbox can&apos;t
-                (Windows-only tools, Visual Studio builds of the book&apos;s project)
+                {onPc
+                  ? "Allow building and running the book's code on the Windows PC (as the limited neorunner account, in a scratch folder that is deleted afterwards)"
+                  : "Allow building and running the book's code on this PC or the Windows PC when the sandbox can't (Windows-only tools, Visual Studio builds of the book's project)"}
                 <span className="block text-xs text-muted-foreground">
                   Off is safer: Windows-only tools then only show help or compile/syntax-check
                   {hostCodeCommands.length ? `; ${hostCodeCommands.length} command(s) above would need this` : ''}. Code that uses the network,

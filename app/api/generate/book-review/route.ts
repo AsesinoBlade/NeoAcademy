@@ -23,7 +23,7 @@ import { buildPrompt, PROMPT_IDS } from '@/lib/generation/prompts';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { figuresAsText, sanitiseSectionFigures } from '@/lib/book/figures';
-import { cleanEditorialArtifacts } from '@/lib/book/cleanup';
+import { cleanEditorialArtifacts, stripLeakedPrompt } from '@/lib/book/cleanup';
 import { parseJsonResponse } from '@/lib/generation/json-repair';
 import type { Evidence } from '@/lib/book/references';
 import { checkSectionMath, extractClaims, generateBookText, tableOfContents } from '@/lib/book/llm';
@@ -201,6 +201,13 @@ async function handlePost(req: NextRequest): Promise<Response> {
       .map((l) => l.replace(/^\s*[-*]\s*/, '').trim())
       .filter((l) => l && !/^none\.?$/i.test(l));
     let revised = raw.match(/<section>([\s\S]*?)(?:<\/section>|$)/i)?.[1]?.trim() ?? '';
+    // The editor sometimes echoes its whole input (contents, evidence,
+    // reports) before the section: cut it, or reject the revision.
+    const leak = stripLeakedPrompt(revised);
+    if (leak.leaked) {
+      log.warn(`Editor echoed the review prompt into ${sectionId}${leak.recovered ? ' — removed' : ' — revision rejected'}`);
+      revised = leak.recovered ? leak.text : '';
+    }
 
     // Strip a repeated title heading the editor might add.
     revised = revised.replace(/^#{1,2}\s+[^\n]*\n+/, '');
