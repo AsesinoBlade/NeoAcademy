@@ -10,13 +10,13 @@ export const generationZhCN = {
     delete: '删除',
   },
   upload: {
-    pdfSizeLimit: '每个PDF资料来源最大50MB',
-    sourceSizeLimit: 'PDF、JPG、PNG和WebP资料来源，每个最大50MB',
+    pdfSizeLimit: '每个PDF资料来源最大100MB',
+    sourceSizeLimit: 'PDF、JPG、PNG和WebP资料来源，每个最大100MB',
     generateFailed: '生成课堂失败，请重试',
     requirementPlaceholder:
       '输入你想学的任何内容，例如：\n「从零学 Python，30 分钟写出第一个程序」\n「用白板给我讲解傅里叶变换」\n「阿瓦隆桌游怎么玩」',
     requirementRequired: '请输入课程需求',
-    fileTooLarge: '文件过大，请选择小于50MB的PDF文件',
+    fileTooLarge: '文件过大，请选择小于100MB的PDF文件',
   },
   generation: {
     // Progress steps (used dynamically via activeStep)
@@ -75,13 +75,13 @@ export const generationEnUS = {
     delete: 'Delete',
   },
   upload: {
-    pdfSizeLimit: 'PDF sources up to 50MB each',
-    sourceSizeLimit: 'PDF, JPG, PNG, and WebP sources up to 50MB each',
+    pdfSizeLimit: 'PDF sources up to 100MB each',
+    sourceSizeLimit: 'PDF, JPG, PNG, and WebP sources up to 100MB each',
     generateFailed: 'Failed to generate classroom, please try again',
     requirementPlaceholder:
       'Tell me anything you want to learn, e.g.\n"Teach me Python from scratch in 30 minutes"\n"Explain Fourier Transform on the whiteboard"\n"How to play the board game Avalon"',
     requirementRequired: 'Please enter course requirements',
-    fileTooLarge: 'File too large. Please select a PDF file smaller than 50MB',
+    fileTooLarge: 'File too large. Please select a PDF file smaller than 100MB',
   },
   generation: {
     // Progress steps (used dynamically via activeStep)
